@@ -27,6 +27,9 @@ NOTIFY_USER_ID = int(os.getenv("NOTIFY_USER_ID", "0"))
 # Таймзона пользователя — время уведомлений в настройках бота задаётся в этой зоне
 # Примеры: "Asia/Tbilisi", "Europe/Moscow", "Europe/Berlin", "UTC"
 USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
+# Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
+# иначе данные будут теряться при каждом передеплое
+DB_PATH = os.getenv("DB_PATH", "adhd.db")
 
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
@@ -135,7 +138,7 @@ WARMUP = [
 
 # ── DATABASE ───────────────────────────────────────────────────────────────
 def init_db():
-    conn = sqlite3.connect("adhd.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
@@ -177,7 +180,7 @@ def init_db():
     conn.commit(); conn.close()
 
 def get_user(uid):
-    conn = sqlite3.connect("adhd.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     row = c.fetchone()
@@ -191,14 +194,14 @@ def get_user(uid):
     return dict(zip(cols, row))
 
 def update_user(uid, **kwargs):
-    conn = sqlite3.connect("adhd.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     for k, v in kwargs.items():
         c.execute(f"UPDATE users SET {k}=? WHERE user_id=?", (v, uid))
     conn.commit(); conn.close()
 
 def save_diary(uid, block, data):
-    conn = sqlite3.connect("adhd.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     d = date.today().isoformat()
     c.execute("DELETE FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, block))
@@ -207,7 +210,7 @@ def save_diary(uid, block, data):
     conn.commit(); conn.close()
 
 def get_diary(uid, block, for_date=None):
-    conn = sqlite3.connect("adhd.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     d = for_date or date.today().isoformat()
     c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, block))
