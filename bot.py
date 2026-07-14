@@ -11,6 +11,7 @@ ADHD Focus Bot v5
 
 import os, json, sqlite3, asyncio, random
 from datetime import datetime, date, timedelta
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -23,10 +24,9 @@ BOT_TOKEN     = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 # Укажи свой Telegram ID для уведомлений (узнай через @userinfobot)
 NOTIFY_USER_ID = int(os.getenv("NOTIFY_USER_ID", "0"))
-# Тбилиси UTC+4: 9:00=5 UTC, 13:00=9 UTC, 21:00=17 UTC
-MORNING_HOUR_UTC = int(os.getenv("MORNING_HOUR_UTC", "5"))   # 9:00 Тбилиси
-MIDDAY_HOUR_UTC  = int(os.getenv("MIDDAY_HOUR_UTC",  "9"))   # 13:00 Тбилиси
-EVENING_HOUR_UTC = int(os.getenv("EVENING_HOUR_UTC", "17"))  # 21:00 Тбилиси
+# Таймзона пользователя — время уведомлений в настройках бота задаётся в этой зоне
+# Примеры: "Asia/Tbilisi", "Europe/Moscow", "Europe/Berlin", "UTC"
+USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
@@ -324,16 +324,60 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = "M" if q.data == "gender_M" else "F"
     update_user(uid, name=name, gender=gender)
 
-    greeting = g(gender, f"Готово, {name}! Поехали 🚀", f"Готово, {name}! Поехали 🚀")
     await q.message.reply_text(
-        f"{greeting}\n\n"
-        "Я буду присылать напоминания:\n"
-        "☀️ Утром в 9:00 — настройка на день\n"
-        "🌙 Вечером в 21:00 — подведение итогов\n\n"
-        "Выбирай что хочешь сделать 👇",
-        reply_markup=main_menu()
+        f"Отлично, {name}! Давай я коротко расскажу как работает бот 👇",
+    )
+    await asyncio.sleep(0.5)
+    await q.message.reply_text(
+        "🧠 *Зачем этот бот?*\n\n"
+        f"У мозга с СДВГ есть одна особенность: он управляется *интересом и срочностью*, а не важностью. "
+        f"Поэтому важные дела откладываются, а день рассыпается.\n\n"
+        f"Этот бот даёт мозгу то, чего ему не хватает — *внешнюю структуру*.\n\n"
+        f"Структура дня при СДВГ — это не про дисциплину. "
+        f"Это про то, чтобы каждое утро знать *одно* главное дело, и каждый вечер видеть что ты {g(gender, 'сделал', 'сделала')}.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.8)
+    await q.message.reply_text(
+        "☀️🌙 *Как работает бот*\n\n"
+        "*Утром* — мягкий ритуал запуска:\n"
+        "• Разминка (тело будит мозг)\n"
+        "• Free writing — выгрузить всё из головы\n"
+        "• Благодарность — настрой на день\n"
+        "• Задачи A, B, C — одно главное, ничего лишнего\n\n"
+        "*Вечером* — закрыть день:\n"
+        "• Что получилось — даже маленькое\n"
+        "• Похвалить себя (это важно — об этом ниже)\n"
+        "• Записать A-задачу на завтра\n\n"
+        "Утро — это *разгон*, вечер — это *посадка*. "
+        "Между ними — дневной чекин если застрял.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.8)
+    await q.message.reply_text(
+        "🏆 *Почему важно отмечать победы*\n\n"
+        "Мозг с СДВГ плохо вырабатывает дофамин от долгосрочных целей — "
+        "он живёт в настоящем.\n\n"
+        "Когда ты каждый вечер *замечаешь что сделал(а)* — даже маленькое — "
+        "мозг получает сигнал: «это работает, продолжай». "
+        "Это не самодовольство, это *топливо* для следующего дня.\n\n"
+        "Поэтому вечерний блок начинается не с планов, а с достижений и похвалы себе. "
+        "Стрик — это видимое доказательство прогресса.\n\n"
+        "_Маленькие победы замеченные каждый день — это и есть мотивация._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"{'Всё понял' if gender == 'M' else 'Всё поняла'}, начнём! 🚀", callback_data="onboard_done")
+        ]])
     )
     return ConversationHandler.END
+
+async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.message.reply_text(
+        "Отлично! Попробуй начать с утреннего блока 👇",
+        reply_markup=main_menu()
+    )
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
 async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -384,27 +428,28 @@ async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         dots = "🟡"*(i+1) + "⚪"*(len(WARMUP)-i-1)
         await msg.edit_text(f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
         await asyncio.sleep(20)
-    await msg.edit_text("✅ *Тело проснулось!* Теперь — фокус.", parse_mode="Markdown")
-    await ask_morning_focus(q.message)
-    return M_FOCUS
+    await msg.edit_text("✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
+    await ask_writing(q.message)
+    return M_WRITING
 
 async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await ask_morning_focus(q.message)
-    return M_FOCUS
+    await ask_writing(q.message)
+    return M_WRITING
 
 async def ask_morning_focus(message):
     await message.reply_text(
-        "📋 *Планируем задачи на день по системе ABC:*\n\n"
-        "🅰️ *A — самая важная* (1 задача)\n"
-        "_Фокус дня. Если сделаешь только её — день прожит не зря._\n\n"
-        "🅱️ *B — важные* (2 задачи)\n"
+        "💪 *Теперь — задачи на день.*\n\n"
+        "Система ABC: одно главное, не больше.\n\n"
+        "🅰️ *A — одна задача, must do*\n"
+        "_Если сделаешь только её — день прожит не зря._\n\n"
+        "🅱️ *B — важные* (до 2)\n"
         "_Желательно сегодня, максимум завтра._\n\n"
-        "🅲 *C — nice to have* (3 задачи)\n"
-        "_Делай только после A и B. Более привлекательные, но менее важные._\n\n"
+        "🅲 *C — nice to have* (до 3)\n"
+        "_Только после A и B._\n\n"
         "━━━━━━━━━━━━━━━\n"
-        "🎯 Начнём — *задача A:*",
+        "🎯 *Задача A — что главное сегодня?*",
         parse_mode="Markdown",
         reply_markup=skip_kb("skip_m_focus")
     )
@@ -465,14 +510,16 @@ async def got_m_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_m_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c3"] = update.message.text
-    await ask_writing(update.message); return M_WRITING
+    await finish_morning(update.message, update.effective_user.id, ctx)
+    return ConversationHandler.END
 
 async def skip_m_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data.setdefault("m_c1", "")
     ctx.user_data.setdefault("m_c2", "")
     ctx.user_data.setdefault("m_c3", "")
-    await ask_writing(q.message); return M_WRITING
+    await finish_morning(q.message, q.from_user.id, ctx)
+    return ConversationHandler.END
 
 async def ask_writing(message):
     await message.reply_text(
@@ -510,14 +557,14 @@ async def ask_child(message):
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
-    await finish_morning(update.message, update.effective_user.id, ctx)
-    return ConversationHandler.END
+    await ask_morning_focus(update.message)
+    return M_FOCUS
 
 async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
-    await finish_morning(q.message, q.from_user.id, ctx)
-    return ConversationHandler.END
+    await ask_morning_focus(q.message)
+    return M_FOCUS
 
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
@@ -1540,14 +1587,20 @@ async def send_guide_section(message, section_id):
 
 
 async def check_notifications(app):
-    """Каждую минуту проверяем нужно ли слать уведомление пользователю."""
+    """Каждую минуту проверяем нужно ли слать уведомление пользователю.
+
+    Время в настройках пользователя задаётся в локальной таймзоне (USER_TIMEZONE).
+    Используем pytz чтобы корректно сравнивать независимо от таймзоны сервера.
+    """
     if not NOTIFY_USER_ID: return
     try:
         uid = NOTIFY_USER_ID
         user = get_user(uid)
         if not user.get("notif_enabled", 0): return
 
-        now = datetime.now().strftime("%H:%M")
+        tz = pytz.timezone(USER_TIMEZONE)
+        now = datetime.now(tz).strftime("%H:%M")
+
         if now == user.get("notif_morning", "09:00"):
             await morning_notification(app)
         elif now == user.get("notif_midday", "13:00"):
@@ -1573,7 +1626,7 @@ def main():
         allow_reentry=True,
     )
 
-    # Утренний flow
+    # Утренний flow (порядок: разминка → ритуал → задачи)
     morning_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(morning_start, pattern="^go_morning$")],
         states={
@@ -1581,15 +1634,17 @@ def main():
                 CallbackQueryHandler(warmup_go,     pattern="^warmup_go$"),
                 CallbackQueryHandler(skip_warmup,   pattern="^skip_warmup$"),
             ],
+            # Сначала мягкий ритуал
+            M_WRITING:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_writing),    CallbackQueryHandler(skip_m_writing,  pattern="^skip_m_writing$")],
+            M_GRATITUDE:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_gratitude),  CallbackQueryHandler(skip_m_gratitude,pattern="^skip_m_gratitude$")],
+            M_CHILD:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_child),      CallbackQueryHandler(skip_m_child,    pattern="^skip_m_child$")],
+            # Потом задачи ABC
             M_FOCUS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_focus),    CallbackQueryHandler(skip_m_focus,    pattern="^skip_m_focus$")],
             M_B1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b1),       CallbackQueryHandler(skip_m_b1,       pattern="^skip_m_b1$")],
             M_B2:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b2),       CallbackQueryHandler(skip_m_b2,       pattern="^skip_m_b2$")],
             M_C1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c1),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
             M_C2:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c2),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
             M_C3:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c3),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
-            M_WRITING:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_writing),    CallbackQueryHandler(skip_m_writing,  pattern="^skip_m_writing$")],
-            M_GRATITUDE:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_gratitude),  CallbackQueryHandler(skip_m_gratitude,pattern="^skip_m_gratitude$")],
-            M_CHILD:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_child),      CallbackQueryHandler(skip_m_child,    pattern="^skip_m_child$")],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
@@ -1616,7 +1671,8 @@ def main():
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
-    app.add_handler(CallbackQueryHandler(coach_menu,  pattern="^go_coach$"))
+    app.add_handler(CallbackQueryHandler(onboard_done,  pattern="^onboard_done$"))
+    app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))

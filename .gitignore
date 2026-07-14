@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+adhd.db
+.DS_Store
+.claude/settings.local.json
