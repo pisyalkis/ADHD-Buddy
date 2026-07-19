@@ -9,7 +9,7 @@ ADHD Focus Bot v5
 - Уведомления: 9:00 и 21:00 по Тбилиси (UTC+4)
 """
 
-import os, json, sqlite3, asyncio, random
+import os, json, sqlite3, asyncio, random, threading, time
 from datetime import datetime, date, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -1595,6 +1595,8 @@ async def check_notifications(app):
     Время в настройках пользователя задаётся в локальной таймзоне (USER_TIMEZONE).
     Используем pytz чтобы корректно сравнивать независимо от таймзоны сервера.
     """
+    global _last_heartbeat
+    _last_heartbeat = time.monotonic()
     if not NOTIFY_USER_ID: return
     try:
         uid = NOTIFY_USER_ID
@@ -1614,9 +1616,46 @@ async def check_notifications(app):
         print(f"Ошибка check_notifications: {e}")
 
 
+# ── WATCHDOG ───────────────────────────────────────────────────────────────
+# check_notifications обновляет heartbeat каждую минуту через APScheduler,
+# который работает в том же asyncio event loop, что и long-polling бота.
+# Если event loop зависнет (напр. сетевая ошибка Telegram оставила зависший
+# запрос без таймаута — так уведомления не приходили 4 дня в июле 2026),
+# APScheduler тоже перестаёт тикать и heartbeat не обновляется.
+# Watchdog живёт в отдельном OS-потоке и не зависит от event loop, поэтому
+# может обнаружить зависание и убить процесс — Railway (restartPolicyType
+# ON_FAILURE) поднимет контейнер заново.
+_last_heartbeat = time.monotonic()
+HEARTBEAT_TIMEOUT_SEC = 5 * 60
+
+def _watchdog_loop():
+    while True:
+        time.sleep(30)
+        stale = time.monotonic() - _last_heartbeat
+        if stale > HEARTBEAT_TIMEOUT_SEC:
+            print(f"⚠️ Watchdog: event loop завис ({stale:.0f}с без heartbeat) — перезапуск процесса", flush=True)
+            os._exit(1)
+
+async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
+    print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
+
+
 def main():
     init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .get_updates_connect_timeout(30)
+        .get_updates_read_timeout(40)
+        .get_updates_write_timeout(30)
+        .get_updates_pool_timeout(30)
+        .build()
+    )
+    app.add_error_handler(on_error)
 
     # Онбординг
     onboard_conv = ConversationHandler(
@@ -1698,9 +1737,13 @@ def main():
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
     scheduler.start()
+
+    threading.Thread(target=_watchdog_loop, daemon=True).start()
+
     print("✅ ADHD бот v5 запущен!")
     print("   Уведомления: по расписанию пользователя (check_notifications каждую минуту)")
     print(f"   Notify user ID: {NOTIFY_USER_ID}")
+    print(f"   Watchdog: перезапуск если нет heartbeat > {HEARTBEAT_TIMEOUT_SEC}с")
     app.run_polling()
 
 if __name__ == "__main__":
