@@ -775,7 +775,7 @@ async def ai_morning_boost(name, gender, focus):
         client = Anthropic(api_key=ANTHROPIC_KEY)
         gender_hint = "женского рода" if gender == 'F' else "мужского рода"
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=150,
             system=f"Ты поддерживающий коуч. Пользователь: {name}, {gender_hint}, СДВГ. Пиши по-русски, 1-2 предложения, конкретно и тепло.",
             messages=[{"role":"user","content":f"Моя главная задача сегодня: {focus}. Дай короткий мотивирующий посыл."}]
@@ -794,7 +794,7 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
         if evening_data.get("e_ach"): context += f"Достижения: {evening_data['e_ach']}\n"
         if evening_data.get("e_highlights"): context += f"Highlights: {evening_data['e_highlights']}\n"
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=200,
             system=f"Ты коуч для {name} ({gender_hint}), у которой/которого СДВГ. Анализируй день кратко и тепло. 2-3 предложения. Отмечай прогресс и дай один конкретный совет на завтра. Пиши по-русски.",
             messages=[{"role":"user","content":f"Вот мой день:\n{context}\nДай короткий анализ."}]
@@ -814,7 +814,7 @@ async def send_coach(message, text, uid):
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
         resp = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=300,
             system=f"Ты прямой коуч для {user['name']} ({gender_hint}), СДВГ. Кратко, по делу, одно действие. Максимум 2-3 предложения. Используй методы из тренинга: ABC-приоритеты, первый неподавляющий шаг, активация, СТОП. Пиши по-русски.",
             messages=[{"role":"user","content":text}]
