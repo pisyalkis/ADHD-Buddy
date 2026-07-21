@@ -164,6 +164,10 @@ def init_db():
         done INTEGER DEFAULT 0,
         created TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, date TEXT, text TEXT
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -262,11 +266,13 @@ def main_menu():
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
         [InlineKeyboardButton("📋 Мои задачи", callback_data="go_tasks"),
-         InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+         InlineKeyboardButton("📅 Карточка дня", callback_data="go_daycard")],
         [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach"),
          InlineKeyboardButton("🧠 Навык дня", callback_data="go_skill")],
-        [InlineKeyboardButton("👥 Бадди", callback_data="go_buddy"),
-         InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
+        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
+         InlineKeyboardButton("👥 Бадди", callback_data="go_buddy")],
+        [InlineKeyboardButton("🔥 Стрик", callback_data="go_streak"),
+         InlineKeyboardButton("💬 Идея", callback_data="go_feedback")],
         [InlineKeyboardButton("⚙️ Настройки уведомлений", callback_data="go_settings")],
     ])
 
@@ -298,9 +304,17 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "👋 Привет! Я твой ADHD-помощник.\n\n"
-        "Помогу начать день, не потеряться в задачах и закрыть вечер.\n\n"
-        "Как тебя зовут?"
+        "👋 Привет! Я *ADHD Buddy* — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
+        "🧠 *Чем помогу:*\n"
+        "• Преодолевать фрустрацию и прокрастинацию\n"
+        "• Строить структуру дня без лишнего давления\n"
+        "• Замечать прогресс и не терять мотивацию\n\n"
+        "🔄 *Три раза в день:*\n"
+        "☀️ *Утром* — настроиться, поставить задачи ABC\n"
+        "☕ *Днём* — напомнить о задачах, помочь если застрял(а)\n"
+        "🌙 *Вечером* — закрыть день, поставить планы на завтра\n\n"
+        "Как тебя зовут?",
+        parse_mode="Markdown"
     )
     return ONBOARD_NAME
 
@@ -392,14 +406,20 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = user["gender"]
     motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
 
-    # Показать вчерашние планы если есть
+    # Показать вчерашние планы если есть + сохранить для переноса в утро
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     ev = get_diary(uid, "evening", yesterday)
+    ctx.user_data["ev_plan_a"]  = ev.get("e_a",  "")
+    ctx.user_data["ev_plan_b1"] = ev.get("e_b1", "")
+    ctx.user_data["ev_plan_b2"] = ev.get("e_b2", "")
+    ctx.user_data["ev_plan_c1"] = ev.get("e_c1", "")
+    ctx.user_data["ev_plan_c2"] = ev.get("e_c2", "")
+    ctx.user_data["ev_plan_c3"] = ev.get("e_c3", "")
     plans_text = ""
-    if ev.get("plan_a"):
-        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {ev['plan_a']}"
-        if ev.get("plan_b1"): plans_text += f"\n🅱️ {ev['plan_b1']}"
-        if ev.get("plan_b2"): plans_text += f"\n🅱️ {ev['plan_b2']}"
+    if ev.get("e_a"):
+        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {ev['e_a']}"
+        if ev.get("e_b1"): plans_text += f"\n🅱️ {ev['e_b1']}"
+        if ev.get("e_b2"): plans_text += f"\n🅱️ {ev['e_b2']}"
 
     skill = get_daily_skill(uid)
 
@@ -441,7 +461,13 @@ async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ask_writing(q.message)
     return M_WRITING
 
-async def ask_morning_focus(message):
+async def ask_morning_focus(message, ctx=None):
+    ev_a = ctx.user_data.get("ev_plan_a", "") if ctx else ""
+    hint = f"\n\n💡 _Вчерашний план: {ev_a}_" if ev_a else ""
+    buttons = []
+    if ev_a:
+        buttons.append([InlineKeyboardButton("✅ Использовать вчерашние задачи", callback_data="use_evening_plans")])
+    buttons.append([InlineKeyboardButton("Пропустить →", callback_data="skip_m_focus")])
     await message.reply_text(
         "💪 *Теперь — задачи на день.*\n\n"
         "Система ABC: одно главное, не больше.\n\n"
@@ -452,9 +478,9 @@ async def ask_morning_focus(message):
         "🅲 *C — nice to have* (до 3)\n"
         "_Только после A и B._\n\n"
         "━━━━━━━━━━━━━━━\n"
-        "🎯 *Задача A — что главное сегодня?*",
+        f"🎯 *Задача A — что главное сегодня?*{hint}",
         parse_mode="Markdown",
-        reply_markup=skip_kb("skip_m_focus")
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 async def got_m_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -464,7 +490,7 @@ async def got_m_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def skip_m_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_focus"] = ""
+    ctx.user_data["m_focus"] = ctx.user_data.get("ev_plan_a", "")
     await ask_m_b1(q.message)
     return M_B1
 
@@ -481,7 +507,7 @@ async def got_m_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def skip_m_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_b1"] = ""
+    ctx.user_data["m_b1"] = ctx.user_data.get("ev_plan_b1", "")
     await ask_m_b2(q.message); return M_B2
 
 async def ask_m_b2(message):
@@ -493,7 +519,7 @@ async def got_m_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def skip_m_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_b2"] = ""; await ask_m_c1(q.message); return M_C1
+    ctx.user_data["m_b2"] = ctx.user_data.get("ev_plan_b2", ""); await ask_m_c1(q.message); return M_C1
 
 async def ask_m_c1(message):
     await message.reply_text(
@@ -518,9 +544,21 @@ async def got_m_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def skip_m_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data.setdefault("m_c1", "")
-    ctx.user_data.setdefault("m_c2", "")
-    ctx.user_data.setdefault("m_c3", "")
+    ctx.user_data.setdefault("m_c1", ctx.user_data.get("ev_plan_c1", ""))
+    ctx.user_data.setdefault("m_c2", ctx.user_data.get("ev_plan_c2", ""))
+    ctx.user_data.setdefault("m_c3", ctx.user_data.get("ev_plan_c3", ""))
+    await finish_morning(q.message, q.from_user.id, ctx)
+    return ConversationHandler.END
+
+async def use_evening_plans(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Использовать вчерашние вечерние задачи как утренние."""
+    q = update.callback_query; await q.answer()
+    ctx.user_data["m_focus"] = ctx.user_data.get("ev_plan_a",  "")
+    ctx.user_data["m_b1"]    = ctx.user_data.get("ev_plan_b1", "")
+    ctx.user_data["m_b2"]    = ctx.user_data.get("ev_plan_b2", "")
+    ctx.user_data["m_c1"]    = ctx.user_data.get("ev_plan_c1", "")
+    ctx.user_data["m_c2"]    = ctx.user_data.get("ev_plan_c2", "")
+    ctx.user_data["m_c3"]    = ctx.user_data.get("ev_plan_c3", "")
     await finish_morning(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
 
@@ -560,13 +598,13 @@ async def ask_child(message):
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
-    await ask_morning_focus(update.message)
+    await ask_morning_focus(update.message, ctx)
     return M_FOCUS
 
 async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message)
+    await ask_morning_focus(q.message, ctx)
     return M_FOCUS
 
 async def finish_morning(message, uid, ctx):
@@ -1015,7 +1053,61 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["coach_mode"] = False
+    ctx.user_data["awaiting_feedback"] = False
     await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
+
+async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    ctx.user_data["awaiting_feedback"] = True
+    await q.message.reply_text(
+        "💬 *Идея или обратная связь*\n\n"
+        "Что можно улучшить в боте? Пиши — постараюсь учесть 🙏",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
+    )
+
+async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    morning = get_diary(uid, "morning")
+    evening = get_diary(uid, "evening")
+
+    lines = [f"📅 *Карточка дня — {today_str()}*\n"]
+
+    if morning:
+        lines.append("☀️ *Утро*")
+        if morning.get("writing"):
+            w = morning["writing"]
+            lines.append(f"📝 _{w[:120]}{'...' if len(w)>120 else ''}_")
+        if morning.get("gratitude"): lines.append(f"🙏 {morning['gratitude']}")
+        if morning.get("child"):     lines.append(f"💛 {morning['child']}")
+        if morning.get("focus"):     lines.append(f"\n🅰️ *{morning['focus']}*")
+        if morning.get("b1"):        lines.append(f"🅱️ {morning['b1']}")
+        if morning.get("b2"):        lines.append(f"🅱️ {morning['b2']}")
+        if morning.get("c1"):        lines.append(f"🅲 {morning['c1']}")
+        if morning.get("c2"):        lines.append(f"🅲 {morning['c2']}")
+        if morning.get("c3"):        lines.append(f"🅲 {morning['c3']}")
+        lines.append("")
+
+    if evening:
+        lines.append("🌙 *Вечер*")
+        if evening.get("e_ach"):        lines.append(f"⭐ {evening['e_ach']}")
+        if evening.get("e_praise"):     lines.append(f"🎉 {evening['e_praise']}")
+        if evening.get("e_highlights"): lines.append(f"✨ {evening['e_highlights']}")
+        if evening.get("e_a"):
+            lines.append(f"\n📋 *На завтра:*")
+            lines.append(f"🅰️ {evening['e_a']}")
+            if evening.get("e_b1"): lines.append(f"🅱️ {evening['e_b1']}")
+            if evening.get("e_b2"): lines.append(f"🅱️ {evening['e_b2']}")
+
+    if not morning and not evening:
+        lines.append("_Сегодня ещё ничего не заполнено._\n\nЗаполни утро или вечер — и карточка появится здесь.")
+
+    await q.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
+    )
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1048,6 +1140,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👥 *Бадди добавлен: {bname}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
             parse_mode="Markdown", reply_markup=main_menu()
+        )
+    elif ctx.user_data.get("awaiting_feedback"):
+        ctx.user_data["awaiting_feedback"] = False
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO feedback(user_id, date, text) VALUES(?,?,?)",
+                  (uid, date.today().isoformat(), update.message.text))
+        conn.commit(); conn.close()
+        await update.message.reply_text(
+            "✅ *Спасибо за идею!* Записал — постараюсь улучшить 🙏",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
         )
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid)
@@ -1318,7 +1422,10 @@ async def morning_notification(app):
             f"_{skill['desc']}_\n\n"
             "Готов(а) начать? 👇",
             parse_mode="Markdown",
-            reply_markup=main_menu()
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("☀️ Начать утро", callback_data="go_morning")],
+                [InlineKeyboardButton("📋 Главное меню", callback_data="go_menu")],
+            ])
         )
     except Exception as e:
         print(f"Ошибка утреннего уведомления: {e}")
@@ -1335,7 +1442,10 @@ async def evening_notification(app):
             "День заканчивается. Время закрыть его и поставить планы на завтра.\n\n"
             "5 минут — и голова свободна 👇",
             parse_mode="Markdown",
-            reply_markup=main_menu()
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌙 Закрыть день", callback_data="go_evening")],
+                [InlineKeyboardButton("📋 Главное меню", callback_data="go_menu")],
+            ])
         )
     except Exception as e:
         print(f"Ошибка вечернего уведомления: {e}")
@@ -1681,7 +1791,7 @@ def main():
             M_GRATITUDE:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_gratitude),  CallbackQueryHandler(skip_m_gratitude,pattern="^skip_m_gratitude$")],
             M_CHILD:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_child),      CallbackQueryHandler(skip_m_child,    pattern="^skip_m_child$")],
             # Потом задачи ABC
-            M_FOCUS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_focus),    CallbackQueryHandler(skip_m_focus,    pattern="^skip_m_focus$")],
+            M_FOCUS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_focus),    CallbackQueryHandler(skip_m_focus,    pattern="^skip_m_focus$"), CallbackQueryHandler(use_evening_plans, pattern="^use_evening_plans$")],
             M_B1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b1),       CallbackQueryHandler(skip_m_b1,       pattern="^skip_m_b1$")],
             M_B2:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b2),       CallbackQueryHandler(skip_m_b2,       pattern="^skip_m_b2$")],
             M_C1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c1),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
@@ -1730,6 +1840,8 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
     app.add_handler(CallbackQueryHandler(midday_callback, pattern="^mid_"))
+    app.add_handler(CallbackQueryHandler(go_feedback,   pattern="^go_feedback$"))
+    app.add_handler(CallbackQueryHandler(show_day_card, pattern="^go_daycard$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Уведомления (UTC время)
