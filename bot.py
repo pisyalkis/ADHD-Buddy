@@ -35,8 +35,8 @@ DB_PATH = os.getenv("DB_PATH", "adhd.db")
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
  M_WRITING, M_GRATITUDE, M_CHILD,
- E_ACH, E_PRAISE, E_HIGHLIGHTS,
- E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(21)
+ E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
+ E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(22)
 
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
@@ -468,6 +468,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Начать разминку", callback_data="warmup_go")],
+            [InlineKeyboardButton("✅ Уже сделал(а)", callback_data="warmup_done")],
             [InlineKeyboardButton("Пропустить →", callback_data="skip_warmup")],
         ])
     )
@@ -482,6 +483,13 @@ async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
         await asyncio.sleep(20)
     await msg.edit_text("✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
+    await ask_writing(q.message)
+    return M_WRITING
+
+async def warmup_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.message.reply_text("💪 Отлично, тело уже разбужено!")
     await ask_writing(q.message)
     return M_WRITING
 
@@ -782,11 +790,60 @@ async def ask_highlights(message):
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
-    await ask_plan_a(update.message); return E_A
+    await ask_selfcare(update.message, ctx); return E_SELFCARE
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["e_highlights"] = ""; await ask_plan_a(q.message); return E_A
+    ctx.user_data["e_highlights"] = ""; await ask_selfcare(q.message, ctx); return E_SELFCARE
+
+SELFCARE_ITEMS = [
+    ("warmup",      "🏃 Зарядка / физическая активность"),
+    ("cold_water",  "💧 Холодная вода / умывание"),
+    ("breathing",   "🌬 Дыхательные техники"),
+    ("timer",       "⏱ Работа по таймеру"),
+    ("stop",        "🛑 Навык СТОП"),
+    ("first_step",  "👣 Первый маленький шаг"),
+    ("activation",  "⚡ Активация"),
+    ("rest",        "😴 Запланированный отдых"),
+    ("anchor",      "⚓ Бросить якорь"),
+    ("notes",       "📝 Бумажка гениальных мыслей"),
+    ("environment", "🏠 Изменение среды"),
+    ("willingness", "🤲 Готовность и полуулыбка"),
+    ("todolist",    "📋 Список дел / календарь"),
+]
+
+def selfcare_kb(selected):
+    rows = []
+    for key, label in SELFCARE_ITEMS:
+        mark = "✅ " if key in selected else "▫️ "
+        rows.append([InlineKeyboardButton(mark + label, callback_data=f"sc_{key}")])
+    rows.append([InlineKeyboardButton("Готово ✅", callback_data="sc_done")])
+    return InlineKeyboardMarkup(rows)
+
+async def ask_selfcare(message, ctx):
+    ctx.user_data.setdefault("e_selfcare", [])
+    await message.reply_text(
+        "🧩 *Что из этого делал(а) сегодня?*\n\n"
+        "Отметь всё, что применял(а) — это помогает быть в себе.",
+        parse_mode="Markdown",
+        reply_markup=selfcare_kb(ctx.user_data["e_selfcare"])
+    )
+
+async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("sc_", "")
+    selected = ctx.user_data.setdefault("e_selfcare", [])
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    await q.message.edit_reply_markup(reply_markup=selfcare_kb(selected))
+    return E_SELFCARE
+
+async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await ask_plan_a(q.message)
+    return E_A
 
 async def ask_plan_a(message):
     await message.reply_text(
@@ -856,6 +913,7 @@ async def finish_evening(message, uid, ctx):
     user = get_user(uid)
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
+    data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     save_diary(uid, "evening", data)
     add_streak(uid)
     streak = calc_streak(uid)
@@ -865,6 +923,13 @@ async def finish_evening(message, uid, ctx):
     if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
     if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
     if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
+
+    selfcare_summary = ""
+    if data["e_selfcare"]:
+        labels = dict(SELFCARE_ITEMS)
+        used = [labels[k] for k in data["e_selfcare"] if k in labels]
+        if used:
+            selfcare_summary = "\n\n🧩 *Сегодня применял(а):*\n" + "\n".join(used)
 
     # AI анализ дня
     ai_analysis = ""
@@ -877,6 +942,7 @@ async def finish_evening(message, uid, ctx):
         "✅ *День закрыт!*\n\n"
         f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
         f"{'📋 *Планы на завтра:*' + plans if plans else ''}"
+        f"{selfcare_summary}"
         f"{ai_analysis}\n\n"
         f"_Well done. See you tomorrow, {user['name']}_ 👋",
         parse_mode="Markdown",
@@ -926,6 +992,14 @@ async def send_coach(message, text, uid):
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
+    morning = get_diary(uid, "morning")
+    tasks = build_tasks_summary(morning)
+    tasks_hint = (
+        f"\n\nЗадачи пользователя на сегодня:\n{tasks}\n"
+        "Если из сообщения понятно, к какой задаче относится проблема — обращайся к ней прямо по названию. "
+        "Если неясно и задач больше одной — сначала кратко переспроси, к какой из них вопрос."
+        if tasks != "_задачи не заданы_" else ""
+    )
     thinking = await message.reply_text("🤖 думаю...")
     try:
         from anthropic import Anthropic
@@ -933,7 +1007,7 @@ async def send_coach(message, text, uid):
         resp = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=300,
-            system=f"Ты прямой коуч для {user['name']} ({gender_hint}), СДВГ. Кратко, по делу, одно действие. Максимум 2-3 предложения. Используй методы из тренинга: ABC-приоритеты, первый неподавляющий шаг, активация, СТОП. Пиши по-русски.",
+            system=f"Ты прямой коуч для {user['name']} ({gender_hint}), СДВГ. Кратко, по делу, одно действие. Максимум 2-3 предложения. Используй техники CBT для СДВГ: ABC-приоритеты, первый неподавляющий шаг, активация, СТОП. Пиши по-русски.{tasks_hint}",
             messages=[{"role":"user","content":text}]
         )
         await thinking.edit_text(
@@ -996,7 +1070,7 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "🧠 *Навык дня*\n\n"
         f"*{skill['name']}*\n\n"
         f"{skill['tip']}\n\n"
-        "_Источник: тренинг навыков для взрослых с СДВГ (Safren / СДВГ в квадрате)_",
+        "_Методика: когнитивно-поведенческая терапия для взрослых с СДВГ — «Mastering Your Adult ADHD» (Safren)_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
@@ -1182,6 +1256,10 @@ def build_day_card_text(uid, for_date):
             f"🅲 {evening['e_c3']}" if evening.get("e_c3") else "",
         ] if l]
         if plans: lines.append("📋 Планы на завтра:\n" + "\n".join(plans))
+        if evening.get("e_selfcare"):
+            labels = dict(SELFCARE_ITEMS)
+            used = [labels[k] for k in evening["e_selfcare"] if k in labels]
+            if used: lines.append("🧩 Применял(а):\n" + "\n".join(used))
 
     if not morning and not midday and not evening:
         lines.append("\n_Пока пусто. Заполни утро или вечер — и здесь появятся записи._")
@@ -1402,7 +1480,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_nostart":
         await q.message.reply_text(
             f"❓ *Непонятно с чего начать*\n\nЗадача: _{focus}_\n\n"
-            "Что делали на тренинге в этой ситуации:\n\n"
+            "Проверенные техники для этой ситуации:\n\n"
             "👣 *Выделить первый шаг* — одно конкретное действие. Что нужно сделать в первую очередь?\n\n"
             "🤔 *За и против* — зачем это вообще важно? Короткое напоминание себе.\n\n"
             "⚡ *Активация тела* — встань, потянись, попрыгай, умойся. Тело запускает мозг.\n\n"
@@ -1656,8 +1734,8 @@ GUIDE_SECTIONS = {
             "Когнитивно-поведенческая терапия и тренинг навыков — "
             "это доказанный метод помощи при СДВГ. Лекарства помогают мозгу, "
             "навыки учат его работать эффективнее.\n\n"
-            "Этот бот основан на программе *«Mastering Your Adult ADHD»* (Safren) "
-            "в адаптации проекта *«СДВГ в квадрате»* (Татьяна Волкова, Дарья Синицина).\n\n"
+            "Этот бот основан на программе *«Mastering Your Adult ADHD»* (Safren) — "
+            "доказанном протоколе когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
             "_Бот не заменяет врача и психотерапевта — но помогает практиковать навыки каждый день._"
         ),
         "next": "skills_groups"
@@ -1774,7 +1852,7 @@ GUIDE_SECTIONS = {
             "Помогает закрыть день: достижения → похвала → highlights → A-план на завтра. "
             "Завтрашний A-план записанный вечером — это главный лайфхак.\n\n"
             "🧠 *Навык дня*\n"
-            "Каждый день — один навык из реального тренинга по СДВГ. "
+            "Каждый день — один навык из протокола когнитивно-поведенческой терапии для СДВГ. "
             "Один навык за раз, постепенно.\n\n"
             "🤖 *AI-коуч*\n"
             "Когда застрял или отвлёкся — коуч даёт один конкретный шаг. Без лекций.\n\n"
@@ -1909,6 +1987,7 @@ def main():
         states={
             M_EXERCISE: [
                 CallbackQueryHandler(warmup_go,     pattern="^warmup_go$"),
+                CallbackQueryHandler(warmup_done,   pattern="^warmup_done$"),
                 CallbackQueryHandler(skip_warmup,   pattern="^skip_warmup$"),
             ],
             # Сначала мягкий ритуал
@@ -1934,6 +2013,7 @@ def main():
             E_ACH:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_ach),      CallbackQueryHandler(skip_e_ach,      pattern="^skip_e_ach$")],
             E_PRAISE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_praise),   CallbackQueryHandler(skip_e_praise,   pattern="^skip_e_praise$")],
             E_HIGHLIGHTS:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_highlights),CallbackQueryHandler(skip_e_highlights,pattern="^skip_e_highlights$")],
+            E_SELFCARE:  [CallbackQueryHandler(selfcare_done,  pattern="^sc_done$"), CallbackQueryHandler(toggle_selfcare, pattern="^sc_")],
             E_A:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_a),        CallbackQueryHandler(skip_e_a,        pattern="^skip_e_a$")],
             E_B1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b1),       CallbackQueryHandler(skip_e_b1,       pattern="^skip_e_b1$")],
             E_B2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b2),       CallbackQueryHandler(skip_e_b2,       pattern="^skip_e_b2$")],
