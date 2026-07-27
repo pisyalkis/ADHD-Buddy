@@ -291,10 +291,11 @@ def main_menu():
          InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
         [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
          InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
-        [InlineKeyboardButton("🧠 Навык дня", callback_data="go_skill"),
+        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
-        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
+         InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
     ])
 
 def morning_cta_kb():
@@ -1145,18 +1146,36 @@ async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_coach(q.message, prompt, q.from_user.id)
 
 # ── SKILL OF THE DAY ───────────────────────────────────────────────────────
+def skills_list_kb():
+    rows = [[InlineKeyboardButton(s["name"], callback_data=f"skill_{i}")] for i, s in enumerate(SKILLS)]
+    rows.append([InlineKeyboardButton("👥 Бадди — body doubling", callback_data="go_buddy")])
+    rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+    return InlineKeyboardMarkup(rows)
+
 async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    skill = get_daily_skill(uid)
+    daily = get_daily_skill(uid)
     await q.message.reply_text(
-        "🧠 *Навык дня*\n\n"
-        f"*{skill['name']}*\n\n"
+        "🧠 *Навыки*\n\n"
+        f"💡 *Навык дня:* {daily['name']}\n"
+        f"_{daily['desc']}_\n\n"
+        "Весь список — выбери, чтобы посмотреть подробнее:",
+        parse_mode="Markdown",
+        reply_markup=skills_list_kb()
+    )
+
+async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    idx = int(q.data.replace("skill_", ""))
+    skill = SKILLS[idx]
+    await q.message.reply_text(
+        f"🧠 *{skill['name']}*\n\n"
         f"{skill['tip']}\n\n"
         "_Методика: когнитивно-поведенческая терапия для взрослых с СДВГ — «Mastering Your Adult ADHD» (Safren)_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("👥 Бадди — ещё один навык", callback_data="go_buddy")],
+            [InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
@@ -1437,6 +1456,23 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await send_coach(update.message, update.message.text, uid)
     else:
         await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=main_menu())
+
+# ── ABOUT ──────────────────────────────────────────────────────────────────
+async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "ℹ️ *О боте*\n\n"
+        "Я — ADHD Buddy, внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью, "
+        "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
+        "☀️ *Утром* — помогаю настроиться: разминка, задачи по системе ABC, free writing, благодарность.\n"
+        "☕ *Днём* — напоминаю о задачах и спрашиваю как дела, если застрял — даю конкретную технику.\n"
+        "🌙 *Вечером* — помогаю закрыть день: что получилось, что из плана сделано, план на завтра.\n\n"
+        "Всё, что заполняешь за день, сохраняется в 🗂 *карточке дня*. "
+        "А 🧠 *Навыки* и 🤖 *Коуч* — на случай когда трудно начать или тревожно.\n\n"
+        "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
+    )
 
 # ── FEEDBACK ───────────────────────────────────────────────────────────────
 async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2117,6 +2153,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
+    app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
@@ -2129,6 +2166,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
+    app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
