@@ -293,8 +293,7 @@ def main_menu():
          InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
         [InlineKeyboardButton("🧠 Навык дня", callback_data="go_skill"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
-        [InlineKeyboardButton("👥 Бадди", callback_data="go_buddy"),
-         InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
     ])
 
@@ -1156,7 +1155,10 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{skill['tip']}\n\n"
         "_Методика: когнитивно-поведенческая терапия для взрослых с СДВГ — «Mastering Your Adult ADHD» (Safren)_",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 Бадди — ещё один навык", callback_data="go_buddy")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ])
     )
 
 # ── STREAK ─────────────────────────────────────────────────────────────────
@@ -1418,7 +1420,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         save_feedback(uid, text)
         user = get_user(uid)
-        if NOTIFY_USER_ID and NOTIFY_USER_ID != uid:
+        if NOTIFY_USER_ID:
             try:
                 await ctx.bot.send_message(
                     NOTIFY_USER_ID,
