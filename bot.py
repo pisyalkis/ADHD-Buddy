@@ -35,8 +35,8 @@ DB_PATH = os.getenv("DB_PATH", "adhd.db")
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
  M_WRITING, M_GRATITUDE, M_CHILD,
- E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
- E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(22)
+ E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
+ E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(23)
 
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
@@ -502,8 +502,10 @@ async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def keep_or_skip_kb(keep_cb, skip_cb):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Оставить как есть", callback_data=keep_cb)],
-        [InlineKeyboardButton("⏭ Пропустить", callback_data=skip_cb)],
+        [InlineKeyboardButton("🗑 Убрать", callback_data=skip_cb)],
     ])
+
+CARRYOVER_HINT = "\n\n_Или просто напиши новый вариант текстом — он заменит этот._"
 
 async def ask_morning_focus(message, ctx):
     y = ctx.user_data.get("y_plan", {})
@@ -520,7 +522,7 @@ async def ask_morning_focus(message, ctx):
     )
     if y.get("a"):
         await message.reply_text(
-            intro + f"🎯 *Задача A* — вчера ты запланировал(а):\n_{y['a']}_\n\nОставить как есть или напиши новую:",
+            intro + f"🎯 *Задача A* — вчера ты запланировал(а):\n_{y['a']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_focus", "skip_m_focus")
         )
@@ -552,7 +554,7 @@ async def ask_m_b1(message, ctx):
     y = ctx.user_data.get("y_plan", {})
     if y.get("b1"):
         await message.reply_text(
-            f"🅱️ *Задача B1* — вчера была:\n_{y['b1']}_\n\nОставить как есть или напиши новую:",
+            f"🅱️ *Задача B1* — вчера была:\n_{y['b1']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_b1", "skip_m_b1")
         )
@@ -581,7 +583,7 @@ async def ask_m_b2(message, ctx):
     y = ctx.user_data.get("y_plan", {})
     if y.get("b2"):
         await message.reply_text(
-            f"🅱️ *Задача B2* — вчера была:\n_{y['b2']}_\n\nОставить как есть или напиши новую:",
+            f"🅱️ *Задача B2* — вчера была:\n_{y['b2']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_b2", "skip_m_b2")
         )
@@ -607,7 +609,7 @@ async def ask_m_c1(message, ctx):
     if y_c:
         listed = "\n".join(f"— {p}" for p in y_c)
         await message.reply_text(
-            f"🅲 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть или напиши C1 заново:",
+            f"🅲 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_c_all", "skip_m_c_all")
         )
@@ -735,6 +737,51 @@ async def finish_morning(message, uid, ctx):
     )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
+TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
+
+def tasks_done_kb(morning, done):
+    rows = []
+    for key, icon in TASK_FIELDS:
+        text = morning.get(key)
+        if not text: continue
+        mark = "✅" if key in done else "▫️"
+        label = f"{mark} {icon} {text}"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"td_{key}")])
+    rows.append([InlineKeyboardButton("Готово ✅", callback_data="td_done")])
+    return InlineKeyboardMarkup(rows)
+
+async def ask_tasks_done(message, uid, ctx):
+    morning = get_diary(uid, "morning")
+    ctx.user_data["e_tasks_done"] = []
+    await message.reply_text(
+        "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
+        parse_mode="Markdown",
+        reply_markup=tasks_done_kb(morning, [])
+    )
+
+async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("td_", "")
+    done = ctx.user_data.setdefault("e_tasks_done", [])
+    if key in done:
+        done.remove(key)
+    else:
+        done.append(key)
+    morning = get_diary(q.from_user.id, "morning")
+    await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
+    return E_TASKS_DONE
+
+async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await ask_achievements(q.message)
+    return E_ACH
+
+async def ask_achievements(message):
+    await message.reply_text(
+        "⭐ *Achievements of the day*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
+        parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
+    )
+
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
@@ -752,11 +799,13 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     await asyncio.sleep(0.5)
-    await q.message.reply_text(
-        "⭐ *Achievements of the day*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
-    )
-    return E_ACH
+
+    if any(morning.get(key) for key, _ in TASK_FIELDS):
+        await ask_tasks_done(q.message, uid, ctx)
+        return E_TASKS_DONE
+    else:
+        await ask_achievements(q.message)
+        return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_ach"] = update.message.text
@@ -914,6 +963,7 @@ async def finish_evening(message, uid, ctx):
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
+    data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
     save_diary(uid, "evening", data)
     add_streak(uid)
     streak = calc_streak(uid)
@@ -923,6 +973,19 @@ async def finish_evening(message, uid, ctx):
     if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
     if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
     if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
+
+    tasks_summary = ""
+    morning_for_summary = get_diary(uid, "morning")
+    if any(morning_for_summary.get(k) for k, _ in TASK_FIELDS):
+        done = set(data["e_tasks_done"])
+        lines = []
+        for key, icon in TASK_FIELDS:
+            text = morning_for_summary.get(key)
+            if not text: continue
+            mark = "✅" if key in done else "▫️"
+            lines.append(f"{mark} {icon} {text}")
+        if lines:
+            tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
 
     selfcare_summary = ""
     if data["e_selfcare"]:
@@ -941,7 +1004,8 @@ async def finish_evening(message, uid, ctx):
     await message.reply_text(
         "✅ *День закрыт!*\n\n"
         f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
-        f"{'📋 *Планы на завтра:*' + plans if plans else ''}"
+        f"{tasks_summary}"
+        f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
         f"{selfcare_summary}"
         f"{ai_analysis}\n\n"
         f"_Well done. See you tomorrow, {user['name']}_ 👋",
@@ -976,6 +1040,12 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
         context = f"Утренний фокус: {morning_data.get('focus','не задан')}\n"
         if evening_data.get("e_ach"): context += f"Достижения: {evening_data['e_ach']}\n"
         if evening_data.get("e_highlights"): context += f"Highlights: {evening_data['e_highlights']}\n"
+        done = set(evening_data.get("e_tasks_done", []))
+        task_lines = [morning_data[k] for k, _ in TASK_FIELDS if morning_data.get(k)]
+        if task_lines:
+            done_lines = [morning_data[k] for k, _ in TASK_FIELDS if morning_data.get(k) and k in done]
+            context += f"Запланированные задачи: {'; '.join(task_lines)}\n"
+            context += f"Выполнено из них: {'; '.join(done_lines) if done_lines else 'ничего не отмечено выполненным'}\n"
         resp = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=200,
@@ -1226,14 +1296,13 @@ def build_day_card_text(uid, for_date):
 
     if morning:
         lines.append("\n☀️ *Утро*")
-        tasks = [l for l in [
-            f"🅰️ {morning['focus']}" if morning.get("focus") else "",
-            f"🅱️ {morning['b1']}" if morning.get("b1") else "",
-            f"🅱️ {morning['b2']}" if morning.get("b2") else "",
-            f"🅲 {morning['c1']}" if morning.get("c1") else "",
-            f"🅲 {morning['c2']}" if morning.get("c2") else "",
-            f"🅲 {morning['c3']}" if morning.get("c3") else "",
-        ] if l]
+        done = set(evening.get("e_tasks_done", []))
+        tasks = []
+        for key, icon in TASK_FIELDS:
+            text = morning.get(key)
+            if not text: continue
+            mark = "✅ " if key in done else ""
+            tasks.append(f"{mark}{icon} {text}")
         if tasks: lines.append("\n".join(tasks))
         if morning.get("writing"):   lines.append(f"📝 Free writing: _{morning['writing']}_")
         if morning.get("gratitude"): lines.append(f"🙏 Благодарность: _{morning['gratitude']}_")
@@ -2010,6 +2079,7 @@ def main():
     evening_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(evening_start, pattern="^go_evening$")],
         states={
+            E_TASKS_DONE:[CallbackQueryHandler(tasks_done_finish, pattern="^td_done$"), CallbackQueryHandler(toggle_task_done, pattern="^td_")],
             E_ACH:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_ach),      CallbackQueryHandler(skip_e_ach,      pattern="^skip_e_ach$")],
             E_PRAISE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_praise),   CallbackQueryHandler(skip_e_praise,   pattern="^skip_e_praise$")],
             E_HIGHLIGHTS:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_highlights),CallbackQueryHandler(skip_e_highlights,pattern="^skip_e_highlights$")],
