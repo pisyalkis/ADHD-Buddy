@@ -222,6 +222,21 @@ def get_diary(uid, block, for_date=None):
     conn.close()
     return json.loads(row[0]) if row else {}
 
+def get_latest_evening_plan(uid):
+    """Вчерашний вечерний дневник для переноса плана в утро.
+
+    Помимо "строго вчера" проверяем ещё и "сегодня": если человек заполнял
+    вечерний блок уже за полночь (по своему времени), запись физически
+    попадает в бакет "сегодня", а не "вчера" — и обычный "вчера"-запрос её
+    не находит, план молча пропадает. Берём непустую запись, отдавая
+    приоритет более свежей (сегодняшней), если она есть.
+    """
+    today = get_diary(uid, "evening", date.today().isoformat())
+    if today.get("e_a"):
+        return today
+    yesterday = get_diary(uid, "evening", (date.today() - timedelta(days=1)).isoformat())
+    return yesterday
+
 def save_feedback(uid, text):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -438,8 +453,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
 
     # Показать вчерашние планы если есть и сохранить их для предзаполнения задач A/B/C
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    ev = get_diary(uid, "evening", yesterday)
+    ev = get_latest_evening_plan(uid)
     y_plan = {
         "a":  ev.get("e_a", ""),  "b1": ev.get("e_b1", ""), "b2": ev.get("e_b2", ""),
         "c1": ev.get("e_c1", ""), "c2": ev.get("e_c2", ""), "c3": ev.get("e_c3", ""),
@@ -1681,8 +1695,7 @@ async def morning_notification(app):
         name = user.get("name", "")
         gender = user.get("gender", "M")
 
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        ev = get_diary(uid, "evening", yesterday)
+        ev = get_latest_evening_plan(uid)
         plan_text = ""
         if ev.get("e_a"):
             plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {ev['e_a']}"
