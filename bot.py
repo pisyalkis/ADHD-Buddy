@@ -31,6 +31,13 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
 
+# Автосброс зависших диалогов (утро/вечер/онбординг). Без таймаута человек,
+# бросивший шаг с вводом текста на середине, застревает в нём навсегда —
+# любое следующее сообщение (даже не связанное, например фидбек) будет
+# по ошибке принято за ответ на давно забытый вопрос.
+CONV_TIMEOUT_SHORT = 600   # 10 минут — онбординг (имя/пол)
+CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерний блок
+
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
@@ -2099,6 +2106,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_SHORT,
     )
 
     # Утренний flow (порядок: разминка → ритуал → задачи)
@@ -2124,6 +2132,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_LONG,
     )
 
     # Вечерний flow
@@ -2144,6 +2153,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_LONG,
     )
 
     app.add_handler(onboard_conv)
