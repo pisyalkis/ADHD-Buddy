@@ -1721,9 +1721,17 @@ async def midday_notification(app):
             return
 
         tasks = build_tasks_summary(morning)
+
+        # Адаптивная подсказка на основе паттерна пользователя
+        top_action, top_count = get_user_midday_pattern(uid, 14)
+        pattern_hint = ""
+        if top_action and top_count >= 3 and top_action in MIDDAY_PATTERN_HINTS:
+            label, tip = MIDDAY_PATTERN_HINTS[top_action]
+            pattern_hint = f"\n\n💡 _Твой частый сценарий — «{label}». {tip}._"
+
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
-            f"Твои задачи:\n{tasks}\n\nКак идут дела?",
+            f"Твои задачи:\n{tasks}\n\nКак идут дела?{pattern_hint}",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Всё по плану", callback_data="mid_ok")],
@@ -2359,8 +2367,134 @@ async def send_weekly_stats(app):
         text += f"⚡ Энергия за неделю: {strip}\n"
         if dom_label:
             text += f"   ({dom_label})\n"
-    text += "\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
+    # AI-анализ паттернов
+    ai_note = await ai_weekly_patterns(uid, stats)
+    if ai_note:
+        text += f"\n\n🤖 *Наблюдения ИИ:*\n_{ai_note}_"
+
+    text += "\n\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
     await app.bot.send_message(uid, text, parse_mode="Markdown")
+
+    # Отчёт для бадди (если задан)
+    await send_buddy_report(app)
+
+
+
+# ── БАДДИ-НАПОМИНАНИЕ ──────────────────────────────────────────────────────
+async def send_buddy_report(app):
+    """Воскресный отчёт для бадди — готовый текст на основе недели."""
+    if not NOTIFY_USER_ID: return
+    uid  = NOTIFY_USER_ID
+    user = get_user(uid)
+    buddy = user.get("buddy_name", "")
+    if not buddy: return
+
+    stats = get_weekly_stats(uid)
+    achievements = []
+    for i in range(7):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        ev = get_diary(uid, "evening", d)
+        if ev.get("e_ach"):
+            achievements.append(ev["e_ach"])
+
+    report  = f"Привет, {buddy}! Вот моя неделя:\n\n"
+    report += f"🔥 Серия: {stats['streak']} дней подряд\n"
+    report += f"✅ A-задач выполнено: {stats['a_tasks_done']} из 7\n"
+    report += f"📅 Чекинов: {stats['morning_days']}/7 утром, {stats['evening_days']}/7 вечером\n"
+    if achievements:
+        report += "\n🏆 Главное за неделю:\n"
+        for ach in achievements[:3]:
+            report += f"• {ach}\n"
+    report += "\nКак твоя неделя?"
+
+    await app.bot.send_message(
+        uid,
+        f"👥 *Отчёт для бадди — {buddy}*\n\n"
+        f"Готовый текст — скопируй и отправь:\n\n"
+        f"_{report}_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
+    )
+
+
+# ── АДАПТИВНЫЙ ЧЕКИН ───────────────────────────────────────────────────────
+def get_user_midday_pattern(uid, days=14):
+    """Самый частый midday-сценарий за последние N дней."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    action_counts: dict = {}
+    for i in range(days):
+        d = (date.today() - timedelta(days=i)).isoformat()
+        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "midday"))
+        row = c.fetchone()
+        if row:
+            action = json.loads(row[0]).get("action", "")
+            if action and action != "mid_ok":
+                action_counts[action] = action_counts.get(action, 0) + 1
+    conn.close()
+    if not action_counts: return None, 0
+    top = max(action_counts, key=action_counts.get)
+    return top, action_counts[top]
+
+
+MIDDAY_PATTERN_HINTS = {
+    "mid_nostart": ("Непонятно с чего начать", "держи наготове «Первый шаг» — разбить задачу на одно крошечное действие"),
+    "mid_scary":   ("Задача подавляет",        "держи под рукой заземление 5-4-3-2-1 — оно возвращает из тревоги в тело"),
+    "mid_waiting": ("Жду подходящего момента", "поставь таймер сразу — подходящий момент появляется только после старта"),
+    "mid_perfect": ("Перфекционизм",           "разреши себе сделать плохо — черновик лучше ничего"),
+    "mid_resist":  ("Внутреннее сопротивление","пообещай себе мини-награду прямо сейчас"),
+    "mid_time":    ("Мало времени",            "только A-задача, таймер 25 минут — один укус слона"),
+    "mid_phone":   ("Залип в телефоне",        "СТОП — положи телефон, открой нужный файл"),
+}
+
+
+# ── ИИ-АНАЛИЗ ПАТТЕРНОВ ────────────────────────────────────────────────────
+async def ai_weekly_patterns(uid, stats):
+    """AI-анализ паттернов за неделю."""
+    if not ANTHROPIC_KEY: return ""
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        user = get_user(uid)
+        gender_hint = "женского рода" if user.get("gender") == "F" else "мужского рода"
+        name = user.get("name", "")
+
+        ctx_lines = [
+            f"Утренних чекинов: {stats['morning_days']}/7",
+            f"Вечерних чекинов: {stats['evening_days']}/7",
+            f"A-задач выполнено: {stats['a_tasks_done']}/7",
+            f"Серия: {stats['streak']} дней",
+        ]
+        if stats.get("daily_energy"):
+            emojis = {"low": "🔴", "mid": "🟡", "high": "🟢"}
+            strip = "".join(emojis.get(e, "?") for e in stats["daily_energy"])
+            ctx_lines.append(f"Энергия по дням: {strip}")
+
+        top_action, top_count = get_user_midday_pattern(uid, 14)
+        if top_action and top_count >= 2:
+            ctx_lines.append(f"Частый дневной сценарий: {MIDDAY_LABELS.get(top_action, top_action)} ({top_count} раз за 2 недели)")
+
+        if stats.get("selfcare_counts"):
+            labels = dict(SELFCARE_ITEMS)
+            top3 = sorted(stats["selfcare_counts"].items(), key=lambda x: -x[1])[:3]
+            top3_str = ", ".join(f"{labels.get(k,'').split(' ',1)[-1]} ×{v}" for k, v in top3)
+            ctx_lines.append(f"Топ навыки: {top3_str}")
+
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=250,
+            system=(
+                f"Ты коуч для {name} ({gender_hint}) с СДВГ. "
+                "Анализируй данные за неделю: дай 2-3 коротких наблюдения о паттернах "
+                "и одну конкретную рекомендацию на следующую неделю. "
+                "Тон — тёплый, без осуждения. По-русски, кратко."
+            ),
+            messages=[{"role": "user", "content": "Данные:\n" + "\n".join(ctx_lines)}]
+        )
+        return resp.content[0].text.strip()
+    except Exception as e:
+        print(f"ai_weekly_patterns error: {e}")
+        return ""
 
 
 async def check_notifications(app):
