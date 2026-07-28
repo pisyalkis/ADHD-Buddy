@@ -57,7 +57,7 @@ SKILLS = [
         "name": "🔤 Приоритеты A, B, C",
         "desc": "Каждый день — 6 задач: 1 A, 2 B, 3 C. У каждой свой уровень важности.",
         "explanation": "Мозг с СДВГ любит браться за лёгкое и приятное в первую очередь — это ловушка. Система ABC заставляет сначала сделать то, что реально важно, а не то, что хочется сделать.",
-        "instructions": "Каждый день ставишь ровно 6 задач:\n🅰️ *1 задача A* — самая важная. Делаешь её первой, до всего остального.\n🅱️ *2 задачи B* — важные, хорошо бы сделать сегодня. Но только после A.\n🅲️ *3 задачи C* — менее важные. Делаешь после A и обеих B, если осталось время.\n\nБот каждое утро попросит поставить эти 6 задач, а вечером — отчитаться, что из них получилось."
+        "instructions": "Каждый день ставишь ровно 6 задач:\n🅰️ *1 задача A* — самая важная. Делаешь её первой, до всего остального.\n🅱️ *2 задачи B* — важные, хорошо бы сделать сегодня. Но только после A.\n🔵 *3 задачи C* — менее важные. Делаешь после A и обеих B, если осталось время.\n\nБот каждое утро попросит поставить эти 6 задач, а вечером — отчитаться, что из них получилось."
     },
     {
         "name": "🛑 Навык СТОП",
@@ -331,9 +331,9 @@ def build_tasks_summary(morning_data):
     if morning_data.get("focus"): lines.append(f"🅰️ {morning_data['focus']}")
     if morning_data.get("b1"):    lines.append(f"🅱️ {morning_data['b1']}")
     if morning_data.get("b2"):    lines.append(f"🅱️ {morning_data['b2']}")
-    if morning_data.get("c1"):    lines.append(f"🅲️ {morning_data['c1']}")
-    if morning_data.get("c2"):    lines.append(f"🅲️ {morning_data['c2']}")
-    if morning_data.get("c3"):    lines.append(f"🅲️ {morning_data['c3']}")
+    if morning_data.get("c1"):    lines.append(f"🔵 {morning_data['c1']}")
+    if morning_data.get("c2"):    lines.append(f"🔵 {morning_data['c2']}")
+    if morning_data.get("c3"):    lines.append(f"🔵 {morning_data['c3']}")
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
 
@@ -543,6 +543,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {y_plan['a']}"
         if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
+        if y_plan["c1"]: plans_text += f"\n🔵 {y_plan['c1']}"
+        if y_plan["c2"]: plans_text += f"\n🔵 {y_plan['c2']}"
+        if y_plan["c3"]: plans_text += f"\n🔵 {y_plan['c3']}"
 
     skill = get_daily_skill(uid)
 
@@ -611,7 +614,7 @@ async def ask_morning_focus(message, ctx):
         "_Если сделаешь только её — день прожит не зря._\n\n"
         "🅱️ *B — важные* (до 2)\n"
         "_Желательно сегодня, максимум завтра._\n\n"
-        "🅲️ *C — по возможности* (до 3)\n"
+        "🔵 *C — по возможности* (до 3)\n"
         "_Только после A и B._\n\n"
         "━━━━━━━━━━━━━━━\n"
     )
@@ -704,24 +707,24 @@ async def ask_m_c1(message, ctx):
     if y_c:
         listed = "\n".join(f"— {p}" for p in y_c)
         await message.reply_text(
-            f"🅲️ *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
+            f"🔵 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_c_all", "skip_m_c_all")
         )
     else:
         await message.reply_text(
-            "🅲️ *Задачи C* — если останется время:\n\nC1:",
+            "🔵 *Задачи C* — если останется время:\n\nC1:",
             parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all")
         )
 
 async def got_m_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c1"] = update.message.text
-    await update.message.reply_text("🅲️ *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await update.message.reply_text("🔵 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
     return M_C2
 
 async def got_m_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c2"] = update.message.text
-    await update.message.reply_text("🅲️ *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await update.message.reply_text("🔵 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
     return M_C3
 
 async def got_m_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -812,9 +815,9 @@ async def finish_morning(message, uid, ctx):
     if focus:                          tasks_text += f"\n🅰️ {focus}"
     if ctx.user_data.get("m_b1"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b1']}"
     if ctx.user_data.get("m_b2"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b2']}"
-    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🅲️ {ctx.user_data['m_c1']}"
-    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🅲️ {ctx.user_data['m_c2']}"
-    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🅲️ {ctx.user_data['m_c3']}"
+    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🔵 {ctx.user_data['m_c1']}"
+    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🔵 {ctx.user_data['m_c2']}"
+    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🔵 {ctx.user_data['m_c3']}"
 
     # AI мотивация если есть ключ
     ai_msg = ""
@@ -832,7 +835,7 @@ async def finish_morning(message, uid, ctx):
     )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
-TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲️"), ("c2", "🅲️"), ("c3", "🅲️")]
+TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🔵"), ("c2", "🔵"), ("c3", "🔵")]
 
 def tasks_done_kb(morning, done):
     rows = []
@@ -1034,16 +1037,16 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b2"] = ""; await ask_e_c1(q.message); return E_C1
 
 async def ask_e_c1(message):
-    await message.reply_text("🅲️ *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await message.reply_text("🔵 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c1"] = update.message.text
-    await update.message.reply_text("🅲️ *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🔵 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c2"] = update.message.text
-    await update.message.reply_text("🅲️ *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🔵 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1091,7 +1094,9 @@ async def finish_evening(message, uid, ctx):
     if data["e_a"]:  plans += f"\n🅰️ {data['e_a']}"
     if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
     if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
-    if data["e_c1"]: plans += f"\n🅲️ {data['e_c1']}"
+    if data["e_c1"]: plans += f"\n🔵 {data['e_c1']}"
+    if data["e_c2"]: plans += f"\n🔵 {data['e_c2']}"
+    if data["e_c3"]: plans += f"\n🔵 {data['e_c3']}"
 
     tasks_summary = ""
     morning_for_summary = get_diary(uid, "morning")
@@ -1462,9 +1467,9 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if morning.get("focus"): lines.append(f"🅰️ *{morning['focus']}*")
     if morning.get("b1"):    lines.append(f"🅱️ {morning['b1']}")
     if morning.get("b2"):    lines.append(f"🅱️ {morning['b2']}")
-    if morning.get("c1"):    lines.append(f"🅲️ {morning['c1']}")
-    if morning.get("c2"):    lines.append(f"🅲️ {morning['c2']}")
-    if morning.get("c3"):    lines.append(f"🅲️ {morning['c3']}")
+    if morning.get("c1"):    lines.append(f"🔵 {morning['c1']}")
+    if morning.get("c2"):    lines.append(f"🔵 {morning['c2']}")
+    if morning.get("c3"):    lines.append(f"🔵 {morning['c3']}")
 
     if not lines:
         text = "📋 *Задачи на сегодня*\n\n_Задачи не заданы._"
@@ -1474,7 +1479,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📋 *Задачи на сегодня*\n\n"
             f"{tasks_str}\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "🅰️ = обязательно  🅱️ = желательно  🅲️ = по возможности"
+            "🅰️ = обязательно  🅱️ = желательно  🔵 = по возможности"
         )
 
     await q.message.reply_text(
@@ -1521,9 +1526,9 @@ def build_day_card_text(uid, for_date):
             f"🅰️ {evening['e_a']}" if evening.get("e_a") else "",
             f"🅱️ {evening['e_b1']}" if evening.get("e_b1") else "",
             f"🅱️ {evening['e_b2']}" if evening.get("e_b2") else "",
-            f"🅲️ {evening['e_c1']}" if evening.get("e_c1") else "",
-            f"🅲️ {evening['e_c2']}" if evening.get("e_c2") else "",
-            f"🅲️ {evening['e_c3']}" if evening.get("e_c3") else "",
+            f"🔵 {evening['e_c1']}" if evening.get("e_c1") else "",
+            f"🔵 {evening['e_c2']}" if evening.get("e_c2") else "",
+            f"🔵 {evening['e_c3']}" if evening.get("e_c3") else "",
         ] if l]
         if plans: lines.append("📋 Планы на завтра:\n" + "\n".join(plans))
         if evening.get("e_selfcare"):
