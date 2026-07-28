@@ -1339,6 +1339,10 @@ async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "✅ Выключить" if enabled else "🔔 Включить",
                 callback_data="toggle_notif"
             )],
+            [InlineKeyboardButton(
+                "🔦 Маячок: вкл ✅" if user.get("beacon_enabled", 0) else "🔦 Маячок: выкл ❌",
+                callback_data="toggle_beacon"
+            )],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
@@ -2230,6 +2234,8 @@ def main():
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,     pattern="^toggle_notif$"))
+    app.add_handler(CallbackQueryHandler(toggle_beacon,     pattern="^toggle_beacon$"))
+    app.add_handler(CallbackQueryHandler(beacon_callback,   pattern="^beacon_(ok|dist|phone)$"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
