@@ -207,7 +207,8 @@ def init_db():
         notif_morning TEXT DEFAULT '09:00',
         notif_midday TEXT DEFAULT '13:00',
         notif_evening TEXT DEFAULT '21:00',
-        notif_enabled INTEGER DEFAULT 0
+        notif_enabled INTEGER DEFAULT 0,
+        beacon_enabled INTEGER DEFAULT 0
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS diary (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -250,7 +251,7 @@ def get_user(uid):
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
     conn.close()
-    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled"]
+    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","beacon_enabled"]
     return dict(zip(cols, row))
 
 def update_user(uid, **kwargs):
@@ -2091,6 +2092,162 @@ async def send_guide_section(message, section_id):
     )
 
 
+
+# ── МАЯЧОК ВНИМАНИЯ ────────────────────────────────────────────────────────
+_beacon_last_sent: dict = {}  # uid -> datetime of last beacon
+
+async def send_beacon_if_needed(app):
+    """Маячок внимания — напоминание проверить фокус во время рабочего дня."""
+    if not NOTIFY_USER_ID: return
+    uid = NOTIFY_USER_ID
+    user = get_user(uid)
+    if not user.get("beacon_enabled", 0): return
+    if not user.get("notif_enabled", 0): return
+
+    tz = pytz.timezone(USER_TIMEZONE)
+    now_dt = datetime.now(tz)
+
+    def parse_hm(t):
+        h, m = map(int, t.split(":"))
+        return now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+
+    work_start = parse_hm(user.get("notif_morning", "09:00")) + timedelta(minutes=30)
+    work_end   = parse_hm(user.get("notif_evening", "21:00")) - timedelta(minutes=30)
+    if not (work_start <= now_dt <= work_end): return
+
+    # Интервал 90 минут
+    last = _beacon_last_sent.get(uid)
+    if last and (now_dt - last).total_seconds() < 90 * 60: return
+
+    focus  = get_diary(uid, "morning").get("focus", "")
+    gender = user.get("gender", "M")
+    text = "🔦 *Маячок внимания*\n\n" + g(gender,
+        "Ты сейчас делаешь то, что должен?",
+        "Ты сейчас делаешь то, что должна?")
+    if focus:
+        text += f"\n\nЗадача: _{focus}_"
+
+    await app.bot.send_message(
+        uid, text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, в потоке",             callback_data="beacon_ok")],
+            [InlineKeyboardButton("😅 Немного отвлёкся(ась)",   callback_data="beacon_dist")],
+            [InlineKeyboardButton("📱 Завис(ла) в телефоне",    callback_data="beacon_phone")],
+        ])
+    )
+    _beacon_last_sent[uid] = now_dt
+
+
+async def beacon_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid  = q.from_user.id
+    user = get_user(uid)
+    action = q.data
+
+    if action == "beacon_ok":
+        await q.message.reply_text("💪 Отлично! Продолжай — ты в потоке.", parse_mode="Markdown")
+    elif action == "beacon_dist":
+        await q.message.reply_text(
+            "🛑 *Навык СТОП*\n\n"
+            "С — Стоп. Закрой лишнее.\n"
+            "Т — Шаг назад. Глубокий вдох.\n"
+            "О — Осмотрись. На чём ты был(а)?\n"
+            "П — Попытайся вернуться к задаче.\n\n"
+            "_Отвлечься — нормально. Вернуться — навык._",
+            parse_mode="Markdown"
+        )
+    elif action == "beacon_phone":
+        focus = get_diary(uid, "morning").get("focus", "")
+        text = "📱 *Поймал(а) себя — это уже победа!*\n\nПоложи телефон. Глубокий вдох.\n\n"
+        if focus:
+            text += f"Твоя задача: *{focus}*\n\n"
+        text += "_Поставь таймер на 10 минут и просто открой нужный файл._"
+        await q.message.reply_text(text, parse_mode="Markdown")
+
+
+async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid  = q.from_user.id
+    user = get_user(uid)
+    new_val = 0 if user.get("beacon_enabled", 0) else 1
+    update_user(uid, beacon_enabled=new_val)
+    status = "включён ✅" if new_val else "выключен ❌"
+    msg = f"🔦 Маячок внимания {status}\n\n"
+    msg += ("Буду напоминать каждые ~90 минут в рабочее время." if new_val else "Напоминания остановлены.")
+    await q.message.reply_text(
+        msg,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
+    )
+
+
+# ── СТАТИСТИКА ЗА НЕДЕЛЮ ──────────────────────────────────────────────────
+def get_weekly_stats(uid):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = date.today()
+    morning_days = 0
+    midday_days  = 0
+    evening_days = 0
+    a_tasks_done = 0
+    selfcare_counts: dict = {}
+
+    for i in range(7):
+        d = (today - timedelta(days=i)).isoformat()
+
+        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "morning"))
+        row = c.fetchone()
+        if row and json.loads(row[0]):
+            morning_days += 1
+
+        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "midday"))
+        if c.fetchone():
+            midday_days += 1
+
+        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "evening"))
+        row = c.fetchone()
+        if row:
+            evening_days += 1
+            ev = json.loads(row[0])
+            if "m_a" in ev.get("e_tasks_done", []):
+                a_tasks_done += 1
+            for key in ev.get("e_selfcare", []):
+                selfcare_counts[key] = selfcare_counts.get(key, 0) + 1
+
+    conn.close()
+    return {
+        "morning_days": morning_days,
+        "midday_days":  midday_days,
+        "evening_days": evening_days,
+        "a_tasks_done": a_tasks_done,
+        "selfcare_counts": selfcare_counts,
+        "streak": calc_streak(uid),
+    }
+
+
+async def send_weekly_stats(app):
+    if not NOTIFY_USER_ID: return
+    uid   = NOTIFY_USER_ID
+    stats = get_weekly_stats(uid)
+    labels = dict(SELFCARE_ITEMS)
+
+    text  = "📊 *Итоги недели*\n\n"
+    text += f"☀️ Утренних чекинов: *{stats['morning_days']}/7*\n"
+    text += f"☕ Дневных чекинов: *{stats['midday_days']}/7*\n"
+    text += f"🌙 Вечерних чекинов: *{stats['evening_days']}/7*\n"
+    text += f"✅ Дней с выполненной A-задачей: *{stats['a_tasks_done']}*\n"
+    text += f"🔥 Текущая серия: *{stats['streak']} дн.*\n"
+
+    if stats["selfcare_counts"]:
+        total = sum(stats["selfcare_counts"].values())
+        top3  = sorted(stats["selfcare_counts"].items(), key=lambda x: -x[1])[:3]
+        top_s = ", ".join(f"{labels.get(k,'').split(' ',1)[-1]} ×{v}" for k, v in top3)
+        text += f"🧩 Навыков в чек-листе: *{total}* раз\n"
+        text += f"Топ: {top_s}\n"
+
+    text += "\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
+    await app.bot.send_message(uid, text, parse_mode="Markdown")
+
+
 async def check_notifications(app):
     """Каждую минуту проверяем нужно ли слать уведомление пользователю.
 
@@ -2114,6 +2271,19 @@ async def check_notifications(app):
             await midday_notification(app)
         elif now == user.get("notif_evening", "21:00"):
             await evening_notification(app)
+
+        # Маячок внимания (каждые ~90 мин в рабочее время)
+        await send_beacon_if_needed(app)
+
+        # Воскресная статистика (за час до вечернего уведомления)
+        tz_obj = pytz.timezone(USER_TIMEZONE)
+        now_dt = datetime.now(tz_obj)
+        if now_dt.weekday() == 6:  # воскресенье
+            eve = user.get("notif_evening", "21:00")
+            eh, em = map(int, eve.split(":"))
+            stats_h = (eh - 1) % 24
+            if now == f"{stats_h:02d}:{em:02d}":
+                await send_weekly_stats(app)
     except Exception as e:
         print(f"Ошибка check_notifications: {e}")
 
