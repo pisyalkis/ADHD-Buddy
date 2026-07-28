@@ -873,7 +873,7 @@ async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_achievements(message):
     await message.reply_text(
-        "⭐ *Достижения дня*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
+        "⭐ *Достижения дня*\n\nКакие победы сегодня можно себе присвоить? Не только из списка — любые: справился(ась) с чем-то сложным, не сдался(ась), сделал(а) хоть что-то.",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
     )
 
