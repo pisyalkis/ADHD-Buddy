@@ -31,6 +31,13 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
 
+# Автосброс зависших диалогов (утро/вечер/онбординг). Без таймаута человек,
+# бросивший шаг с вводом текста на середине, застревает в нём навсегда —
+# любое следующее сообщение (даже не связанное, например фидбек) будет
+# по ошибке принято за ответ на давно забытый вопрос.
+CONV_TIMEOUT_SHORT = 600   # 10 минут — онбординг (имя/пол)
+CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерний блок
+
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
@@ -47,7 +54,7 @@ SKILLS = [
     },
     {
         "name": "🔤 Приоритеты A, B, C",
-        "desc": "1 задача A (must), 2 задачи B (should), 3 задачи C (nice to have).",
+        "desc": "1 задача A (обязательно), 2 задачи B (желательно), 3 задачи C (по возможности).",
         "tip": "Сначала A, потом B, потом C. Мозг с СДВГ любит брать лёгкое первым — это ловушка. Сделай A даже если хочется пропустить. Если сделал(а) только A — день прожит не зря."
     },
     {
@@ -346,7 +353,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "👋 Привет! Я *ADHD Buddy* — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
+        "👋 Привет! Я твой личный помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
         "🧠 *Чем помогу:*\n"
         "• Преодолевать фрустрацию и прокрастинацию\n"
         "• Строить структуру дня без лишнего давления\n"
@@ -401,7 +408,7 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "☀️☕🌙 *Как работает бот — три точки за день*\n\n"
         "*Утром* — помогаю настроиться на день:\n"
         "• Разминка (тело будит мозг)\n"
-        "• Free writing — выгрузить всё из головы\n"
+        "• Свободное письмо — выгрузить всё из головы\n"
         "• Благодарность — настрой на день\n"
         "• Задачи A, B, C — одно главное, ничего лишнего\n\n"
         "*Днём* — напоминаю о задачах и проверяю как ты:\n"
@@ -468,7 +475,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     skill = get_daily_skill(uid)
 
     await q.message.reply_text(
-        f"☀️ *Good Morning, {name}!*\n"
+        f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str()}_\n\n"
         f"_{motiv}_{plans_text}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
@@ -526,11 +533,11 @@ async def ask_morning_focus(message, ctx):
     intro = (
         "💪 *Теперь — задачи на день.*\n\n"
         "Система ABC: одно главное, не больше.\n\n"
-        "🅰️ *A — одна задача, must do*\n"
+        "🅰️ *A — одна задача, обязательно*\n"
         "_Если сделаешь только её — день прожит не зря._\n\n"
         "🅱️ *B — важные* (до 2)\n"
         "_Желательно сегодня, максимум завтра._\n\n"
-        "🅲 *C — nice to have* (до 3)\n"
+        "🅲 *C — по возможности* (до 3)\n"
         "_Только после A и B._\n\n"
         "━━━━━━━━━━━━━━━\n"
     )
@@ -667,7 +674,7 @@ async def use_m_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_writing(message):
     await message.reply_text(
-        "📝 *Free writing*\n\nВсё что есть в голове — без фильтра. Мысли, сны, тревоги, идеи.",
+        "📝 *Свободное письмо*\n\nВсё что есть в голове — без фильтра. Мысли, сны, тревоги, идеи.",
         parse_mode="Markdown", reply_markup=skip_kb("skip_m_writing")
     )
 
@@ -681,7 +688,7 @@ async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_gratitude(message):
     await message.reply_text(
-        "🙏 *Gratitude*\n\nЗа что благодарен(а) сегодня? Большое или маленькое — всё считается.",
+        "🙏 *Благодарность*\n\nЗа что благодарен(а) сегодня? Большое или маленькое — всё считается.",
         parse_mode="Markdown", reply_markup=skip_kb("skip_m_gratitude")
     )
 
@@ -792,7 +799,7 @@ async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_achievements(message):
     await message.reply_text(
-        "⭐ *Achievements of the day*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
+        "⭐ *Достижения дня*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
     )
 
@@ -806,7 +813,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
 
     await q.message.reply_text(
-        f"🌙 *It was a nice day, {user['name']}!*\n"
+        f"🌙 *Хороший был день, {user['name']}!*\n"
         f"_{today_str()}_{focus_recap}\n\n"
         f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
         "Давай закроем этот день.",
@@ -831,7 +838,7 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_praise(message):
     await message.reply_text(
-        "🎉 *Praise yourself*\n\n"
+        "🎉 *Похвали себя*\n\n"
         "Скажи себе 'молодец'. Что сегодня сделал(а) хорошо?\n"
         "_Даже маленькая победа заслуживает признания._",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_praise")
@@ -847,7 +854,7 @@ async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_highlights(message):
     await message.reply_text(
-        "✨ *Highlights of the day*\n\nЧто сегодня заставило улыбнуться? Или какой инсайт пришёл?",
+        "✨ *Яркие моменты дня*\n\nЧто сегодня заставило улыбнуться? Или какой инсайт пришёл?",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_highlights")
     )
 
@@ -910,8 +917,8 @@ async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_plan_a(message):
     await message.reply_text(
-        "📋 *Plans for tomorrow — задача A*\n\n"
-        "Самое важное на завтра. Must do.\n"
+        "📋 *Планы на завтра — задача A*\n\n"
+        "Самое важное на завтра. Обязательно сделать.\n"
         "_Утром увидишь первым._",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_a")
     )
@@ -947,7 +954,7 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b2"] = ""; await ask_e_c1(q.message); return E_C1
 
 async def ask_e_c1(message):
-    await message.reply_text("🅲 *Задача C1 (nice to have):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await message.reply_text("🅲 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c1"] = update.message.text
@@ -1022,7 +1029,7 @@ async def finish_evening(message, uid, ctx):
         f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
         f"{selfcare_summary}"
         f"{ai_analysis}\n\n"
-        f"_Well done. See you tomorrow, {user['name']}_ 👋",
+        f"_Молодец. До завтра, {user['name']}_ 👋",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
@@ -1053,7 +1060,7 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
         gender_hint = "женского рода" if gender == 'F' else "мужского рода"
         context = f"Утренний фокус: {morning_data.get('focus','не задан')}\n"
         if evening_data.get("e_ach"): context += f"Достижения: {evening_data['e_ach']}\n"
-        if evening_data.get("e_highlights"): context += f"Highlights: {evening_data['e_highlights']}\n"
+        if evening_data.get("e_highlights"): context += f"Яркие моменты: {evening_data['e_highlights']}\n"
         done = set(evening_data.get("e_tasks_done", []))
         task_lines = [morning_data[k] for k, _ in TASK_FIELDS if morning_data.get(k)]
         if task_lines:
@@ -1072,7 +1079,7 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
 async def send_coach(message, text, uid):
     """Отправить запрос AI-коучу."""
     if not ANTHROPIC_KEY:
-        await message.reply_text("⚠️ AI-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=main_menu())
+        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=main_menu())
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
@@ -1148,7 +1155,7 @@ async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── SKILL OF THE DAY ───────────────────────────────────────────────────────
 def skills_list_kb():
     rows = [[InlineKeyboardButton(s["name"], callback_data=f"skill_{i}")] for i, s in enumerate(SKILLS)]
-    rows.append([InlineKeyboardButton("👥 Бадди — body doubling", callback_data="go_buddy")])
+    rows.append([InlineKeyboardButton("👥 Бадди — совместная работа рядом", callback_data="go_buddy")])
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -1308,7 +1315,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📋 *Задачи на сегодня*\n\n"
             f"{tasks_str}\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "🅰️ = must do  🅱️ = should do  🅲 = nice to have"
+            "🅰️ = обязательно  🅱️ = желательно  🅲 = по возможности"
         )
 
     await q.message.reply_text(
@@ -1339,7 +1346,7 @@ def build_day_card_text(uid, for_date):
             mark = "✅ " if key in done else ""
             tasks.append(f"{mark}{icon} {text}")
         if tasks: lines.append("\n".join(tasks))
-        if morning.get("writing"):   lines.append(f"📝 Free writing: _{morning['writing']}_")
+        if morning.get("writing"):   lines.append(f"📝 Свободное письмо: _{morning['writing']}_")
         if morning.get("gratitude"): lines.append(f"🙏 Благодарность: _{morning['gratitude']}_")
         if morning.get("child"):     lines.append(f"💛 Себе доброе: _{morning['child']}_")
 
@@ -1350,7 +1357,7 @@ def build_day_card_text(uid, for_date):
         lines.append("\n🌙 *Вечер*")
         if evening.get("e_ach"):        lines.append(f"⭐ Достижения: _{evening['e_ach']}_")
         if evening.get("e_praise"):     lines.append(f"🎉 Похвала себе: _{evening['e_praise']}_")
-        if evening.get("e_highlights"): lines.append(f"✨ Highlights: _{evening['e_highlights']}_")
+        if evening.get("e_highlights"): lines.append(f"✨ Яркие моменты: _{evening['e_highlights']}_")
         plans = [l for l in [
             f"🅰️ {evening['e_a']}" if evening.get("e_a") else "",
             f"🅱️ {evening['e_b1']}" if evening.get("e_b1") else "",
@@ -1462,9 +1469,9 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await q.message.reply_text(
         "ℹ️ *О боте*\n\n"
-        "Я — ADHD Buddy, внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью, "
+        "Я — твой помощник, внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью, "
         "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
-        "☀️ *Утром* — помогаю настроиться: разминка, задачи по системе ABC, free writing, благодарность.\n"
+        "☀️ *Утром* — помогаю настроиться: разминка, задачи по системе ABC, свободное письмо, благодарность.\n"
         "☕ *Днём* — напоминаю о задачах и спрашиваю как дела, если застрял — даю конкретную технику.\n"
         "🌙 *Вечером* — помогаю закрыть день: что получилось, что из плана сделано, план на завтра.\n\n"
         "Всё, что заполняешь за день, сохраняется в 🗂 *карточке дня*. "
@@ -1493,9 +1500,9 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     buddy = user.get("buddy_name","")
     buddy_tip = (
-        "🔵 *Body doubling* — просто работайте рядом (видеозвонок, кафе). "
+        "🔵 *Совместная работа рядом* — просто работайте рядом (видеозвонок, кафе). "
         "Мозг с СДВГ активируется от присутствия другого человека — даже без слов.\n\n"
-        "🟣 *Accountability buddy* — утром говоришь другу свой A-план, вечером отчитываешься. "
+        "🟣 *Партнёр по ответственности* — утром говоришь другу свой A-план, вечером отчитываешься. "
         "Внешняя ответственность работает там, где внутренняя не справляется."
     )
     text = f"👥 *Бадди при СДВГ*\n\n{buddy_tip}\n\n"
@@ -1529,7 +1536,7 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"👥 *Шаблон для {buddy}:*\n\n"
         f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Можно просто видеозвонок с тишиной.»_\n\n"
-        "Скопируй и отправь! Body doubling работает даже онлайн.",
+        "Скопируй и отправь! Совместная работа рядом работает даже онлайн.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
@@ -1619,7 +1626,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🤲 *Ладони готовности* — расслабь лицо, ладони вверх, приступи\n\n"
             "🖐 *5 чувств* — 5 предметов, 4 ощущения, 3 звука — вернись в тело\n\n"
             "💧 *Успокой себя* — холодная вода, дыхание, аптечка самоуспокоения\n\n"
-            "👥 *Поговори с бадди* — body doubling работает даже без слов\n\n"
+            "👥 *Поговори с бадди* — совместная работа рядом работает даже без слов\n\n"
             "⏱ *Таймер на 2 минуты* — только начать. После старта обычно легче.",
             parse_mode="Markdown", reply_markup=back_kb
         )
@@ -1717,7 +1724,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "👥 *Бадди-режим!*\n\n"
                 f"Напиши {buddy} прямо сейчас:\n\n"
                 f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Даже просто видеозвонок с тишиной.»_\n\n"
-                "Body doubling работает даже без слов и с выключенной камерой.",
+                "Совместная работа рядом работает даже без слов и с выключенной камерой.",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
             )
@@ -1882,9 +1889,9 @@ GUIDE_SECTIONS = {
             "Рабочее место, устранение отвлекающих факторов, место для важных вещей. "
             "Среда работает за нас, а не против нас.\n\n"
             "👥 *6. Бадди и поддержка*\n"
-            "Body doubling, accountability buddy, работа с группой. "
+            "Совместная работа рядом, партнёр по ответственности, работа с группой. "
             "Социальное присутствие активирует мозг с СДВГ.\n\n"
-            "_Все эти навыки есть в разделе 🧠 Навык дня — по одному каждый день._"
+            "_Все эти навыки есть в разделе 🧠 Навыки — весь список сразу, открывай любой._"
         ),
         "next": "problems"
     },
@@ -1940,7 +1947,7 @@ GUIDE_SECTIONS = {
             "Списки дел, календарь, напоминания — всё что снимает нагрузку с рабочей памяти. "
             "Мозг не должен помнить — он должен делать.\n\n"
             "🔤 *Приоритеты ABC*\n"
-            "Одна задача A (must do), две B (should do), три C (nice to have). "
+            "Одна задача A (обязательно), две B (желательно), три C (по возможности). "
             "Сначала A — всегда.\n\n"
             "⚡ *Активация тела*\n"
             "Движение, холодная вода, музыка — физическое состояние напрямую влияет на способность начать.\n\n"
@@ -1963,18 +1970,18 @@ GUIDE_SECTIONS = {
             "🤖 *Как помогает этот бот*\n\n"
             "Бот — это внешняя система поддержки для мозга с СДВГ.\n\n"
             "☀️ *Утром*\n"
-            "Напоминает начать день со структуры: разминка → задачи ABC → free writing → благодарность. "
+            "Напоминает начать день со структуры: разминка → задачи ABC → свободное письмо → благодарность. "
             "Утром мозг ещё не готов принимать решения — поэтому A-план лучше ставить накануне вечером.\n\n"
             "☕ *Днём*\n"
             "Дневной чекин в выбранное тобой время. Показывает задачи на день и спрашивает как дела. "
             "Если застрял — даёт конкретные инструменты под твою ситуацию.\n\n"
             "🌙 *Вечером*\n"
-            "Помогает закрыть день: достижения → похвала → highlights → A-план на завтра. "
+            "Помогает закрыть день: достижения → похвала → яркие моменты → A-план на завтра. "
             "Завтрашний A-план записанный вечером — это главный лайфхак.\n\n"
-            "🧠 *Навык дня*\n"
-            "Каждый день — один навык из протокола когнитивно-поведенческой терапии для СДВГ. "
-            "Один навык за раз, постепенно.\n\n"
-            "🤖 *AI-коуч*\n"
+            "🧠 *Навыки*\n"
+            "Список из 13 навыков когнитивно-поведенческой терапии для СДВГ плюс бадди — "
+            "открывай любой, наверху подсвечен навык дня.\n\n"
+            "🤖 *ИИ-коуч*\n"
             "Когда застрял или отвлёкся — коуч даёт один конкретный шаг. Без лекций.\n\n"
             "*Главный принцип:*\n"
             "_Бот не делает за тебя — он напоминает, направляет и поддерживает. "
@@ -2099,6 +2106,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_SHORT,
     )
 
     # Утренний flow (порядок: разминка → ритуал → задачи)
@@ -2124,6 +2132,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_LONG,
     )
 
     # Вечерний flow
@@ -2144,6 +2153,7 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
+        conversation_timeout=CONV_TIMEOUT_LONG,
     )
 
     app.add_handler(onboard_conv)
