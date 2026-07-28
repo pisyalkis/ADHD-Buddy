@@ -2287,6 +2287,7 @@ def get_weekly_stats(uid):
     a_tasks_done = 0
     selfcare_counts: dict = {}
     energy_counts:   dict = {}
+    daily_energy:    list = []
 
     for i in range(7):
         d = (today - timedelta(days=i)).isoformat()
@@ -2309,6 +2310,10 @@ def get_weekly_stats(uid):
                 a_tasks_done += 1
             for key in ev.get("e_selfcare", []):
                 selfcare_counts[key] = selfcare_counts.get(key, 0) + 1
+            energy = ev.get("e_energy", "")
+            if energy:
+                energy_counts[energy] = energy_counts.get(energy, 0) + 1
+                daily_energy.append(energy)
 
     conn.close()
     return {
@@ -2317,6 +2322,8 @@ def get_weekly_stats(uid):
         "evening_days": evening_days,
         "a_tasks_done": a_tasks_done,
         "selfcare_counts": selfcare_counts,
+        "energy_counts":   energy_counts,
+        "daily_energy":    list(reversed(daily_energy)),
         "streak": calc_streak(uid),
     }
 
@@ -2341,12 +2348,17 @@ async def send_weekly_stats(app):
         text += f"🧩 Навыков в чек-листе: *{total}* раз\n"
         text += f"Топ: {top_s}\n"
 
-    ec = stats.get("energy_counts", {})
-    if ec:
-        emojis  = {"low": "🔴", "mid": "🟡", "high": "🟢"}
-        labels_e = {"low": "низкая", "mid": "средняя", "high": "высокая"}
-        energy_str = ", ".join(f"{emojis[k]} {labels_e[k]} ×{v}" for k, v in ec.items())
-        text += f"⚡ Энергия: {energy_str}\n"
+    daily_e = stats.get("daily_energy", [])
+    if daily_e:
+        emojis = {"low": "🔴", "mid": "🟡", "high": "🟢"}
+        strip  = "".join(emojis.get(e, "⬜") for e in daily_e)
+        ec = stats.get("energy_counts", {})
+        dominant = max(ec, key=ec.get) if ec else ""
+        labels_d = {"low": "в основном тяжело", "mid": "в среднем темпе", "high": "в ресурсе"}
+        dom_label = labels_d.get(dominant, "")
+        text += f"⚡ Энергия за неделю: {strip}\n"
+        if dom_label:
+            text += f"   ({dom_label})\n"
     text += "\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
     await app.bot.send_message(uid, text, parse_mode="Markdown")
 
