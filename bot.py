@@ -43,7 +43,7 @@ CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерн�
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
  M_WRITING, M_GRATITUDE, M_CHILD,
  E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
- E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(23)
+ E_A, E_B1, E_B2, E_C1, E_C2, E_C3, E_ENERGY) = range(24)
 
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
@@ -351,6 +351,7 @@ def main_menu():
         [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
+        [InlineKeyboardButton("😫 Краш-режим", callback_data="go_crash")],
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
          InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
     ])
@@ -371,9 +372,30 @@ def today_str():
     return datetime.now().strftime("%d %B %Y")
 
 def get_daily_skill(uid):
-    """Возвращает навык дня — меняется каждый день."""
-    today = date.today().isoformat()
-    idx = hash(today + str(uid)) % len(SKILLS)
+    """Навык дня идёт по кругу, приоритет — реже всего отмечавшимся за 30 дней."""
+    today = date.today()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Ключи selfcare для каждого индекса SKILLS (None = нет selfcare-пункта)
+    selfcare_keys = [
+        "todolist", None, "stop", "first_step", "activation", "rest", "anchor",
+        "timer", "notes", "cold_water", "breathing", "environment", "willingness",
+        "pros_cons", "decisions", "beacons", "first_aid", "grounding", "reinforce",
+    ]
+    counts = {i: 0 for i in range(len(SKILLS))}
+    for offset in range(30):
+        d = (today - timedelta(days=offset)).isoformat()
+        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "evening"))
+        row = c.fetchone()
+        if row:
+            used = json.loads(row[0]).get("e_selfcare", [])
+            for i, key in enumerate(selfcare_keys):
+                if key and key in used:
+                    counts[i] += 1
+    conn.close()
+    min_count  = min(counts.values())
+    candidates = [i for i, cnt in counts.items() if cnt == min_count]
+    idx = candidates[today.toordinal() % len(candidates)]
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
@@ -1026,14 +1048,31 @@ async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c3"] = update.message.text
-    await finish_evening(update.message, update.effective_user.id, ctx)
-    return ConversationHandler.END
+    await ask_energy(update.message)
+    return E_ENERGY
 
 async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data.setdefault("e_c1", "")
     ctx.user_data.setdefault("e_c2", "")
     ctx.user_data.setdefault("e_c3", "")
+    await ask_energy(q.message)
+    return E_ENERGY
+
+async def ask_energy(message):
+    await message.reply_text(
+        "⚡ *Последний вопрос — уровень энергии сегодня:*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔴 Низкий — еле дотянул(а)", callback_data="energy_low")],
+            [InlineKeyboardButton("🟡 Средний — так себе",       callback_data="energy_mid")],
+            [InlineKeyboardButton("🟢 Высокий — в ресурсе",      callback_data="energy_high")],
+        ])
+    )
+
+async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    ctx.user_data["e_energy"] = q.data.replace("energy_", "")
     await finish_evening(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
 
@@ -1043,6 +1082,7 @@ async def finish_evening(message, uid, ctx):
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
+    data["e_energy"]     = ctx.user_data.get("e_energy", "")
     save_diary(uid, "evening", data)
     add_streak(uid)
     streak = calc_streak(uid)
@@ -1090,6 +1130,62 @@ async def finish_evening(message, uid, ctx):
         f"_Молодец. До завтра, {user['name']}_ 👋",
         parse_mode="Markdown",
         reply_markup=main_menu()
+    )
+
+
+# ── КРАШ-РЕЖИМ ─────────────────────────────────────────────────────────────
+async def go_crash(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    user = get_user(q.from_user.id)
+    name = user.get("name", "")
+    await q.message.reply_text(
+        f"😫 *Краш-режим, {name}*\n\n"
+        "Сейчас не нужно ничего решать.\n"
+        "Три маленьких шага — и станет чуть легче.\n\n"
+        "Шаг 1 из 3: выпей воды 💧",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Выпил(а)", callback_data="crash_2")],
+            [InlineKeyboardButton("◀️ Меню",     callback_data="go_menu")],
+        ])
+    )
+
+async def crash_step2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "Шаг 2 из 3: три глубоких вдоха 🌬\n\n"
+        "Вдох 4 счёта — выдох 8 счётов.\n"
+        "Повтори три раза. Прямо сейчас.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Вдохнул(а)", callback_data="crash_3")],
+        ])
+    )
+
+async def crash_step3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    focus = get_diary(q.from_user.id, "morning").get("focus", "")
+    if focus:
+        hint = f"Например: *{focus}* — что самый маленький первый шаг?"
+    else:
+        hint = "Открой список задач и найди самое простое действие."
+    await q.message.reply_text(
+        "Шаг 3 из 3: одно действие — самое маленькое 👣\n\n"
+        f"{hint}\n\n"
+        "_Не весь слон. Только один укус._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Начинаю",        callback_data="crash_ok")],
+            [InlineKeyboardButton("🤖 Помоги выбрать", callback_data="go_coach")],
+        ])
+    )
+
+async def crash_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    gender = get_user(q.from_user.id).get("gender", "M")
+    await q.message.reply_text(
+        g(gender, "Молодец. Ты справляешься. 💪", "Молодец. Ты справляешься. 💪"),
+        parse_mode="Markdown", reply_markup=main_menu()
     )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
@@ -2190,6 +2286,7 @@ def get_weekly_stats(uid):
     evening_days = 0
     a_tasks_done = 0
     selfcare_counts: dict = {}
+    energy_counts:   dict = {}
 
     for i in range(7):
         d = (today - timedelta(days=i)).isoformat()
@@ -2244,6 +2341,12 @@ async def send_weekly_stats(app):
         text += f"🧩 Навыков в чек-листе: *{total}* раз\n"
         text += f"Топ: {top_s}\n"
 
+    ec = stats.get("energy_counts", {})
+    if ec:
+        emojis  = {"low": "🔴", "mid": "🟡", "high": "🟢"}
+        labels_e = {"low": "низкая", "mid": "средняя", "high": "высокая"}
+        energy_str = ", ".join(f"{emojis[k]} {labels_e[k]} ×{v}" for k, v in ec.items())
+        text += f"⚡ Энергия: {energy_str}\n"
     text += "\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
     await app.bot.send_message(uid, text, parse_mode="Markdown")
 
@@ -2382,6 +2485,7 @@ def main():
             E_C1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c1),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
             E_C2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c2),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
             E_C3:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c3),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
+            E_ENERGY:    [CallbackQueryHandler(got_energy, pattern="^energy_(low|mid|high)$")],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
@@ -2406,6 +2510,10 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_notif,     pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon,     pattern="^toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(beacon_callback,   pattern="^beacon_(ok|dist|phone)$"))
+    app.add_handler(CallbackQueryHandler(go_crash,    pattern="^go_crash$"))
+    app.add_handler(CallbackQueryHandler(crash_step2, pattern="^crash_2$"))
+    app.add_handler(CallbackQueryHandler(crash_step3, pattern="^crash_3$"))
+    app.add_handler(CallbackQueryHandler(crash_ok,    pattern="^crash_ok$"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
