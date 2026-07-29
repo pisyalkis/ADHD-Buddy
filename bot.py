@@ -233,6 +233,7 @@ def init_db():
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
         ("notif_enabled", "0"),
+        ("beacon_enabled", "0"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -2586,9 +2587,18 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
     checkins = {r[0]: r[1] for r in rows}
 
-    beacons = cur.execute("SELECT COUNT(*) FROM users WHERE beacon_enabled=1").fetchone()[0]
-    buddies  = cur.execute("SELECT COUNT(*) FROM users WHERE buddy_name IS NOT NULL AND buddy_name != ''").fetchone()[0]
-    notifs   = cur.execute("SELECT COUNT(*) FROM users WHERE notif_enabled=1").fetchone()[0]
+    try:
+        beacons = cur.execute("SELECT COUNT(*) FROM users WHERE beacon_enabled=1").fetchone()[0]
+    except Exception:
+        beacons = "н/д"
+    try:
+        buddies = cur.execute("SELECT COUNT(*) FROM users WHERE buddy_name IS NOT NULL AND buddy_name != ''").fetchone()[0]
+    except Exception:
+        buddies = "н/д"
+    try:
+        notifs = cur.execute("SELECT COUNT(*) FROM users WHERE notif_enabled=1").fetchone()[0]
+    except Exception:
+        notifs = "н/д"
 
     try:
         new7 = cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,)).fetchone()[0]
