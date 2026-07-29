@@ -2566,6 +2566,56 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
 
 
+async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+
+    total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    active7  = cur.execute("SELECT COUNT(DISTINCT uid) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
+    active30 = cur.execute("SELECT COUNT(DISTINCT uid) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
+
+    rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
+    checkins = {r[0]: r[1] for r in rows}
+
+    beacons = cur.execute("SELECT COUNT(*) FROM users WHERE beacon_enabled=1").fetchone()[0]
+    buddies  = cur.execute("SELECT COUNT(*) FROM users WHERE buddy_name IS NOT NULL AND buddy_name != ''").fetchone()[0]
+    notifs   = cur.execute("SELECT COUNT(*) FROM users WHERE notif_enabled=1").fetchone()[0]
+
+    try:
+        new7 = cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,)).fetchone()[0]
+        new7_text = f"Новых за 7д: *{new7}*\n"
+    except Exception:
+        new7_text = ""
+
+    con.close()
+
+    text = (
+        "📊 *Статистика бота*\n\n"
+        f"👥 Всего пользователей: *{total}*\n"
+        f"{new7_text}"
+        f"🔥 Активных за 7д: *{active7}*\n"
+        f"📅 Активных за 30д: *{active30}*\n\n"
+        f"*Чекины за 7 дней:*\n"
+        f"☀️ Утро: *{checkins.get('morning', 0)}*\n"
+        f"🌤 День: *{checkins.get('midday', 0)}*\n"
+        f"🌙 Вечер: *{checkins.get('evening', 0)}*\n\n"
+        f"*Функции:*\n"
+        f"🔔 Уведомления вкл: *{notifs}*\n"
+        f"📍 Маячок вкл: *{beacons}*\n"
+        f"🤝 Бадди указан: *{buddies}*"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 def main():
     init_db()
     app = (
@@ -2674,6 +2724,7 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
     app.add_handler(CallbackQueryHandler(midday_callback, pattern="^mid_"))
+    app.add_handler(CommandHandler('admin', admin_stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Уведомления (UTC время)
