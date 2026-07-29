@@ -2738,7 +2738,7 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
     app.add_handler(CallbackQueryHandler(midday_callback, pattern="^mid_"))
-    app.add_handler(CommandHandler('admin', admin_stats))
+    app.add_handler(CommandHandler('admin', admin_stats), group=-1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Уведомления (UTC время)
