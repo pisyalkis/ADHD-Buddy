@@ -2744,6 +2744,131 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 
+async def send_auto_report(app):
+    """Авто-отчёт метрик каждые 3 дня для владельца бота."""
+    if not NOTIFY_USER_ID:
+        return
+    try:
+        import json as _json
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+
+        week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        three_ago = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+        total   = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        active7 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
+        active3 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (three_ago,)).fetchone()[0]
+
+        rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
+        checkins = {r[0]: r[1] for r in rows}
+        avg_checks = round(sum(checkins.values()) / active7, 1) if active7 else 0
+
+        try:
+            older = cur.execute("SELECT COUNT(DISTINCT user_id) FROM users WHERE created_at < ?", (week_ago,)).fetchone()[0]
+            retained = cur.execute(
+                "SELECT COUNT(DISTINCT u.user_id) FROM users u "
+                "JOIN diary d ON u.user_id=d.user_id "
+                "WHERE u.created_at < ? AND d.date >= ?", (week_ago, week_ago)
+            ).fetchone()[0]
+            d7 = round(retained / older * 100) if older else None
+        except Exception:
+            d7 = None
+        d7_text = str(d7) + "%" if d7 is not None else "н/д"
+
+        try:
+            st = cur.execute("SELECT streak FROM users WHERE streak > 0").fetchall()
+            avg_streak = round(sum(r[0] for r in st) / len(st), 1) if st else 0
+            max_streak = max((r[0] for r in st), default=0)
+        except Exception:
+            avg_streak = max_streak = 0
+
+        energy = {"low": 0, "mid": 0, "high": 0}
+        for (d,) in cur.execute("SELECT data FROM diary WHERE block='evening' AND date >= ?", (week_ago,)).fetchall():
+            try:
+                e = _json.loads(d).get("e_energy", "")
+                if e in energy:
+                    energy[e] += 1
+            except Exception:
+                pass
+
+        mid_counts = {}
+        for (d,) in cur.execute("SELECT data FROM diary WHERE block='midday' AND date >= ?", (week_ago,)).fetchall():
+            try:
+                a = _json.loads(d).get("action", "")
+                if a:
+                    mid_counts[a] = mid_counts.get(a, 0) + 1
+            except Exception:
+                pass
+        mid_labels = {
+            "mid_ok": "Всё идёт", "mid_nostart": "Не начал(а)", "mid_scary": "Страшно",
+            "mid_waiting": "Жду момента", "mid_perfect": "Перфекционизм",
+            "mid_resist": "Сопротивление", "mid_time": "Нет времени", "mid_phone": "Завис в телефоне",
+        }
+        top_mid = max(mid_counts, key=mid_counts.get) if mid_counts else None
+        top_mid_label = mid_labels.get(top_mid, top_mid) if top_mid else "—"
+        con.close()
+
+        alerts = []
+        if d7 is not None and d7 < 15:
+            alerts.append("⚠️ D7 Retention ниже 15% — люди не возвращаются")
+        if avg_checks < 5 and active7 > 0:
+            alerts.append("⚠️ Мало чекинов/чел — низкая вовлечённость")
+        if active7 > 0 and active3 < active7 * 0.4:
+            alerts.append("⚠️ Активность падает — за 3д меньше 40% от недельных")
+        e_total = sum(energy.values())
+        if e_total > 0 and energy["low"] / e_total > 0.5:
+            alerts.append("⚠️ Больше половины вечеров с низкой энергией")
+        alert_text = ("\n\n*🚨 Сигналы:*\n" + "\n".join(alerts)) if alerts else "\n\n✅ Критических сигналов нет"
+
+        ai_text = ""
+        if ANTHROPIC_KEY and active7 > 0:
+            try:
+                import anthropic as _ant
+                client = _ant.Anthropic(api_key=ANTHROPIC_KEY)
+                stats_str = (
+                    "Пользователей " + str(total) + ", активных 7д " + str(active7) +
+                    ", за 3д " + str(active3) + ". D7: " + d7_text +
+                    ". Чекины: утро " + str(checkins.get("morning", 0)) +
+                    ", день " + str(checkins.get("midday", 0)) +
+                    ", вечер " + str(checkins.get("evening", 0)) +
+                    ". Avg " + str(avg_checks) + " чекинов/чел. Стрик avg " + str(avg_streak) +
+                    "д. Топ боль: " + top_mid_label +
+                    ". Энергия: тяжело " + str(energy["low"]) +
+                    ", норм " + str(energy["mid"]) + ", ресурс " + str(energy["high"]) + "."
+                )
+                resp = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": (
+                        "Ты аналитик ADHD-продукта. Цель: помочь взрослым с СДВГ выработать структуру дня. "
+                        "Метрики успеха: D7>20%, avg чекинов>7/нед. " + stats_str +
+                        " Дай 2-3 наблюдения и 1 рекомендацию. Кратко, на русском."
+                    )}]
+                )
+                ai_text = "\n\n🤖 *ИИ-анализ:*\n" + resp.content[0].text
+            except Exception:
+                pass
+
+        m = checkins.get
+        report = (
+            "*📊 Авто-отчёт ADHD Buddy* _" + datetime.now().strftime("%d.%m.%Y") + "_\n\n" +
+            "👥 Пользователей: *" + str(total) + "* (активных 7д: *" + str(active7) + "*)\n" +
+            "📈 D7 Retention: *" + d7_text + "*\n" +
+            "🔥 Avg стрик: *" + str(avg_streak) + "д*, макс: *" + str(max_streak) + "д*\n\n" +
+            "📋 Чекины за 7д: ☀️ *" + str(m("morning", 0)) + "*  🌤 *" + str(m("midday", 0)) +
+            "*  🌙 *" + str(m("evening", 0)) + "*  _(avg " + str(avg_checks) + "/чел)_\n\n" +
+            "⚡ Энергия: 🔴" + str(energy["low"]) + " 🟡" + str(energy["mid"]) + " 🟢" + str(energy["high"]) + "\n" +
+            "🎯 Топ боль дня: *" + top_mid_label + "*" +
+            alert_text + ai_text
+        )
+        await app.bot.send_message(NOTIFY_USER_ID, report, parse_mode="Markdown")
+    except Exception as e:
+        try:
+            await app.bot.send_message(NOTIFY_USER_ID, "Ошибка авто-отчёта: " + str(e))
+        except Exception:
+            pass
+
 def main():
     init_db()
     app = (
@@ -2859,6 +2984,7 @@ def main():
     scheduler = AsyncIOScheduler()
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
+    scheduler.add_job(send_auto_report, 'cron', day='*/3', hour=9, minute=0, args=[app])
     scheduler.start()
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
