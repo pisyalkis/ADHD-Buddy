@@ -1566,7 +1566,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(
         f"🍅 *Фокус-режим*\n\n"
-        f"Запускаю таймер — бот напишет когда время выйдет.\n"
+        f"📝 *Перед стартом:* возьми листок бумаги и положи рядом.\n"
+        f"Это «бумажка гениальных мыслей» — когда во время работы придёт посторонняя идея или мысль, просто запиши её и сразу возвращайся к задаче. Не нужно ничего обдумывать прямо сейчас. Так мозг отпускает мысль и не тратит силы держать её в голове.\n\n"
         f"На сколько минут работаем?{task_hint}{stats_hint}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
@@ -1608,7 +1609,6 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"🍅 *Таймер запущен на {minutes} мин*\n\n"
         f"Конец в *{end_str}*.{task_hint}\n\n"
-        f"📝 Возьми листок бумаги рядом — если во время работы придёт посторонняя мысль, просто запиши её и возвращайся. Не надо её обдумывать сейчас.\n\n"
         f"Удачи — не отвлекайся 🔕\n"
         f"_Я напишу когда время выйдет._",
         parse_mode="Markdown",
