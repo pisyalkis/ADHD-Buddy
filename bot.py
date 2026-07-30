@@ -1570,9 +1570,14 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"На сколько минут работаем?{task_hint}{stats_hint}",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("5 мин", callback_data="focus_start_5"),
+             InlineKeyboardButton("10 мин", callback_data="focus_start_10"),
+             InlineKeyboardButton("15 мин", callback_data="focus_start_15")],
             [InlineKeyboardButton("25 мин", callback_data="focus_start_25"),
-             InlineKeyboardButton("45 мин", callback_data="focus_start_45"),
-             InlineKeyboardButton("60 мин", callback_data="focus_start_60")],
+             InlineKeyboardButton("30 мин", callback_data="focus_start_30"),
+             InlineKeyboardButton("45 мин", callback_data="focus_start_45")],
+            [InlineKeyboardButton("60 мин", callback_data="focus_start_60"),
+             InlineKeyboardButton("90 мин", callback_data="focus_start_90")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
