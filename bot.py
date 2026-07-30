@@ -2585,8 +2585,8 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        active7  = cur.execute("SELECT COUNT(DISTINCT uid) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
-        active30 = cur.execute("SELECT COUNT(DISTINCT uid) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
+        active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
+        active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
         rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
         checkins = {r[0]: r[1] for r in rows}
 
