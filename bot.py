@@ -43,7 +43,7 @@ CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерн�
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
  M_WRITING, M_GRATITUDE, M_CHILD,
  E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
- E_A, E_B1, E_B2, E_C1, E_C2, E_C3, E_ENERGY) = range(24)
+ E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(23)
 
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
@@ -57,7 +57,7 @@ SKILLS = [
         "name": "🔤 Приоритеты A, B, C",
         "desc": "Каждый день — 6 задач: 1 A, 2 B, 3 C. У каждой свой уровень важности.",
         "explanation": "Мозг с СДВГ любит браться за лёгкое и приятное в первую очередь — это ловушка. Система ABC заставляет сначала сделать то, что реально важно, а не то, что хочется сделать.",
-        "instructions": "Каждый день ставишь ровно 6 задач:\n🅰️ *1 задача A* — самая важная. Делаешь её первой, до всего остального.\n🅱️ *2 задачи B* — важные, хорошо бы сделать сегодня. Но только после A.\n🔵 *3 задачи C* — менее важные. Делаешь после A и обеих B, если осталось время.\n\nБот каждое утро попросит поставить эти 6 задач, а вечером — отчитаться, что из них получилось."
+        "instructions": "Каждый день ставишь ровно 6 задач:\n🅰️ *1 задача A* — самая важная. Делаешь её первой, до всего остального.\n🅱️ *2 задачи B* — важные, хорошо бы сделать сегодня. Но только после A.\n🅲 *3 задачи C* — менее важные. Делаешь после A и обеих B, если осталось время.\n\nБот каждое утро попросит поставить эти 6 задач, а вечером — отчитаться, что из них получилось."
     },
     {
         "name": "🛑 Навык СТОП",
@@ -129,37 +129,37 @@ SKILLS = [
         "name": "⚖️ За и против",
         "desc": "Инструмент для выхода из прокрастинации и принятия решений.",
         "explanation": "Прокрастинация — это избегание неприятных переживаний. «За и против» делает невидимые выгоды и потери откладывания видимыми, после чего мозгу проще сделать выбор в пользу действия.",
-        "instructions": "Возьми лист и заполни 4 клетки:\n🔴 Плюсы откладывания (краткосрочные + долгосрочные)\n🔴 Минусы откладывания (краткосрочные + долгосрочные)\nПотом те же 4 клетки для «приступить сейчас».\n\nПосле этого обычно видно, почему прокрастинация невыгодна. Тот же метод работает для любых жизненных решений — когда не знаешь что выбрать.\n\n_Время на таблицу точно меньше, чем время прокрастинации задачи._\n\n_Бот предлагает «За и против» в дневном чекине при «Непонятно с чего начать» (коротко вспомни зачем вообще важна эта задача) и при «Жду подходящего момента» (напомни себе ЗАЧЕМ начинать, а не ждать). Вечером есть отдельный пункт в чек-листе._"
+        "instructions": "Возьми лист и заполни 4 клетки:\n🔴 Плюсы откладывания (краткосрочные + долгосрочные)\n🔴 Минусы откладывания (краткосрочные + долгосрочные)\nПотом те же 4 клетки для «приступить сейчас».\n\nПосле этого обычно видно, почему прокрастинация невыгодна. Тот же метод работает для любых жизненных решений — когда не знаешь что выбрать.\n\n_Время на таблицу точно меньше, чем время прокрастинации задачи._"
     },
     {
         "name": "🎯 Выбор из множества решений",
         "desc": "Таблица когда вариантов слишком много или ни один не идеален.",
         "explanation": "Когда вариантов много, мозг с СДВГ зависает — слишком много всего нужно удержать одновременно. Таблица переносит работу из головы на бумагу и даёт ощущение ясности.",
-        "instructions": "1. Сформулируй проблему в 1-2 предложениях.\n2. Выпиши ВСЕ возможные решения, даже нереалистичные.\n3. Для каждого — плюсы и минусы (краткосрочные и долгосрочные).\n4. Оцени каждый плюс и минус от 1 до 10 по важности.\n5. Для каждого варианта: сумма плюсов минус сумма минусов = итог.\n\nВыбери вариант с наибольшим итогом. Метод не гарантирует идеальный ответ — но помогает выбрать оптимальный и наконец начать действовать.\n\n_Этот навык бот не предлагает в дневном чекине — используй его самостоятельно, когда завис(ла) из-за большого выбора. Вечером в чек-листе можно отметить, если применял(а)._"
+        "instructions": "1. Сформулируй проблему в 1-2 предложениях.\n2. Выпиши ВСЕ возможные решения, даже нереалистичные.\n3. Для каждого — плюсы и минусы (краткосрочные и долгосрочные).\n4. Оцени каждый плюс и минус от 1 до 10 по важности.\n5. Для каждого варианта: сумма плюсов минус сумма минусов = итог.\n\nВыбери вариант с наибольшим итогом. Метод не гарантирует идеальный ответ — но помогает выбрать оптимальный и наконец начать действовать."
     },
     {
         "name": "🔦 Маячки внимания",
         "desc": "Физические напоминалки, которые возвращают тебя к задаче.",
         "explanation": "При СДВГ внутренняя система внимания работает нестабильно. Маячки — это внешняя система, которая работает даже когда внутренняя спит.",
-        "instructions": "Поставь стикеры или наклейки там где обычно отвлекаешься: на телефоне, мониторе, холодильнике, окне. Каждый раз видя маячок — задай вопрос: «Я делаю то что должен(а), или отвлёкся(ась)?». Если отвлёкся(ась) — вернись к задаче без самокритики.\n\nРаботают и будильники-напоминания в телефоне во время рабочего блока — с вопросом «а не фигней ли я занимаюсь?».\n\nМаячками могут быть любые фигурки, игрушки, плакаты — любой предмет который ты замечаешь.\n\n_Бот предлагает маячки в дневном чекине при «Внутреннем сопротивлении» — в паре с таймером: 25 минут работы + стикер на видном месте как внешний сторож внимания. Вечером есть отдельный пункт в чек-листе._"
+        "instructions": "Поставь стикеры или наклейки там где обычно отвлекаешься: на телефоне, мониторе, холодильнике, окне. Каждый раз видя маячок — задай вопрос: «Я делаю то что должен(а), или отвлёкся(ась)?». Если отвлёкся(ась) — вернись к задаче без самокритики.\n\nРаботают и будильники-напоминания в телефоне во время рабочего блока — с вопросом «а не фигней ли я занимаюсь?».\n\nМаячками могут быть любые фигурки, игрушки, плакаты — любой предмет который ты замечаешь."
     },
     {
         "name": "🧰 Аптечка самоуспокоения",
         "desc": "Коробка с вещами для снижения перевозбуждения — маст хэв при СДВГ.",
         "explanation": "Перевозбуждение — частое состояние при СДВГ. Когда мы в нём, сложно что-то делать. Физические сенсорные предметы помогают быстро снизить возбуждение без усилий воли.",
-        "instructions": "Собери небольшую коробку с предметами которые тебя успокаивают: мягкий плед, маска для глаз, наушники, ароматические масла или свечи, антистресс-игрушки, любимые конфеты, фото близких.\n\nДержи на виду рядом с рабочим местом — если надо искать, не вспомнишь.\n\nКогда использовать: когда сложно начать задачу, как перерыв между делами, когда эмоции зашкаливают, перед сном. Даже 5 минут с маской на глазах — это уже восстановление нервной системы.\n\n_Бот предлагает аптечку в дневном чекине при «Задача подавляет/пугает» — как способ успокоить себя перед тем как приступить. Вечером есть отдельный пункт в чек-листе._"
+        "instructions": "Собери небольшую коробку с предметами которые тебя успокаивают: мягкий плед, маска для глаз, наушники, ароматические масла или свечи, антистресс-игрушки, любимые конфеты, фото близких.\n\nДержи на виду рядом с рабочим местом — если надо искать, не вспомнишь.\n\nКогда использовать: когда сложно начать задачу, как перерыв между делами, когда эмоции зашкаливают, перед сном. Даже 5 минут с маской на глазах — это уже восстановление нервной системы."
     },
     {
         "name": "👁 Техника заземления 5-4-3-2-1",
         "desc": "Возвращение в настоящий момент через 5 органов чувств.",
         "explanation": "Тревога и эмоциональный шторм уводят внимание в мысли. Переключение на конкретные физические ощущения возвращает мозг в реальность и снижает перевозбуждение.",
-        "instructions": "Используй при тревоге, потере фокуса или эмоциональном шторме. Последовательно:\n👁 5 предметов которые видишь\n✋ 4 вещи которые можешь потрогать (потрогай их)\n👂 3 звука которые слышишь\n👃 2 запаха (или вспомни 2 любимых)\n👅 1 вкус во рту\n\nЭто не убирает стресс — но возвращает тебя в реальность. Можно делать незаметно в любом месте: на работе, в транспорте, на встрече.\n\n_Бот предлагает заземление в дневном чекине при «Задача подавляет/пугает» (вернись в тело и снизь тревогу перед началом) и при «Жду подходящего момента» (вернись в настоящее из ожидания). Вечером есть отдельный пункт в чек-листе._"
+        "instructions": "Используй при тревоге, потере фокуса или эмоциональном шторме. Последовательно:\n👁 5 предметов которые видишь\n✋ 4 вещи которые можешь потрогать (потрогай их)\n👂 3 звука которые слышишь\n👃 2 запаха (или вспомни 2 любимых)\n👅 1 вкус во рту\n\nЭто не убирает стресс — но возвращает тебя в реальность. Можно делать незаметно в любом месте: на работе, в транспорте, на встрече."
     },
     {
         "name": "🏆 Подкрепление",
         "desc": "Хвалить себя за навыки и сделанные дела — не каприз, а необходимость.",
         "explanation": "Мозг с СДВГ плохо получает дофамин от долгосрочных целей. Без маленьких наград за маленькие шаги мотивация быстро кончается. Подкрепление — это буквально топливо для следующего шага.",
-        "instructions": "Подкреплять важно за применение навыка — не только за результат.\n\nЧто работает:\n• Сказать себе вслух «Молодец, [имя]!»\n• Сделать победный жест\n• Поставить галочку в трекере или завести банку с монетками\n• Записать в список сделанного\n• Рассказать кому-то\n• Сделать намеренную паузу: вдох-выдох, «я сделал(а) это»\n\nЗаметить сделанное — это уже результат. Главное взять паузу и отметить.\n\n_Бот напоминает о подкреплении в дневном чекине при «Внутреннем сопротивлении» (обещай себе награду за выполнение) и при «Боюсь сделать плохо» (похвали за попытку, не только за результат). Вечерний блок бота — это подкрепление в чистом виде: сначала достижения и похвала, и только потом планы на завтра._"
+        "instructions": "Подкреплять важно за применение навыка — не только за результат.\n\nЧто работает:\n• Сказать себе вслух «Молодец, [имя]!»\n• Сделать победный жест\n• Поставить галочку в трекере или завести банку с монетками\n• Записать в список сделанного\n• Рассказать кому-то\n• Сделать намеренную паузу: вдох-выдох, «я сделал(а) это»\n\nЗаметить сделанное — это уже результат. Главное взять паузу и отметить."
     },
 ]
 
@@ -207,8 +207,7 @@ def init_db():
         notif_morning TEXT DEFAULT '09:00',
         notif_midday TEXT DEFAULT '13:00',
         notif_evening TEXT DEFAULT '21:00',
-        notif_enabled INTEGER DEFAULT 0,
-        beacon_enabled INTEGER DEFAULT 0
+        notif_enabled INTEGER DEFAULT 0
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS diary (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -233,7 +232,11 @@ def init_db():
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
         ("notif_enabled", "0"),
-        ("beacon_enabled", "0"),
+        ("focus_active", "0"),
+        ("focus_end_time", "''"),
+        ("focus_duration", "0"),
+        ("focus_minutes_today", "0"),
+        ("focus_date", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -252,8 +255,8 @@ def get_user(uid):
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
     conn.close()
-    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","beacon_enabled"]
-    return dict(zip(cols, row))
+    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","focus_active","focus_end_time","focus_duration","focus_minutes_today","focus_date"]
+    return dict(zip(cols, row[:len(cols)]))
 
 def update_user(uid, **kwargs):
     conn = sqlite3.connect(DB_PATH)
@@ -332,9 +335,9 @@ def build_tasks_summary(morning_data):
     if morning_data.get("focus"): lines.append(f"🅰️ {morning_data['focus']}")
     if morning_data.get("b1"):    lines.append(f"🅱️ {morning_data['b1']}")
     if morning_data.get("b2"):    lines.append(f"🅱️ {morning_data['b2']}")
-    if morning_data.get("c1"):    lines.append(f"🔵 {morning_data['c1']}")
-    if morning_data.get("c2"):    lines.append(f"🔵 {morning_data['c2']}")
-    if morning_data.get("c3"):    lines.append(f"🔵 {morning_data['c3']}")
+    if morning_data.get("c1"):    lines.append(f"🅲 {morning_data['c1']}")
+    if morning_data.get("c2"):    lines.append(f"🅲 {morning_data['c2']}")
+    if morning_data.get("c3"):    lines.append(f"🅲 {morning_data['c3']}")
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
 
@@ -345,14 +348,14 @@ def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("📋 Мои задачи", callback_data="go_tasks"),
-         InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+        [InlineKeyboardButton("🍅 Фокус", callback_data="go_focus"),
+         InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
         [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
          InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
         [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
-        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
-        [InlineKeyboardButton("😫 Краш-режим", callback_data="go_crash")],
+        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard"),
+         InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
          InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
     ])
@@ -373,30 +376,9 @@ def today_str():
     return datetime.now().strftime("%d %B %Y")
 
 def get_daily_skill(uid):
-    """Навык дня идёт по кругу, приоритет — реже всего отмечавшимся за 30 дней."""
-    today = date.today()
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    # Ключи selfcare для каждого индекса SKILLS (None = нет selfcare-пункта)
-    selfcare_keys = [
-        "todolist", None, "stop", "first_step", "activation", "rest", "anchor",
-        "timer", "notes", "cold_water", "breathing", "environment", "willingness",
-        "pros_cons", "decisions", "beacons", "first_aid", "grounding", "reinforce",
-    ]
-    counts = {i: 0 for i in range(len(SKILLS))}
-    for offset in range(30):
-        d = (today - timedelta(days=offset)).isoformat()
-        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "evening"))
-        row = c.fetchone()
-        if row:
-            used = json.loads(row[0]).get("e_selfcare", [])
-            for i, key in enumerate(selfcare_keys):
-                if key and key in used:
-                    counts[i] += 1
-    conn.close()
-    min_count  = min(counts.values())
-    candidates = [i for i, cnt in counts.items() if cnt == min_count]
-    idx = candidates[today.toordinal() % len(candidates)]
+    """Возвращает навык дня — меняется каждый день."""
+    today = date.today().isoformat()
+    idx = hash(today + str(uid)) % len(SKILLS)
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
@@ -427,14 +409,14 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "👋 Привет! Я твой личный помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
-        "🧠 *Чем помогу:*\n"
-        "• Преодолевать фрустрацию и прокрастинацию\n"
-        "• Строить структуру дня без лишнего давления\n"
-        "• Замечать прогресс и не терять мотивацию\n\n"
         "🔄 *Три раза в день:*\n"
         "☀️ *Утром* — настроиться, поставить задачи ABC\n"
         "☕ *Днём* — напомнить о задачах, помочь если застрял(а)\n"
         "🌙 *Вечером* — закрыть день, поставить планы на завтра\n\n"
+        "🍅 *Фокус-режим* — запускаешь таймер (25, 45 или 60 минут), бот пишет когда время вышло. "
+        "Считает сколько минут в фокусе за день.\n\n"
+        "🤖 *Коуч* — техники на случай прокрастинации, перегруза, отвлечения.\n"
+        "🧠 *Навыки СДВГ* — практики из DBT-тренинга.\n\n"
         "Как тебя зовут?",
         parse_mode="Markdown"
     )
@@ -544,9 +526,6 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {y_plan['a']}"
         if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
-        if y_plan["c1"]: plans_text += f"\n🔵 {y_plan['c1']}"
-        if y_plan["c2"]: plans_text += f"\n🔵 {y_plan['c2']}"
-        if y_plan["c3"]: plans_text += f"\n🔵 {y_plan['c3']}"
 
     skill = get_daily_skill(uid)
 
@@ -615,7 +594,7 @@ async def ask_morning_focus(message, ctx):
         "_Если сделаешь только её — день прожит не зря._\n\n"
         "🅱️ *B — важные* (до 2)\n"
         "_Желательно сегодня, максимум завтра._\n\n"
-        "🔵 *C — по возможности* (до 3)\n"
+        "🅲 *C — по возможности* (до 3)\n"
         "_Только после A и B._\n\n"
         "━━━━━━━━━━━━━━━\n"
     )
@@ -708,24 +687,24 @@ async def ask_m_c1(message, ctx):
     if y_c:
         listed = "\n".join(f"— {p}" for p in y_c)
         await message.reply_text(
-            f"🔵 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
+            f"🅲 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_c_all", "skip_m_c_all")
         )
     else:
         await message.reply_text(
-            "🔵 *Задачи C* — если останется время:\n\nC1:",
+            "🅲 *Задачи C* — если останется время:\n\nC1:",
             parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all")
         )
 
 async def got_m_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c1"] = update.message.text
-    await update.message.reply_text("🔵 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
     return M_C2
 
 async def got_m_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c2"] = update.message.text
-    await update.message.reply_text("🔵 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
     return M_C3
 
 async def got_m_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -816,9 +795,9 @@ async def finish_morning(message, uid, ctx):
     if focus:                          tasks_text += f"\n🅰️ {focus}"
     if ctx.user_data.get("m_b1"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b1']}"
     if ctx.user_data.get("m_b2"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b2']}"
-    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🔵 {ctx.user_data['m_c1']}"
-    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🔵 {ctx.user_data['m_c2']}"
-    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🔵 {ctx.user_data['m_c3']}"
+    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🅲 {ctx.user_data['m_c1']}"
+    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🅲 {ctx.user_data['m_c2']}"
+    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🅲 {ctx.user_data['m_c3']}"
 
     # AI мотивация если есть ключ
     ai_msg = ""
@@ -836,7 +815,7 @@ async def finish_morning(message, uid, ctx):
     )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
-TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🔵"), ("c2", "🔵"), ("c3", "🔵")]
+TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
 
 def tasks_done_kb(morning, done):
     rows = []
@@ -877,7 +856,7 @@ async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_achievements(message):
     await message.reply_text(
-        "⭐ *Достижения дня*\n\nКакие победы сегодня можно себе присвоить? Не только из списка — любые: справился(ась) с чем-то сложным, не сдался(ась), сделал(а) хоть что-то.",
+        "⭐ *Достижения дня*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
         parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
     )
 
@@ -958,12 +937,6 @@ SELFCARE_ITEMS = [
     ("environment", "🏠 Изменение среды"),
     ("willingness", "🤲 Готовность и полуулыбка"),
     ("todolist",    "📋 Список дел / календарь"),
-    ("pros_cons",   "⚖️ За и против"),
-    ("decisions",   "🎯 Выбор из множества решений"),
-    ("beacons",     "🔦 Маячки внимания"),
-    ("first_aid",   "🧰 Аптечка самоуспокоения"),
-    ("grounding",   "👁 Заземление 5-4-3-2-1"),
-    ("reinforce",   "🏆 Подкрепление"),
 ]
 
 def selfcare_kb(selected):
@@ -1038,45 +1011,28 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b2"] = ""; await ask_e_c1(q.message); return E_C1
 
 async def ask_e_c1(message):
-    await message.reply_text("🔵 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await message.reply_text("🅲 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c1"] = update.message.text
-    await update.message.reply_text("🔵 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c2"] = update.message.text
-    await update.message.reply_text("🔵 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c3"] = update.message.text
-    await ask_energy(update.message)
-    return E_ENERGY
+    await finish_evening(update.message, update.effective_user.id, ctx)
+    return ConversationHandler.END
 
 async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data.setdefault("e_c1", "")
     ctx.user_data.setdefault("e_c2", "")
     ctx.user_data.setdefault("e_c3", "")
-    await ask_energy(q.message)
-    return E_ENERGY
-
-async def ask_energy(message):
-    await message.reply_text(
-        "⚡ *Последний вопрос — уровень энергии сегодня:*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔴 Низкий — еле дотянул(а)", callback_data="energy_low")],
-            [InlineKeyboardButton("🟡 Средний — так себе",       callback_data="energy_mid")],
-            [InlineKeyboardButton("🟢 Высокий — в ресурсе",      callback_data="energy_high")],
-        ])
-    )
-
-async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    ctx.user_data["e_energy"] = q.data.replace("energy_", "")
     await finish_evening(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
 
@@ -1086,7 +1042,6 @@ async def finish_evening(message, uid, ctx):
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
-    data["e_energy"]     = ctx.user_data.get("e_energy", "")
     save_diary(uid, "evening", data)
     add_streak(uid)
     streak = calc_streak(uid)
@@ -1095,9 +1050,7 @@ async def finish_evening(message, uid, ctx):
     if data["e_a"]:  plans += f"\n🅰️ {data['e_a']}"
     if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
     if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
-    if data["e_c1"]: plans += f"\n🔵 {data['e_c1']}"
-    if data["e_c2"]: plans += f"\n🔵 {data['e_c2']}"
-    if data["e_c3"]: plans += f"\n🔵 {data['e_c3']}"
+    if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
 
     tasks_summary = ""
     morning_for_summary = get_diary(uid, "morning")
@@ -1136,62 +1089,6 @@ async def finish_evening(message, uid, ctx):
         f"_Молодец. До завтра, {user['name']}_ 👋",
         parse_mode="Markdown",
         reply_markup=main_menu()
-    )
-
-
-# ── КРАШ-РЕЖИМ ─────────────────────────────────────────────────────────────
-async def go_crash(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    user = get_user(q.from_user.id)
-    name = user.get("name", "")
-    await q.message.reply_text(
-        f"😫 *Краш-режим, {name}*\n\n"
-        "Сейчас не нужно ничего решать.\n"
-        "Три маленьких шага — и станет чуть легче.\n\n"
-        "Шаг 1 из 3: выпей воды 💧",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Выпил(а)", callback_data="crash_2")],
-            [InlineKeyboardButton("◀️ Меню",     callback_data="go_menu")],
-        ])
-    )
-
-async def crash_step2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    await q.message.reply_text(
-        "Шаг 2 из 3: три глубоких вдоха 🌬\n\n"
-        "Вдох 4 счёта — выдох 8 счётов.\n"
-        "Повтори три раза. Прямо сейчас.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Вдохнул(а)", callback_data="crash_3")],
-        ])
-    )
-
-async def crash_step3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    focus = get_diary(q.from_user.id, "morning").get("focus", "")
-    if focus:
-        hint = f"Например: *{focus}* — что самый маленький первый шаг?"
-    else:
-        hint = "Открой список задач и найди самое простое действие."
-    await q.message.reply_text(
-        "Шаг 3 из 3: одно действие — самое маленькое 👣\n\n"
-        f"{hint}\n\n"
-        "_Не весь слон. Только один укус._",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Начинаю",        callback_data="crash_ok")],
-            [InlineKeyboardButton("🤖 Помоги выбрать", callback_data="go_coach")],
-        ])
-    )
-
-async def crash_ok(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    gender = get_user(q.from_user.id).get("gender", "M")
-    await q.message.reply_text(
-        g(gender, "Молодец. Ты справляешься. 💪", "Молодец. Ты справляешься. 💪"),
-        parse_mode="Markdown", reply_markup=main_menu()
     )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
@@ -1442,10 +1339,6 @@ async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "✅ Выключить" if enabled else "🔔 Включить",
                 callback_data="toggle_notif"
             )],
-            [InlineKeyboardButton(
-                "🔦 Маячок: вкл ✅" if user.get("beacon_enabled", 0) else "🔦 Маячок: выкл ❌",
-                callback_data="toggle_beacon"
-            )],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
@@ -1468,9 +1361,9 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if morning.get("focus"): lines.append(f"🅰️ *{morning['focus']}*")
     if morning.get("b1"):    lines.append(f"🅱️ {morning['b1']}")
     if morning.get("b2"):    lines.append(f"🅱️ {morning['b2']}")
-    if morning.get("c1"):    lines.append(f"🔵 {morning['c1']}")
-    if morning.get("c2"):    lines.append(f"🔵 {morning['c2']}")
-    if morning.get("c3"):    lines.append(f"🔵 {morning['c3']}")
+    if morning.get("c1"):    lines.append(f"🅲 {morning['c1']}")
+    if morning.get("c2"):    lines.append(f"🅲 {morning['c2']}")
+    if morning.get("c3"):    lines.append(f"🅲 {morning['c3']}")
 
     if not lines:
         text = "📋 *Задачи на сегодня*\n\n_Задачи не заданы._"
@@ -1480,7 +1373,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📋 *Задачи на сегодня*\n\n"
             f"{tasks_str}\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "🅰️ = обязательно  🅱️ = желательно  🔵 = по возможности"
+            "🅰️ = обязательно  🅱️ = желательно  🅲 = по возможности"
         )
 
     await q.message.reply_text(
@@ -1527,9 +1420,9 @@ def build_day_card_text(uid, for_date):
             f"🅰️ {evening['e_a']}" if evening.get("e_a") else "",
             f"🅱️ {evening['e_b1']}" if evening.get("e_b1") else "",
             f"🅱️ {evening['e_b2']}" if evening.get("e_b2") else "",
-            f"🔵 {evening['e_c1']}" if evening.get("e_c1") else "",
-            f"🔵 {evening['e_c2']}" if evening.get("e_c2") else "",
-            f"🔵 {evening['e_c3']}" if evening.get("e_c3") else "",
+            f"🅲 {evening['e_c1']}" if evening.get("e_c1") else "",
+            f"🅲 {evening['e_c2']}" if evening.get("e_c2") else "",
+            f"🅲 {evening['e_c3']}" if evening.get("e_c3") else "",
         ] if l]
         if plans: lines.append("📋 Планы на завтра:\n" + "\n".join(plans))
         if evening.get("e_selfcare"):
@@ -1630,17 +1523,165 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=main_menu())
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
+# ── FOCUS / POMODORO ───────────────────────────────────────────────────────
+async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+
+    # Если таймер уже активен — показать статус
+    if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+        try:
+            end_dt = datetime.fromisoformat(user["focus_end_time"])
+            tz = pytz.timezone(USER_TIMEZONE)
+            now = datetime.now(tz)
+            end_dt_tz = end_dt.astimezone(tz)
+            remaining = int((end_dt_tz - now).total_seconds() / 60)
+            if remaining > 0:
+                await q.message.reply_text(
+                    f"🍅 *Таймер уже идёт!*\n\n"
+                    f"Осталось примерно *{remaining} мин* (до {end_dt_tz.strftime('%H:%M')}).\n\n"
+                    f"Не отвлекайся — я напишу когда время выйдет 🔕",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⏹ Остановить", callback_data="focus_stop")],
+                        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+                    ])
+                )
+                return
+        except Exception:
+            pass
+
+    # Считаем сколько минут в фокусе сегодня
+    today = date.today().isoformat()
+    mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
+
+    morning_data = get_diary(uid, "morning")
+    task_hint = ""
+    if morning_data.get("focus"):
+        task_hint = f"\n\n📌 Твоя задача дня: *{morning_data['focus']}*"
+
+    stats_hint = f"\n\n⏱ Сегодня в фокусе: *{mins_today} мин*" if mins_today > 0 else ""
+
+    await q.message.reply_text(
+        f"🍅 *Фокус-режим*\n\n"
+        f"Запускаю таймер — бот напишет когда время выйдет.\n"
+        f"На сколько минут работаем?{task_hint}{stats_hint}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("25 мин", callback_data="focus_start_25"),
+             InlineKeyboardButton("45 мин", callback_data="focus_start_45"),
+             InlineKeyboardButton("60 мин", callback_data="focus_start_60")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ])
+    )
+
+async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    minutes = int(q.data.split("_")[2])
+
+    tz = pytz.timezone(USER_TIMEZONE)
+    now = datetime.now(tz)
+    end_dt = now + timedelta(minutes=minutes)
+
+    # Обновляем DB
+    update_user(uid,
+        focus_active=1,
+        focus_end_time=end_dt.isoformat(),
+        focus_duration=minutes,
+    )
+
+    end_str = end_dt.strftime("%H:%M")
+
+    morning_data = get_diary(uid, "morning")
+    task_hint = ""
+    if morning_data.get("focus"):
+        task_hint = f"\n📌 Задача: *{morning_data['focus']}*"
+
+    await q.message.reply_text(
+        f"🍅 *Таймер запущен на {minutes} мин*\n\n"
+        f"Конец в *{end_str}*.{task_hint}\n\n"
+        f"Удачи — не отвлекайся 🔕\n"
+        f"_Я напишу когда время выйдет._",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏹ Остановить", callback_data="focus_stop")],
+        ])
+    )
+
+async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+
+    # Считаем сколько успел(а) отработать
+    worked_mins = 0
+    if user.get("focus_end_time") and str(user.get("focus_active","0")) == "1":
+        try:
+            tz = pytz.timezone(USER_TIMEZONE)
+            end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+            # Мы не знаем когда стартовали, но знаем end_time и оставшееся время
+            # Проще: просто не добавляем минуты при досрочной остановке
+            pass
+        except Exception:
+            pass
+
+    update_user(uid, focus_active=0, focus_end_time="")
+
+    today = date.today().isoformat()
+    mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
+
+    await q.message.reply_text(
+        f"⏹ *Таймер остановлен*\n\n"
+        f"Сегодня в фокусе: *{mins_today} мин*\n\n"
+        f"Хочешь начать новый раунд?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🍅 Новый раунд", callback_data="go_focus")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ])
+    )
+
+async def send_focus_end(app, uid: int, minutes: int):
+    """Вызывается из check_notifications когда таймер истёк."""
+    try:
+        user = get_user(uid)
+        today = date.today().isoformat()
+        prev_mins = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
+        new_mins = prev_mins + minutes
+        update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
+
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"⏰ *Время вышло! {minutes} минут в фокусе — отлично!*\n\n"
+                f"Сделай перерыв 5 минут: встань, выпей воды, отойди от экрана.\n\n"
+                f"Сегодня в фокусе: *{new_mins} мин* 🎯"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍅 Ещё раунд", callback_data="go_focus")],
+                [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="go_menu")],
+            ])
+        )
+    except Exception as e:
+        print(f"Ошибка send_focus_end: {e}")
+
+
 async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await q.message.reply_text(
         "ℹ️ *О боте*\n\n"
-        "Я — твой помощник, внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью, "
+        "Я — внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью — "
         "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
-        "☀️ *Утром* — помогаю настроиться: разминка, задачи по системе ABC, свободное письмо, благодарность.\n"
-        "☕ *Днём* — напоминаю о задачах и спрашиваю как дела, если застрял — даю конкретную технику.\n"
-        "🌙 *Вечером* — помогаю закрыть день: что получилось, что из плана сделано, план на завтра.\n\n"
-        "Всё, что заполняешь за день, сохраняется в 🗂 *карточке дня*. "
-        "А 🧠 *Навыки* и 🤖 *Коуч* — на случай когда трудно начать или тревожно.\n\n"
+        "☀️ *Утром* — разминка, задачи по системе ABC, настрой на день.\n"
+        "☕ *Днём* — напоминаю о задачах, если застрял — даю конкретную технику.\n"
+        "🌙 *Вечером* — что получилось, что из плана сделано, план на завтра.\n\n"
+        "🍅 *Фокус-режим* — таймер на 25, 45 или 60 минут прямо в боте. "
+        "Запускаешь когда нужно поработать без отвлечений — бот напишет когда время вышло и предложит перерыв. "
+        "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
+        "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
         "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
@@ -1727,17 +1768,9 @@ async def midday_notification(app):
             return
 
         tasks = build_tasks_summary(morning)
-
-        # Адаптивная подсказка на основе паттерна пользователя
-        top_action, top_count = get_user_midday_pattern(uid, 14)
-        pattern_hint = ""
-        if top_action and top_count >= 3 and top_action in MIDDAY_PATTERN_HINTS:
-            label, tip = MIDDAY_PATTERN_HINTS[top_action]
-            pattern_hint = f"\n\n💡 _Твой частый сценарий — «{label}». {tip}._"
-
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
-            f"Твои задачи:\n{tasks}\n\nКак идут дела?{pattern_hint}",
+            f"Твои задачи:\n{tasks}\n\nКак идут дела?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Всё по плану", callback_data="mid_ok")],
@@ -2202,307 +2235,6 @@ async def send_guide_section(message, section_id):
     )
 
 
-
-# ── МАЯЧОК ВНИМАНИЯ ────────────────────────────────────────────────────────
-_beacon_last_sent: dict = {}  # uid -> datetime of last beacon
-
-async def send_beacon_if_needed(app):
-    """Маячок внимания — напоминание проверить фокус во время рабочего дня."""
-    if not NOTIFY_USER_ID: return
-    uid = NOTIFY_USER_ID
-    user = get_user(uid)
-    if not user.get("beacon_enabled", 0): return
-    if not user.get("notif_enabled", 0): return
-
-    tz = pytz.timezone(USER_TIMEZONE)
-    now_dt = datetime.now(tz)
-
-    def parse_hm(t):
-        h, m = map(int, t.split(":"))
-        return now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-
-    work_start = parse_hm(user.get("notif_morning", "09:00")) + timedelta(minutes=30)
-    work_end   = parse_hm(user.get("notif_evening", "21:00")) - timedelta(minutes=30)
-    if not (work_start <= now_dt <= work_end): return
-
-    # Интервал 90 минут
-    last = _beacon_last_sent.get(uid)
-    if last and (now_dt - last).total_seconds() < 90 * 60: return
-
-    focus  = get_diary(uid, "morning").get("focus", "")
-    gender = user.get("gender", "M")
-    text = "🔦 *Маячок внимания*\n\n" + g(gender,
-        "Ты сейчас делаешь то, что должен?",
-        "Ты сейчас делаешь то, что должна?")
-    if focus:
-        text += f"\n\nЗадача: _{focus}_"
-
-    await app.bot.send_message(
-        uid, text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Да, в потоке",             callback_data="beacon_ok")],
-            [InlineKeyboardButton("😅 Немного отвлёкся(ась)",   callback_data="beacon_dist")],
-            [InlineKeyboardButton("📱 Завис(ла) в телефоне",    callback_data="beacon_phone")],
-        ])
-    )
-    _beacon_last_sent[uid] = now_dt
-
-
-async def beacon_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid  = q.from_user.id
-    user = get_user(uid)
-    action = q.data
-
-    if action == "beacon_ok":
-        await q.message.reply_text("💪 Отлично! Продолжай — ты в потоке.", parse_mode="Markdown")
-    elif action == "beacon_dist":
-        await q.message.reply_text(
-            "🛑 *Навык СТОП*\n\n"
-            "С — Стоп. Закрой лишнее.\n"
-            "Т — Шаг назад. Глубокий вдох.\n"
-            "О — Осмотрись. На чём ты был(а)?\n"
-            "П — Попытайся вернуться к задаче.\n\n"
-            "_Отвлечься — нормально. Вернуться — навык._",
-            parse_mode="Markdown"
-        )
-    elif action == "beacon_phone":
-        focus = get_diary(uid, "morning").get("focus", "")
-        text = "📱 *Поймал(а) себя — это уже победа!*\n\nПоложи телефон. Глубокий вдох.\n\n"
-        if focus:
-            text += f"Твоя задача: *{focus}*\n\n"
-        text += "_Поставь таймер на 10 минут и просто открой нужный файл._"
-        await q.message.reply_text(text, parse_mode="Markdown")
-
-
-async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid  = q.from_user.id
-    user = get_user(uid)
-    new_val = 0 if user.get("beacon_enabled", 0) else 1
-    update_user(uid, beacon_enabled=new_val)
-    status = "включён ✅" if new_val else "выключен ❌"
-    msg = f"🔦 Маячок внимания {status}\n\n"
-    msg += ("Буду напоминать каждые ~90 минут в рабочее время." if new_val else "Напоминания остановлены.")
-    await q.message.reply_text(
-        msg,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
-    )
-
-
-# ── СТАТИСТИКА ЗА НЕДЕЛЮ ──────────────────────────────────────────────────
-def get_weekly_stats(uid):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    today = date.today()
-    morning_days = 0
-    midday_days  = 0
-    evening_days = 0
-    a_tasks_done = 0
-    selfcare_counts: dict = {}
-    energy_counts:   dict = {}
-    daily_energy:    list = []
-
-    for i in range(7):
-        d = (today - timedelta(days=i)).isoformat()
-
-        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "morning"))
-        row = c.fetchone()
-        if row and json.loads(row[0]):
-            morning_days += 1
-
-        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "midday"))
-        if c.fetchone():
-            midday_days += 1
-
-        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "evening"))
-        row = c.fetchone()
-        if row:
-            evening_days += 1
-            ev = json.loads(row[0])
-            if "m_a" in ev.get("e_tasks_done", []):
-                a_tasks_done += 1
-            for key in ev.get("e_selfcare", []):
-                selfcare_counts[key] = selfcare_counts.get(key, 0) + 1
-            energy = ev.get("e_energy", "")
-            if energy:
-                energy_counts[energy] = energy_counts.get(energy, 0) + 1
-                daily_energy.append(energy)
-
-    conn.close()
-    return {
-        "morning_days": morning_days,
-        "midday_days":  midday_days,
-        "evening_days": evening_days,
-        "a_tasks_done": a_tasks_done,
-        "selfcare_counts": selfcare_counts,
-        "energy_counts":   energy_counts,
-        "daily_energy":    list(reversed(daily_energy)),
-        "streak": calc_streak(uid),
-    }
-
-
-async def send_weekly_stats(app):
-    if not NOTIFY_USER_ID: return
-    uid   = NOTIFY_USER_ID
-    stats = get_weekly_stats(uid)
-    labels = dict(SELFCARE_ITEMS)
-
-    text  = "📊 *Итоги недели*\n\n"
-    text += f"☀️ Утренних чекинов: *{stats['morning_days']}/7*\n"
-    text += f"☕ Дневных чекинов: *{stats['midday_days']}/7*\n"
-    text += f"🌙 Вечерних чекинов: *{stats['evening_days']}/7*\n"
-    text += f"✅ Дней с выполненной A-задачей: *{stats['a_tasks_done']}*\n"
-    text += f"🔥 Текущая серия: *{stats['streak']} дн.*\n"
-
-    if stats["selfcare_counts"]:
-        total = sum(stats["selfcare_counts"].values())
-        top3  = sorted(stats["selfcare_counts"].items(), key=lambda x: -x[1])[:3]
-        top_s = ", ".join(f"{labels.get(k,'').split(' ',1)[-1]} ×{v}" for k, v in top3)
-        text += f"🧩 Навыков в чек-листе: *{total}* раз\n"
-        text += f"Топ: {top_s}\n"
-
-    daily_e = stats.get("daily_energy", [])
-    if daily_e:
-        emojis = {"low": "🔴", "mid": "🟡", "high": "🟢"}
-        strip  = "".join(emojis.get(e, "⬜") for e in daily_e)
-        ec = stats.get("energy_counts", {})
-        dominant = max(ec, key=ec.get) if ec else ""
-        labels_d = {"low": "в основном тяжело", "mid": "в среднем темпе", "high": "в ресурсе"}
-        dom_label = labels_d.get(dominant, "")
-        text += f"⚡ Энергия за неделю: {strip}\n"
-        if dom_label:
-            text += f"   ({dom_label})\n"
-    # AI-анализ паттернов
-    ai_note = await ai_weekly_patterns(uid, stats)
-    if ai_note:
-        text += f"\n\n🤖 *Наблюдения ИИ:*\n_{ai_note}_"
-
-    text += "\n\n_Новая неделя — новый шанс. Ты справляешься! 💪_"
-    await app.bot.send_message(uid, text, parse_mode="Markdown")
-
-    # Отчёт для бадди (если задан)
-    await send_buddy_report(app)
-
-
-
-# ── БАДДИ-НАПОМИНАНИЕ ──────────────────────────────────────────────────────
-async def send_buddy_report(app):
-    """Воскресный отчёт для бадди — готовый текст на основе недели."""
-    if not NOTIFY_USER_ID: return
-    uid  = NOTIFY_USER_ID
-    user = get_user(uid)
-    buddy = user.get("buddy_name", "")
-    if not buddy: return
-
-    stats = get_weekly_stats(uid)
-    achievements = []
-    for i in range(7):
-        d = (date.today() - timedelta(days=i)).isoformat()
-        ev = get_diary(uid, "evening", d)
-        if ev.get("e_ach"):
-            achievements.append(ev["e_ach"])
-
-    report  = f"Привет, {buddy}! Вот моя неделя:\n\n"
-    report += f"🔥 Серия: {stats['streak']} дней подряд\n"
-    report += f"✅ A-задач выполнено: {stats['a_tasks_done']} из 7\n"
-    report += f"📅 Чекинов: {stats['morning_days']}/7 утром, {stats['evening_days']}/7 вечером\n"
-    if achievements:
-        report += "\n🏆 Главное за неделю:\n"
-        for ach in achievements[:3]:
-            report += f"• {ach}\n"
-    report += "\nКак твоя неделя?"
-
-    await app.bot.send_message(
-        uid,
-        f"👥 *Отчёт для бадди — {buddy}*\n\n"
-        f"Готовый текст — скопируй и отправь:\n\n"
-        f"_{report}_",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
-    )
-
-
-# ── АДАПТИВНЫЙ ЧЕКИН ───────────────────────────────────────────────────────
-def get_user_midday_pattern(uid, days=14):
-    """Самый частый midday-сценарий за последние N дней."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    action_counts: dict = {}
-    for i in range(days):
-        d = (date.today() - timedelta(days=i)).isoformat()
-        c.execute("SELECT data FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, "midday"))
-        row = c.fetchone()
-        if row:
-            action = json.loads(row[0]).get("action", "")
-            if action and action != "mid_ok":
-                action_counts[action] = action_counts.get(action, 0) + 1
-    conn.close()
-    if not action_counts: return None, 0
-    top = max(action_counts, key=action_counts.get)
-    return top, action_counts[top]
-
-
-MIDDAY_PATTERN_HINTS = {
-    "mid_nostart": ("Непонятно с чего начать", "держи наготове «Первый шаг» — разбить задачу на одно крошечное действие"),
-    "mid_scary":   ("Задача подавляет",        "держи под рукой заземление 5-4-3-2-1 — оно возвращает из тревоги в тело"),
-    "mid_waiting": ("Жду подходящего момента", "поставь таймер сразу — подходящий момент появляется только после старта"),
-    "mid_perfect": ("Перфекционизм",           "разреши себе сделать плохо — черновик лучше ничего"),
-    "mid_resist":  ("Внутреннее сопротивление","пообещай себе мини-награду прямо сейчас"),
-    "mid_time":    ("Мало времени",            "только A-задача, таймер 25 минут — один укус слона"),
-    "mid_phone":   ("Залип в телефоне",        "СТОП — положи телефон, открой нужный файл"),
-}
-
-
-# ── ИИ-АНАЛИЗ ПАТТЕРНОВ ────────────────────────────────────────────────────
-async def ai_weekly_patterns(uid, stats):
-    """AI-анализ паттернов за неделю."""
-    if not ANTHROPIC_KEY: return ""
-    try:
-        from anthropic import Anthropic
-        client = Anthropic(api_key=ANTHROPIC_KEY)
-        user = get_user(uid)
-        gender_hint = "женского рода" if user.get("gender") == "F" else "мужского рода"
-        name = user.get("name", "")
-
-        ctx_lines = [
-            f"Утренних чекинов: {stats['morning_days']}/7",
-            f"Вечерних чекинов: {stats['evening_days']}/7",
-            f"A-задач выполнено: {stats['a_tasks_done']}/7",
-            f"Серия: {stats['streak']} дней",
-        ]
-        if stats.get("daily_energy"):
-            emojis = {"low": "🔴", "mid": "🟡", "high": "🟢"}
-            strip = "".join(emojis.get(e, "?") for e in stats["daily_energy"])
-            ctx_lines.append(f"Энергия по дням: {strip}")
-
-        top_action, top_count = get_user_midday_pattern(uid, 14)
-        if top_action and top_count >= 2:
-            ctx_lines.append(f"Частый дневной сценарий: {MIDDAY_LABELS.get(top_action, top_action)} ({top_count} раз за 2 недели)")
-
-        if stats.get("selfcare_counts"):
-            labels = dict(SELFCARE_ITEMS)
-            top3 = sorted(stats["selfcare_counts"].items(), key=lambda x: -x[1])[:3]
-            top3_str = ", ".join(f"{labels.get(k,'').split(' ',1)[-1]} ×{v}" for k, v in top3)
-            ctx_lines.append(f"Топ навыки: {top3_str}")
-
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=250,
-            system=(
-                f"Ты коуч для {name} ({gender_hint}) с СДВГ. "
-                "Анализируй данные за неделю: дай 2-3 коротких наблюдения о паттернах "
-                "и одну конкретную рекомендацию на следующую неделю. "
-                "Тон — тёплый, без осуждения. По-русски, кратко."
-            ),
-            messages=[{"role": "user", "content": "Данные:\n" + "\n".join(ctx_lines)}]
-        )
-        return resp.content[0].text.strip()
-    except Exception as e:
-        print(f"ai_weekly_patterns error: {e}")
-        return ""
-
-
 async def check_notifications(app):
     """Каждую минуту проверяем нужно ли слать уведомление пользователю.
 
@@ -2527,18 +2259,43 @@ async def check_notifications(app):
         elif now == user.get("notif_evening", "21:00"):
             await evening_notification(app)
 
-        # Маячок внимания (каждые ~90 мин в рабочее время)
-        await send_beacon_if_needed(app)
-
-        # Воскресная статистика (за час до вечернего уведомления)
-        tz_obj = pytz.timezone(USER_TIMEZONE)
-        now_dt = datetime.now(tz_obj)
-        if now_dt.weekday() == 6:  # воскресенье
-            eve = user.get("notif_evening", "21:00")
-            eh, em = map(int, eve.split(":"))
-            stats_h = (eh - 1) % 24
-            if now == f"{stats_h:02d}:{em:02d}":
-                await send_weekly_stats(app)
+        # Проверяем фокус-таймер
+        if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+            try:
+                tz = pytz.timezone(USER_TIMEZONE)
+                end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+                now_dt = datetime.now(tz)
+                if now_dt >= end_dt:
+                    # Считаем сколько минут было задано
+                    start_approx = end_dt  # у нас нет start_time, но знаем end
+                    # Вычисляем из разницы focus_end_time и текущего времени сколько прошло
+                    # Проще: возьмём из записанного end_time минус now (уже прошло), но
+                    # надёжнее хранить start. Пока считаем через разницу end - (end - 25/45/60)
+                    # Берём просто: нашли что таймер истёк — добавим реально отработанное время
+                    # Используем focus_end_time - момент запуска не знаем, но запоминаем duration
+                    # Временное решение: добавляем фиксированный блок по умолчанию
+                    # Лучший вариант: записывать focus_start_time и focus_duration
+                    user2 = get_user(uid)
+                    today = date.today().isoformat()
+                    prev = int(user2.get("focus_minutes_today", 0)) if user2.get("focus_date") == today else 0
+                    duration = int(user2.get("focus_duration", 25) or 25)
+                    new_mins = prev + duration
+                    update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
+                    await app.bot.send_message(
+                        chat_id=uid,
+                        text=(
+                            f"⏰ *Время вышло! Отличная работа!*\n\n"
+                            f"Сделай перерыв 5 минут: встань, выпей воды, отойди от экрана.\n\n"
+                            f"Сегодня в фокусе: *{new_mins} мин* 🎯"
+                        ),
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🍅 Ещё раунд", callback_data="go_focus")],
+                            [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="go_menu")],
+                        ])
+                    )
+            except Exception as fe:
+                print(f"Ошибка focus check: {fe}")
     except Exception as e:
         print(f"Ошибка check_notifications: {e}")
 
@@ -2566,308 +2323,6 @@ def _watchdog_loop():
 async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
 
-
-async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
-        await update.message.reply_text(
-            f"⛔ Нет доступа.\n\nТвой Telegram ID: `{uid}`\n"
-            f"NOTIFY\_USER\_ID в Railway: `{NOTIFY_USER_ID}`",
-            parse_mode="Markdown"
-        )
-        return
-
-    try:
-        import json as _json
-        con = sqlite3.connect(DB_PATH)
-        cur = con.cursor()
-
-        # ── Пользователи ──────────────────────────────────────────────
-        total   = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-
-        try:
-            new7 = cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,)).fetchone()[0]
-            new7_text = f"  Новых за 7д: *{new7}*\n"
-        except Exception:
-            new7_text = ""
-
-        active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
-        active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
-
-        # ── Чекины за 7д ─────────────────────────────────────────────
-        rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
-        checkins = {r[0]: r[1] for r in rows}
-
-        # Среднее чекинов на активного пользователя
-        total_checks = sum(checkins.values())
-        avg_checks = round(total_checks / active7, 1) if active7 else 0
-
-        # ── Retention D7 ──────────────────────────────────────────────
-        # Пользователи, зарегистрированные >7 дней назад
-        try:
-            older_users = cur.execute(
-                "SELECT COUNT(DISTINCT user_id) FROM users WHERE created_at < ?", (week_ago,)
-            ).fetchone()[0]
-            retained = cur.execute(
-                "SELECT COUNT(DISTINCT u.user_id) FROM users u "
-                "JOIN diary d ON u.user_id=d.user_id "
-                "WHERE u.created_at < ? AND d.date >= ?", (week_ago, week_ago)
-            ).fetchone()[0]
-            retention = f"{round(retained/older_users*100)}%" if older_users else "н/д"
-        except Exception:
-            retention = "н/д"
-
-        # ── Стрики ────────────────────────────────────────────────────
-        try:
-            streaks = cur.execute("SELECT streak FROM users WHERE streak > 0").fetchall()
-            if streaks:
-                avg_streak = round(sum(r[0] for r in streaks) / len(streaks), 1)
-                max_streak = max(r[0] for r in streaks)
-                streak_text = f"  Средний стрик: *{avg_streak}д*, макс: *{max_streak}д*\n"
-            else:
-                streak_text = ""
-        except Exception:
-            streak_text = ""
-
-        # ── Энергия из вечернего дневника ─────────────────────────────
-        energy_rows = cur.execute(
-            "SELECT data FROM diary WHERE block='evening' AND date >= ?", (week_ago,)
-        ).fetchall()
-        energy_counts = {"low": 0, "mid": 0, "high": 0}
-        task_set = task_done = 0
-        for (d,) in energy_rows:
-            try:
-                obj = _json.loads(d)
-                e = obj.get("e_energy", "")
-                if e in energy_counts:
-                    energy_counts[e] += 1
-                # completion rate
-                if obj.get("e_a"):
-                    task_set += 1
-                    if "focus" in (obj.get("e_tasks_done") or []):
-                        task_done += 1
-            except Exception:
-                pass
-        energy_total = sum(energy_counts.values())
-        if energy_total:
-            energy_text = (
-                f"  🔴 Тяжело: *{energy_counts['low']}*  "
-                f"🟡 Норм: *{energy_counts['mid']}*  "
-                f"🟢 Ресурс: *{energy_counts['high']}*\n"
-            )
-        else:
-            energy_text = ""
-
-        compl_text = f"  Задача A выполнена: *{task_done}/{task_set}*\n" if task_set else ""
-
-        # ── Самый частый дневной сценарий ─────────────────────────────
-        mid_rows = cur.execute(
-            "SELECT data FROM diary WHERE block='midday' AND date >= ?", (week_ago,)
-        ).fetchall()
-        mid_counts = {}
-        for (d,) in mid_rows:
-            try:
-                obj = _json.loads(d)
-                action = obj.get("action", obj.get("state", ""))
-                if action:
-                    mid_counts[action] = mid_counts.get(action, 0) + 1
-            except Exception:
-                pass
-        mid_labels = {
-            "mid_ok": "Всё идёт", "mid_nostart": "Не начал(а)",
-            "mid_scary": "Страшно", "mid_waiting": "Жду момента",
-            "mid_perfect": "Перфекционизм", "mid_resist": "Сопротивление",
-            "mid_time": "Нет времени", "mid_phone": "Завис в телефоне",
-        }
-        if mid_counts:
-            top_mid = max(mid_counts, key=mid_counts.get)
-            mid_text = f"  Топ сценарий: *{mid_labels.get(top_mid, top_mid)}* ({mid_counts[top_mid]}×)\n"
-        else:
-            mid_text = ""
-
-        # ── Функции ───────────────────────────────────────────────────
-        try:
-            beacons = cur.execute("SELECT COUNT(*) FROM users WHERE beacon_enabled=1").fetchone()[0]
-        except Exception:
-            beacons = "н/д"
-        try:
-            buddies = cur.execute("SELECT COUNT(*) FROM users WHERE buddy_name IS NOT NULL AND buddy_name != ''").fetchone()[0]
-        except Exception:
-            buddies = "н/д"
-        try:
-            notifs = cur.execute("SELECT COUNT(*) FROM users WHERE notif_enabled=1").fetchone()[0]
-        except Exception:
-            notifs = "н/д"
-
-        # ── Активность по дням недели ─────────────────────────────────
-        day_rows = cur.execute(
-            "SELECT date, COUNT(*) FROM diary WHERE date >= ? GROUP BY date", (week_ago,)
-        ).fetchall()
-        if day_rows:
-            busiest = max(day_rows, key=lambda r: r[1])
-            quietest = min(day_rows, key=lambda r: r[1])
-            days_ru = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
-            from datetime import date as _date
-            b_day = days_ru[_date.fromisoformat(busiest[0]).weekday()]
-            q_day = days_ru[_date.fromisoformat(quietest[0]).weekday()]
-            days_text = f"  Активнее всего: *{b_day}* ({busiest[1]} чекинов), тише: *{q_day}*\n"
-        else:
-            days_text = ""
-
-        con.close()
-
-        text = (
-            f"📊 *Статистика ADHD Buddy*\n\n"
-            f"*👥 Пользователи*\n"
-            f"  Всего: *{total}*\n"
-            f"{new7_text}"
-            f"  Активных 7д / 30д: *{active7}* / *{active30}*\n"
-            f"  D7 Retention: *{retention}*\n"
-            f"{streak_text}\n"
-            f"*📋 Чекины за 7 дней*\n"
-            f"  ☀️ Утро: *{checkins.get('morning', 0)}*  "
-            f"🌤 День: *{checkins.get('midday', 0)}*  "
-            f"🌙 Вечер: *{checkins.get('evening', 0)}*\n"
-            f"  Avg на пользователя: *{avg_checks}* чекинов\n"
-            f"{days_text}\n"
-            f"*⚡ Энергия (вечер, 7д)*\n"
-            f"{energy_text}"
-            f"{compl_text}"
-            f"{mid_text}\n"
-            f"*🔧 Функции*\n"
-            f"  🔔 Уведомления: *{notifs}*  📍 Маячок: *{beacons}*  🤝 Бадди: *{buddies}*"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
-
-
-async def send_auto_report(app):
-    """Авто-отчёт метрик каждые 3 дня для владельца бота."""
-    if not NOTIFY_USER_ID:
-        return
-    try:
-        import json as _json
-        con = sqlite3.connect(DB_PATH)
-        cur = con.cursor()
-
-        week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        three_ago = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
-
-        total   = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        active7 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
-        active3 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (three_ago,)).fetchone()[0]
-
-        rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
-        checkins = {r[0]: r[1] for r in rows}
-        avg_checks = round(sum(checkins.values()) / active7, 1) if active7 else 0
-
-        try:
-            older = cur.execute("SELECT COUNT(DISTINCT user_id) FROM users WHERE created_at < ?", (week_ago,)).fetchone()[0]
-            retained = cur.execute(
-                "SELECT COUNT(DISTINCT u.user_id) FROM users u "
-                "JOIN diary d ON u.user_id=d.user_id "
-                "WHERE u.created_at < ? AND d.date >= ?", (week_ago, week_ago)
-            ).fetchone()[0]
-            d7 = round(retained / older * 100) if older else None
-        except Exception:
-            d7 = None
-        d7_text = str(d7) + "%" if d7 is not None else "н/д"
-
-        try:
-            st = cur.execute("SELECT streak FROM users WHERE streak > 0").fetchall()
-            avg_streak = round(sum(r[0] for r in st) / len(st), 1) if st else 0
-            max_streak = max((r[0] for r in st), default=0)
-        except Exception:
-            avg_streak = max_streak = 0
-
-        energy = {"low": 0, "mid": 0, "high": 0}
-        for (d,) in cur.execute("SELECT data FROM diary WHERE block='evening' AND date >= ?", (week_ago,)).fetchall():
-            try:
-                e = _json.loads(d).get("e_energy", "")
-                if e in energy:
-                    energy[e] += 1
-            except Exception:
-                pass
-
-        mid_counts = {}
-        for (d,) in cur.execute("SELECT data FROM diary WHERE block='midday' AND date >= ?", (week_ago,)).fetchall():
-            try:
-                a = _json.loads(d).get("action", "")
-                if a:
-                    mid_counts[a] = mid_counts.get(a, 0) + 1
-            except Exception:
-                pass
-        mid_labels = {
-            "mid_ok": "Всё идёт", "mid_nostart": "Не начал(а)", "mid_scary": "Страшно",
-            "mid_waiting": "Жду момента", "mid_perfect": "Перфекционизм",
-            "mid_resist": "Сопротивление", "mid_time": "Нет времени", "mid_phone": "Завис в телефоне",
-        }
-        top_mid = max(mid_counts, key=mid_counts.get) if mid_counts else None
-        top_mid_label = mid_labels.get(top_mid, top_mid) if top_mid else "—"
-        con.close()
-
-        alerts = []
-        if d7 is not None and d7 < 15:
-            alerts.append("⚠️ D7 Retention ниже 15% — люди не возвращаются")
-        if avg_checks < 5 and active7 > 0:
-            alerts.append("⚠️ Мало чекинов/чел — низкая вовлечённость")
-        if active7 > 0 and active3 < active7 * 0.4:
-            alerts.append("⚠️ Активность падает — за 3д меньше 40% от недельных")
-        e_total = sum(energy.values())
-        if e_total > 0 and energy["low"] / e_total > 0.5:
-            alerts.append("⚠️ Больше половины вечеров с низкой энергией")
-        alert_text = ("\n\n*🚨 Сигналы:*\n" + "\n".join(alerts)) if alerts else "\n\n✅ Критических сигналов нет"
-
-        ai_text = ""
-        if ANTHROPIC_KEY and active7 > 0:
-            try:
-                import anthropic as _ant
-                client = _ant.Anthropic(api_key=ANTHROPIC_KEY)
-                stats_str = (
-                    "Пользователей " + str(total) + ", активных 7д " + str(active7) +
-                    ", за 3д " + str(active3) + ". D7: " + d7_text +
-                    ". Чекины: утро " + str(checkins.get("morning", 0)) +
-                    ", день " + str(checkins.get("midday", 0)) +
-                    ", вечер " + str(checkins.get("evening", 0)) +
-                    ". Avg " + str(avg_checks) + " чекинов/чел. Стрик avg " + str(avg_streak) +
-                    "д. Топ боль: " + top_mid_label +
-                    ". Энергия: тяжело " + str(energy["low"]) +
-                    ", норм " + str(energy["mid"]) + ", ресурс " + str(energy["high"]) + "."
-                )
-                resp = client.messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": (
-                        "Ты аналитик ADHD-продукта. Цель: помочь взрослым с СДВГ выработать структуру дня. "
-                        "Метрики успеха: D7>20%, avg чекинов>7/нед. " + stats_str +
-                        " Дай 2-3 наблюдения и 1 рекомендацию. Кратко, на русском."
-                    )}]
-                )
-                ai_text = "\n\n🤖 *ИИ-анализ:*\n" + resp.content[0].text
-            except Exception:
-                pass
-
-        m = checkins.get
-        report = (
-            "*📊 Авто-отчёт ADHD Buddy* _" + datetime.now().strftime("%d.%m.%Y") + "_\n\n" +
-            "👥 Пользователей: *" + str(total) + "* (активных 7д: *" + str(active7) + "*)\n" +
-            "📈 D7 Retention: *" + d7_text + "*\n" +
-            "🔥 Avg стрик: *" + str(avg_streak) + "д*, макс: *" + str(max_streak) + "д*\n\n" +
-            "📋 Чекины за 7д: ☀️ *" + str(m("morning", 0)) + "*  🌤 *" + str(m("midday", 0)) +
-            "*  🌙 *" + str(m("evening", 0)) + "*  _(avg " + str(avg_checks) + "/чел)_\n\n" +
-            "⚡ Энергия: 🔴" + str(energy["low"]) + " 🟡" + str(energy["mid"]) + " 🟢" + str(energy["high"]) + "\n" +
-            "🎯 Топ боль дня: *" + top_mid_label + "*" +
-            alert_text + ai_text
-        )
-        await app.bot.send_message(NOTIFY_USER_ID, report, parse_mode="Markdown")
-    except Exception as e:
-        try:
-            await app.bot.send_message(NOTIFY_USER_ID, "Ошибка авто-отчёта: " + str(e))
-        except Exception:
-            pass
 
 def main():
     init_db()
@@ -2939,7 +2394,6 @@ def main():
             E_C1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c1),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
             E_C2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c2),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
             E_C3:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c3),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
-            E_ENERGY:    [CallbackQueryHandler(got_energy, pattern="^energy_(low|mid|high)$")],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
@@ -2962,12 +2416,6 @@ def main():
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,     pattern="^toggle_notif$"))
-    app.add_handler(CallbackQueryHandler(toggle_beacon,     pattern="^toggle_beacon$"))
-    app.add_handler(CallbackQueryHandler(beacon_callback,   pattern="^beacon_(ok|dist|phone)$"))
-    app.add_handler(CallbackQueryHandler(go_crash,    pattern="^go_crash$"))
-    app.add_handler(CallbackQueryHandler(crash_step2, pattern="^crash_2$"))
-    app.add_handler(CallbackQueryHandler(crash_step3, pattern="^crash_3$"))
-    app.add_handler(CallbackQueryHandler(crash_ok,    pattern="^crash_ok$"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
@@ -2977,14 +2425,15 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
     app.add_handler(CallbackQueryHandler(midday_callback, pattern="^mid_"))
-    app.add_handler(CommandHandler('admin', admin_stats), group=-1)
+    app.add_handler(CallbackQueryHandler(go_focus,          pattern="^go_focus$"))
+    app.add_handler(CallbackQueryHandler(focus_start_callback, pattern="^focus_start_\\d+$"))
+    app.add_handler(CallbackQueryHandler(focus_stop_callback,  pattern="^focus_stop$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Уведомления (UTC время)
     scheduler = AsyncIOScheduler()
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
-    scheduler.add_job(send_auto_report, 'cron', day='*/3', hour=9, minute=0, args=[app])
     scheduler.start()
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
