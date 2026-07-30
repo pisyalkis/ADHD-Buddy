@@ -348,7 +348,7 @@ def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("🍅 Фокус", callback_data="go_focus"),
+        [InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus"),
          InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
         [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
          InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
@@ -1233,16 +1233,17 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     idx = int(q.data.replace("skill_", ""))
     skill = SKILLS[idx]
+    buttons = [[InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")]]
+    if "Работа по таймеру" in skill["name"]:
+        buttons.insert(0, [InlineKeyboardButton("🍅 Запустить таймер", callback_data="go_focus")])
+    buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     await q.message.reply_text(
         f"🧠 *{skill['name']}*\n\n"
         f"📖 *Описание*\n{skill['explanation']}\n\n"
         f"✅ *Инструкция*\n{skill['instructions']}\n\n"
         "_Методика: когнитивно-поведенческая терапия для взрослых с СДВГ — «Mastering Your Adult ADHD» (Safren)_",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ])
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
 
 # ── STREAK ─────────────────────────────────────────────────────────────────
