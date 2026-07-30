@@ -2572,24 +2572,122 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
         await update.message.reply_text(
             f"⛔ Нет доступа.\n\nТвой Telegram ID: `{uid}`\n"
-            f"NOTIFY\_USER\_ID в Railway: `{NOTIFY_USER_ID}`\n\n"
-            f"Если это ты — обнови переменную на `{uid}`.",
+            f"NOTIFY\_USER\_ID в Railway: `{NOTIFY_USER_ID}`",
             parse_mode="Markdown"
         )
         return
 
     try:
+        import json as _json
         con = sqlite3.connect(DB_PATH)
         cur = con.cursor()
 
-        total = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        # ── Пользователи ──────────────────────────────────────────────
+        total   = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         week_ago  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         month_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        try:
+            new7 = cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,)).fetchone()[0]
+            new7_text = f"  Новых за 7д: *{new7}*\n"
+        except Exception:
+            new7_text = ""
+
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
+
+        # ── Чекины за 7д ─────────────────────────────────────────────
         rows = cur.execute("SELECT block, COUNT(*) FROM diary WHERE date >= ? GROUP BY block", (week_ago,)).fetchall()
         checkins = {r[0]: r[1] for r in rows}
 
+        # Среднее чекинов на активного пользователя
+        total_checks = sum(checkins.values())
+        avg_checks = round(total_checks / active7, 1) if active7 else 0
+
+        # ── Retention D7 ──────────────────────────────────────────────
+        # Пользователи, зарегистрированные >7 дней назад
+        try:
+            older_users = cur.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM users WHERE created_at < ?", (week_ago,)
+            ).fetchone()[0]
+            retained = cur.execute(
+                "SELECT COUNT(DISTINCT u.user_id) FROM users u "
+                "JOIN diary d ON u.user_id=d.user_id "
+                "WHERE u.created_at < ? AND d.date >= ?", (week_ago, week_ago)
+            ).fetchone()[0]
+            retention = f"{round(retained/older_users*100)}%" if older_users else "н/д"
+        except Exception:
+            retention = "н/д"
+
+        # ── Стрики ────────────────────────────────────────────────────
+        try:
+            streaks = cur.execute("SELECT streak FROM users WHERE streak > 0").fetchall()
+            if streaks:
+                avg_streak = round(sum(r[0] for r in streaks) / len(streaks), 1)
+                max_streak = max(r[0] for r in streaks)
+                streak_text = f"  Средний стрик: *{avg_streak}д*, макс: *{max_streak}д*\n"
+            else:
+                streak_text = ""
+        except Exception:
+            streak_text = ""
+
+        # ── Энергия из вечернего дневника ─────────────────────────────
+        energy_rows = cur.execute(
+            "SELECT data FROM diary WHERE block='evening' AND date >= ?", (week_ago,)
+        ).fetchall()
+        energy_counts = {"low": 0, "mid": 0, "high": 0}
+        task_set = task_done = 0
+        for (d,) in energy_rows:
+            try:
+                obj = _json.loads(d)
+                e = obj.get("e_energy", "")
+                if e in energy_counts:
+                    energy_counts[e] += 1
+                # completion rate
+                if obj.get("e_a"):
+                    task_set += 1
+                    if "focus" in (obj.get("e_tasks_done") or []):
+                        task_done += 1
+            except Exception:
+                pass
+        energy_total = sum(energy_counts.values())
+        if energy_total:
+            energy_text = (
+                f"  🔴 Тяжело: *{energy_counts['low']}*  "
+                f"🟡 Норм: *{energy_counts['mid']}*  "
+                f"🟢 Ресурс: *{energy_counts['high']}*\n"
+            )
+        else:
+            energy_text = ""
+
+        compl_text = f"  Задача A выполнена: *{task_done}/{task_set}*\n" if task_set else ""
+
+        # ── Самый частый дневной сценарий ─────────────────────────────
+        mid_rows = cur.execute(
+            "SELECT data FROM diary WHERE block='midday' AND date >= ?", (week_ago,)
+        ).fetchall()
+        mid_counts = {}
+        for (d,) in mid_rows:
+            try:
+                obj = _json.loads(d)
+                action = obj.get("action", obj.get("state", ""))
+                if action:
+                    mid_counts[action] = mid_counts.get(action, 0) + 1
+            except Exception:
+                pass
+        mid_labels = {
+            "mid_ok": "Всё идёт", "mid_nostart": "Не начал(а)",
+            "mid_scary": "Страшно", "mid_waiting": "Жду момента",
+            "mid_perfect": "Перфекционизм", "mid_resist": "Сопротивление",
+            "mid_time": "Нет времени", "mid_phone": "Завис в телефоне",
+        }
+        if mid_counts:
+            top_mid = max(mid_counts, key=mid_counts.get)
+            mid_text = f"  Топ сценарий: *{mid_labels.get(top_mid, top_mid)}* ({mid_counts[top_mid]}×)\n"
+        else:
+            mid_text = ""
+
+        # ── Функции ───────────────────────────────────────────────────
         try:
             beacons = cur.execute("SELECT COUNT(*) FROM users WHERE beacon_enabled=1").fetchone()[0]
         except Exception:
@@ -2602,28 +2700,44 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             notifs = cur.execute("SELECT COUNT(*) FROM users WHERE notif_enabled=1").fetchone()[0]
         except Exception:
             notifs = "н/д"
-        try:
-            new7 = cur.execute("SELECT COUNT(*) FROM users WHERE created_at >= ?", (week_ago,)).fetchone()[0]
-            new7_text = f"Новых за 7д: *{new7}*\n"
-        except Exception:
-            new7_text = ""
+
+        # ── Активность по дням недели ─────────────────────────────────
+        day_rows = cur.execute(
+            "SELECT date, COUNT(*) FROM diary WHERE date >= ? GROUP BY date", (week_ago,)
+        ).fetchall()
+        if day_rows:
+            busiest = max(day_rows, key=lambda r: r[1])
+            quietest = min(day_rows, key=lambda r: r[1])
+            days_ru = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
+            from datetime import date as _date
+            b_day = days_ru[_date.fromisoformat(busiest[0]).weekday()]
+            q_day = days_ru[_date.fromisoformat(quietest[0]).weekday()]
+            days_text = f"  Активнее всего: *{b_day}* ({busiest[1]} чекинов), тише: *{q_day}*\n"
+        else:
+            days_text = ""
 
         con.close()
 
         text = (
-            f"📊 *Статистика бота* _(твой ID: {uid})_\n\n"
-            f"👥 Всего пользователей: *{total}*\n"
+            f"📊 *Статистика ADHD Buddy*\n\n"
+            f"*👥 Пользователи*\n"
+            f"  Всего: *{total}*\n"
             f"{new7_text}"
-            f"🔥 Активных за 7д: *{active7}*\n"
-            f"📅 Активных за 30д: *{active30}*\n\n"
-            f"*Чекины за 7 дней:*\n"
-            f"☀️ Утро: *{checkins.get('morning', 0)}*\n"
-            f"🌤 День: *{checkins.get('midday', 0)}*\n"
-            f"🌙 Вечер: *{checkins.get('evening', 0)}*\n\n"
-            f"*Функции:*\n"
-            f"🔔 Уведомления вкл: *{notifs}*\n"
-            f"📍 Маячок вкл: *{beacons}*\n"
-            f"🤝 Бадди указан: *{buddies}*"
+            f"  Активных 7д / 30д: *{active7}* / *{active30}*\n"
+            f"  D7 Retention: *{retention}*\n"
+            f"{streak_text}\n"
+            f"*📋 Чекины за 7 дней*\n"
+            f"  ☀️ Утро: *{checkins.get('morning', 0)}*  "
+            f"🌤 День: *{checkins.get('midday', 0)}*  "
+            f"🌙 Вечер: *{checkins.get('evening', 0)}*\n"
+            f"  Avg на пользователя: *{avg_checks}* чекинов\n"
+            f"{days_text}\n"
+            f"*⚡ Энергия (вечер, 7д)*\n"
+            f"{energy_text}"
+            f"{compl_text}"
+            f"{mid_text}\n"
+            f"*🔧 Функции*\n"
+            f"  🔔 Уведомления: *{notifs}*  📍 Маячок: *{beacons}*  🤝 Бадди: *{buddies}*"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
