@@ -1608,6 +1608,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"🍅 *Таймер запущен на {minutes} мин*\n\n"
         f"Конец в *{end_str}*.{task_hint}\n\n"
+        f"📝 Возьми листок бумаги рядом — если во время работы придёт посторонняя мысль, просто запиши её и возвращайся. Не надо её обдумывать сейчас.\n\n"
         f"Удачи — не отвлекайся 🔕\n"
         f"_Я напишу когда время выйдет._",
         parse_mode="Markdown",
