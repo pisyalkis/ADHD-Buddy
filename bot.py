@@ -248,6 +248,7 @@ def init_db():
         ("focus_duration", "0"),
         ("focus_minutes_today", "0"),
         ("focus_date", "''"),
+        ("city", "''"),
         ("created_at", f"'{date.today().isoformat()}'"),
         ("research_done", "''"),
         ("research_awaiting", "0"),
@@ -505,10 +506,15 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Стрик — это видимое доказательство прогресса.\n\n"
         "_Маленькие победы замеченные каждый день — это и есть мотивация._",
         parse_mode="Markdown",
+    )
+    await asyncio.sleep(0.5)
+    await q.message.reply_text(
+        "И последнее — из какого ты города? (можно пропустить)",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(f"{'Всё понял' if gender == 'M' else 'Всё поняла'}, начнём! 🚀", callback_data="onboard_done")
+            InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
     )
+    ctx.user_data["awaiting_city"] = True
     return ConversationHandler.END
 
 async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1692,6 +1698,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"👥 *Бадди добавлен: {bname}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
             parse_mode="Markdown", reply_markup=main_menu()
         )
+    elif ctx.user_data.get("awaiting_city"):
+        ctx.user_data["awaiting_city"] = False
+        city = update.message.text.strip()
+        update_user(uid, city=city)
+        await update.message.reply_text(
+            f"📍 {city} — записал!\n\nВсё готово — начнём! 🚀",
+            reply_markup=main_menu()
+        )
+        return
     elif get_user(uid).get("research_awaiting") and str(get_user(uid).get("research_awaiting")) != "0":
         user = get_user(uid)
         awaiting = str(user.get("research_awaiting", ""))
@@ -2787,6 +2802,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
 
+        # Пол
+        males   = cur.execute("SELECT COUNT(*) FROM users WHERE gender='M' AND name!=''").fetchone()[0]
+        females = cur.execute("SELECT COUNT(*) FROM users WHERE gender='F' AND name!=''").fetchone()[0]
+
+        # Города
+        cities = cur.execute(
+            "SELECT city, COUNT(*) as cnt FROM users WHERE city!='' AND city IS NOT NULL GROUP BY city ORDER BY cnt DESC LIMIT 10"
+        ).fetchall()
+
         checkins = cur.execute(
             "SELECT block, COUNT(*) FROM diary GROUP BY block"
         ).fetchall()
@@ -2832,11 +2856,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 out += f"— _{r[0]}_\n"
             return out
 
+        cities_str = "\n".join(f"  {r[0]}: {r[1]}" for r in cities) if cities else "  —"
+
         text = (
             f"📊 *Статистика бота*\n\n"
             f"👤 Всего пользователей: *{total}*\n"
+            f"  👨 Мужчин: {males} · 👩 Женщин: {females}\n"
             f"📅 Активны за 7 дней: *{active7}*\n"
             f"📅 Активны за 30 дней: *{active30}*\n\n"
+            f"🌍 *Города:*\n{cities_str}\n\n"
             f"📋 *Чекины:*\n"
             f"  ☀️ Утро: {block_map.get('morning',0)}\n"
             f"  ☕ День: {block_map.get('midday',0)}\n"
