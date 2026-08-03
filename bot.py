@@ -282,10 +282,10 @@ def update_user(uid, **kwargs):
         c.execute(f"UPDATE users SET {k}=? WHERE user_id=?", (v, uid))
     conn.commit(); conn.close()
 
-def save_diary(uid, block, data):
+def save_diary(uid, block, data, for_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    d = date.today().isoformat()
+    d = for_date or date.today().isoformat()
     c.execute("DELETE FROM diary WHERE user_id=? AND date=? AND block=?", (uid, d, block))
     c.execute("INSERT INTO diary(user_id,date,block,data) VALUES(?,?,?,?)",
               (uid, d, block, json.dumps(data, ensure_ascii=False)))
@@ -332,22 +332,23 @@ def save_feedback(uid, text):
               (uid, text, datetime.now().isoformat()))
     conn.commit(); conn.close()
 
-def add_streak(uid):
+def add_streak(uid, for_date=None):
     user = get_user(uid)
     streak = json.loads(user["streak"])
-    today = date.today().isoformat()
+    today = for_date or date.today().isoformat()
     if today not in streak:
         streak.append(today)
         update_user(uid, streak=json.dumps(streak))
 
 def calc_streak(uid):
     user = get_user(uid)
+    tz = get_user_tz(user)
+    today = datetime.now(tz).date()
     streak = sorted(set(json.loads(user["streak"])), reverse=True)
     if not streak: return 0
     count = 0
-    cur = date.today()
     for i, d in enumerate(streak):
-        if (cur - date.fromisoformat(d)).days == i: count += 1
+        if (today - date.fromisoformat(d)).days == i: count += 1
         else: break
     return count
 
@@ -911,6 +912,8 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
+    tz = get_user_tz(user)
+    today = datetime.now(tz).date().isoformat()
     focus = ctx.user_data.get("m_focus", "")
     if focus: update_user(uid, focus=focus)
 
@@ -924,8 +927,8 @@ async def finish_morning(message, uid, ctx):
         "writing":  ctx.user_data.get("m_writing", ""),
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
-    })
-    add_streak(uid)  # стрик растёт и от утра
+    }, for_date=today)
+    add_streak(uid, for_date=today)
 
     tasks_text = ""
     if focus:                          tasks_text += f"\n🅰️ {focus}"
@@ -1195,13 +1198,15 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def finish_evening(message, uid, ctx):
     user = get_user(uid)
+    tz = get_user_tz(user)
+    today = datetime.now(tz).date().isoformat()
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
-    save_diary(uid, "evening", data)
-    add_streak(uid)
+    save_diary(uid, "evening", data, for_date=today)
+    add_streak(uid, for_date=today)
     streak = calc_streak(uid)
 
     plans = ""
@@ -1835,8 +1840,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-    elif get_user(uid).get("research_awaiting") and str(get_user(uid).get("research_awaiting")) != "0":
-        user = get_user(uid)
+    elif (ru := get_user(uid)) and ru.get("research_awaiting") and str(ru.get("research_awaiting")) != "0":
+        user = ru
         awaiting = str(user.get("research_awaiting", ""))
         text = update.message.text.strip()
         # format: "DAY_open" e.g. "3_open"
@@ -2515,7 +2520,7 @@ async def morning_notification(app, uid):
             f"_{motiv}_{plan_text}{energy_note}\n\n"
             f"💡 *Навык дня:* {skill['name']}\n"
             f"_{skill['desc']}_\n\n"
-            "Готов(а) начать? 👇",
+            f"{g(gender, 'Готов', 'Готова')} начать? 👇",
             parse_mode="Markdown",
             reply_markup=morning_cta_kb()
         )
@@ -2887,12 +2892,13 @@ async def check_notifications(app):
             now = now_dt.strftime("%H:%M")
             is_sunday = now_dt.weekday() == 6
             try:
+                day_key = now_dt.strftime("%Y-%m-%d")
                 def already_sent(kind):
-                    key = (uid, kind, now)
+                    key = (uid, kind, day_key)
                     if key in _notif_sent: return True
                     _notif_sent[key] = True
-                    # Чистим записи старше текущей минуты чтобы dict не рос вечно
-                    stale = [k for k in _notif_sent if k[2] != now]
+                    # Чистим записи старше сегодня (по дате пользователя)
+                    stale = [k for k in _notif_sent if k[2] < day_key]
                     for k in stale: del _notif_sent[k]
                     return False
 
