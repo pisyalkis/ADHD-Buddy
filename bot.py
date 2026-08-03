@@ -232,6 +232,9 @@ def init_db():
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
         ("notif_enabled", "0"),
+        ("notif_morning_on", "1"),
+        ("notif_midday_on",  "1"),
+        ("notif_evening_on", "1"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -255,7 +258,7 @@ def get_user(uid):
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
     conn.close()
-    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","focus_active","focus_end_time","focus_duration","focus_minutes_today","focus_date"]
+    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","notif_morning_on","notif_midday_on","notif_evening_on","focus_active","focus_end_time","focus_duration","focus_minutes_today","focus_date"]
     return dict(zip(cols, row[:len(cols)]))
 
 def update_user(uid, **kwargs):
@@ -1261,35 +1264,44 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
 # ── SETTINGS: NOTIFICATION TIMES ───────────────────────────────────────────
+def _settings_text_and_kb(user):
+    enabled = int(user.get("notif_enabled") or 0)
+    m  = user.get("notif_morning", "09:00")
+    d  = user.get("notif_midday",  "13:00")
+    e  = user.get("notif_evening", "21:00")
+    mo = int(user.get("notif_morning_on") or 1)
+    do = int(user.get("notif_midday_on")  or 1)
+    eo = int(user.get("notif_evening_on") or 1)
+
+    status = "✅ включены" if enabled else "❌ выключены"
+    text = (
+        "⚙️ *Настройки уведомлений*\n\n"
+        f"Уведомления: *{status}*\n\n"
+        f"{'✅' if mo else '🔕'} Утро: *{m}*\n"
+        f"{'✅' if do else '🔕'} День: *{d}*\n"
+        f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
+        "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
+         InlineKeyboardButton(f"☀️ {m}", callback_data="set_morning")],
+        [InlineKeyboardButton(f"{'✅' if do else '🔕'} День", callback_data="toggle_midday"),
+         InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
+        [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
+         InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
+        [InlineKeyboardButton(
+            "🔕 Выключить все" if enabled else "🔔 Включить все",
+            callback_data="toggle_notif"
+        )],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+    return text, kb
+
 async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    user = get_user(uid)
-    enabled = user.get("notif_enabled", 0)
-    m = user.get("notif_morning", "09:00")
-    d = user.get("notif_midday",  "13:00")
-    e = user.get("notif_evening", "21:00")
-
-    status = "✅ включены" if enabled else "❌ выключены"
-    await q.message.reply_text(
-        "⚙️ *Настройки уведомлений*\n\n"
-        f"Статус: *{status}*\n\n"
-        f"☀️ Утро: *{m}*\n"
-        f"☕ День: *{d}*\n"
-        f"🌙 Вечер: *{e}*\n\n"
-        "_Нажми на время чтобы изменить_",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"☀️ Утро: {m}", callback_data="set_morning"),
-             InlineKeyboardButton(f"☕ День: {d}", callback_data="set_midday")],
-            [InlineKeyboardButton(f"🌙 Вечер: {e}", callback_data="set_evening")],
-            [InlineKeyboardButton(
-                "✅ Выключить уведомления" if enabled else "🔔 Включить уведомления",
-                callback_data="toggle_notif"
-            )],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ])
-    )
+    text, kb = _settings_text_and_kb(get_user(uid))
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1321,28 +1333,26 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Включить/выключить конкретный блок уведомлений (утро/день/вечер)."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    block = q.data.replace("toggle_", "")  # morning / midday / evening
+    col = f"notif_{block}_on"
     user = get_user(uid)
-    enabled = user.get("notif_enabled", 0)
-    m = user.get("notif_morning", "09:00")
-    d = user.get("notif_midday",  "13:00")
-    e = user.get("notif_evening", "21:00")
-    status = "✅ включены" if enabled else "❌ выключены"
-    await q.message.edit_text(
-        f"⚙️ *Настройки уведомлений*\n\nСтатус: *{status}*\n\n"
-        f"☀️ Утро: *{m}*\n☕ День: *{d}*\n🌙 Вечер: *{e}*\n\n"
-        "_Нажми на время чтобы изменить_",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"☀️ Утро: {m}", callback_data="set_morning"),
-             InlineKeyboardButton(f"☕ День: {d}", callback_data="set_midday")],
-            [InlineKeyboardButton(f"🌙 Вечер: {e}", callback_data="set_evening")],
-            [InlineKeyboardButton(
-                "✅ Выключить" if enabled else "🔔 Включить",
-                callback_data="toggle_notif"
-            )],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ])
-    )
+    cur = int(user.get(col) or 1)
+    update_user(uid, **{col: 0 if cur else 1})
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2259,11 +2269,11 @@ async def check_notifications(app):
         tz = pytz.timezone(USER_TIMEZONE)
         now = datetime.now(tz).strftime("%H:%M")
 
-        if now == user.get("notif_morning", "09:00"):
+        if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
             await morning_notification(app)
-        elif now == user.get("notif_midday", "13:00"):
+        elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
             await midday_notification(app)
-        elif now == user.get("notif_evening", "21:00"):
+        elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
             await evening_notification(app)
 
         # Проверяем фокус-таймер
@@ -2422,7 +2432,8 @@ def main():
     app.add_handler(CallbackQueryHandler(settings_menu,    pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
-    app.add_handler(CallbackQueryHandler(toggle_notif,     pattern="^toggle_notif$"))
+    app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
+    app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
