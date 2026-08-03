@@ -590,6 +590,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("▶️ Начать разминку", callback_data="warmup_go")],
             [InlineKeyboardButton("✅ Уже сделал(а)", callback_data="warmup_done")],
             [InlineKeyboardButton("Пропустить →", callback_data="skip_warmup")],
+            [InlineKeyboardButton("⚡ Быстро — только задачи", callback_data="morning_quick")],
         ])
     )
     return M_EXERCISE
@@ -618,6 +619,15 @@ async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     await ask_writing(q.message)
     return M_WRITING
+
+async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    ctx.user_data["quick_morning"] = True
+    ctx.user_data["m_writing"] = ""
+    ctx.user_data["m_gratitude"] = ""
+    ctx.user_data["m_child"] = ""
+    await ask_morning_focus(q.message, ctx)
+    return M_FOCUS
 
 def keep_or_skip_kb(keep_cb, skip_cb):
     return InlineKeyboardMarkup([
@@ -1493,6 +1503,34 @@ async def send_beacon(app):
         print(f"Ошибка маячка: {e}")
 
 
+def _tasks_text_and_kb(morning, done_set):
+    """Строит текст и клавиатуру задач с отметками выполнения."""
+    task_defs = [
+        ("focus", "🅰️", "A"),
+        ("b1",    "🅱️", "B1"),
+        ("b2",    "🅱️", "B2"),
+        ("c1",    "🅲",  "C1"),
+        ("c2",    "🅲",  "C2"),
+        ("c3",    "🅲",  "C3"),
+    ]
+    lines = []
+    buttons = []
+    for key, icon, label in task_defs:
+        val = morning.get(key, "")
+        if not val: continue
+        done = label in done_set
+        prefix = "✅" if done else icon
+        lines.append(f"{prefix} {'~' if done else ''}{val}{'~' if done else ''}")
+        if not done:
+            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{label}")])
+
+    text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи не заданы_")
+    kb_rows = buttons + [
+        [InlineKeyboardButton("🆘 Застрял(а)?", callback_data="mid_coach")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ]
+    return text, InlineKeyboardMarkup(kb_rows)
+
 async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать все задачи на сегодня."""
     q = update.callback_query; await q.answer()
@@ -1506,32 +1544,38 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = []
-    if morning.get("focus"): lines.append(f"🅰️ *{morning['focus']}*")
-    if morning.get("b1"):    lines.append(f"🅱️ {morning['b1']}")
-    if morning.get("b2"):    lines.append(f"🅱️ {morning['b2']}")
-    if morning.get("c1"):    lines.append(f"🅲 {morning['c1']}")
-    if morning.get("c2"):    lines.append(f"🅲 {morning['c2']}")
-    if morning.get("c3"):    lines.append(f"🅲 {morning['c3']}")
+    done_data = get_diary(uid, "tasks_done")
+    done_set = set(done_data.get("done", []))
+    text, kb = _tasks_text_and_kb(morning, done_set)
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
-    if not lines:
-        text = "📋 *Задачи на сегодня*\n\n_Задачи не заданы._"
-    else:
-        tasks_str = "\n".join(lines)
-        text = (
-            "📋 *Задачи на сегодня*\n\n"
-            f"{tasks_str}\n\n"
-            "━━━━━━━━━━━━━━━\n"
-            "🅰️ = обязательно  🅱️ = желательно  🅲 = по возможности"
-        )
+async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Отметить задачу выполненной."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    label = q.data.replace("task_done_", "")  # A, B1, B2, C1, C2, C3
 
-    await q.message.reply_text(
-        text, parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🆘 Застрял(а)?", callback_data="mid_coach")],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ])
-    )
+    done_data = get_diary(uid, "tasks_done")
+    done_list = done_data.get("done", [])
+    if label not in done_list:
+        done_list.append(label)
+    save_diary(uid, "tasks_done", {"done": done_list})
+
+    morning = get_diary(uid, "morning")
+    done_set = set(done_list)
+    text, kb = _tasks_text_and_kb(morning, done_set)
+
+    all_keys = [k for k in ["focus","b1","b2","c1","c2","c3"] if morning.get(k)]
+    label_map = {"focus":"A","b1":"B1","b2":"B2","c1":"C1","c2":"C2","c3":"C3"}
+    all_labels = {label_map[k] for k in all_keys}
+
+    if all_labels and all_labels <= done_set:
+        text += "\n\n🎉 *Все задачи выполнены! Отличный день!*"
+
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 # ── DAY CARD ───────────────────────────────────────────────────────────────
@@ -2842,9 +2886,10 @@ def main():
         entry_points=[CallbackQueryHandler(morning_start, pattern="^go_morning$")],
         states={
             M_EXERCISE: [
-                CallbackQueryHandler(warmup_go,     pattern="^warmup_go$"),
-                CallbackQueryHandler(warmup_done,   pattern="^warmup_done$"),
-                CallbackQueryHandler(skip_warmup,   pattern="^skip_warmup$"),
+                CallbackQueryHandler(warmup_go,      pattern="^warmup_go$"),
+                CallbackQueryHandler(warmup_done,    pattern="^warmup_done$"),
+                CallbackQueryHandler(skip_warmup,    pattern="^skip_warmup$"),
+                CallbackQueryHandler(morning_quick,  pattern="^morning_quick$"),
             ],
             # Сначала мягкий ритуал
             M_WRITING:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_writing),    CallbackQueryHandler(skip_m_writing,  pattern="^skip_m_writing$")],
@@ -2908,7 +2953,8 @@ def main():
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
-    app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
+    app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
+    app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
