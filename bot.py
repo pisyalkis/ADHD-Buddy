@@ -1795,9 +1795,9 @@ async def midday_notification(app):
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🅰️ Работаю над А", callback_data="mid_ok")],
-                [InlineKeyboardButton("✅ Сделал А, работаю над Б", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("✅✅ Сделал А и Б, работаю над В", callback_data="mid_ab_done_c")],
+                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
+                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
+                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
                 [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
             ])
         )
