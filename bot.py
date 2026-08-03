@@ -1796,17 +1796,9 @@ async def midday_notification(app):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🅰️ Работаю над А", callback_data="mid_ok")],
-                [InlineKeyboardButton("🅰️✅ А готова, работаю над Б", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("🅰️🅱️✅ А и Б готовы, работаю над В", callback_data="mid_ab_done_c")],
-                [InlineKeyboardButton("😬 А ещё не начата", callback_data="mid_a_skipped")],
-                [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
-                [InlineKeyboardButton("😰 Задача подавляет/пугает", callback_data="mid_scary")],
-                [InlineKeyboardButton("⏳ Жду подходящего момента", callback_data="mid_waiting")],
-                [InlineKeyboardButton("🎯 Боюсь сделать плохо", callback_data="mid_perfect")],
-                [InlineKeyboardButton("🧱 Внутреннее сопротивление", callback_data="mid_resist")],
-                [InlineKeyboardButton("⚡ Мало времени", callback_data="mid_time")],
-                [InlineKeyboardButton("📱 Залип(ла) в телефоне", callback_data="mid_phone")],
-                [InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")],
+                [InlineKeyboardButton("✅ Сделал А, работаю над Б", callback_data="mid_a_done_b")],
+                [InlineKeyboardButton("✅✅ Сделал А и Б, работаю над В", callback_data="mid_ab_done_c")],
+                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
             ])
         )
     except Exception as e: print(f"Ошибка дневного уведомления: {e}")
@@ -1834,6 +1826,23 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"💪 *Отлично, {name}!*\n\nПродолжай. Помни про перерывы — 5-10 минут каждые 25-30 минут.\n_Гиперфокус истощает — не пропускай отдых._\n\nДо вечера! 🌙",
             parse_mode="Markdown", reply_markup=main_menu()
+        )
+
+    elif action == "mid_procr":
+        a_task = morning.get("focus", "А-задача")
+        await q.message.reply_text(
+            f"Окей, разберёмся. Что происходит?\n\n_{a_task}_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
+                [InlineKeyboardButton("😰 Задача подавляет/пугает", callback_data="mid_scary")],
+                [InlineKeyboardButton("⏳ Жду подходящего момента", callback_data="mid_waiting")],
+                [InlineKeyboardButton("🎯 Боюсь сделать плохо", callback_data="mid_perfect")],
+                [InlineKeyboardButton("🧱 Внутреннее сопротивление", callback_data="mid_resist")],
+                [InlineKeyboardButton("⚡ Мало времени", callback_data="mid_time")],
+                [InlineKeyboardButton("📱 Залип(ла) в телефоне", callback_data="mid_phone")],
+                [InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")],
+            ])
         )
 
     elif action == "mid_a_done_b":
