@@ -343,7 +343,9 @@ def calc_streak(uid):
 # ── HELPERS ────────────────────────────────────────────────────────────────
 def g(gender, male, female):
     """Вернуть нужную форму слова в зависимости от пола."""
-    return female if gender == 'F' else male
+    if gender == 'F': return female
+    if gender == 'N': return f"{male}(а)"
+    return male
 
 def build_tasks_summary(morning_data):
     """Формирует текстовый список задач из утреннего дневника."""
@@ -448,10 +450,11 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(update.effective_user.id, name=name)
     await update.message.reply_text(
         f"Отлично, {name}! Один вопрос для персонализации 👇",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Мужской", callback_data="gender_M"),
-            InlineKeyboardButton("Женский", callback_data="gender_F"),
-        ]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Мужской", callback_data="gender_M"),
+             InlineKeyboardButton("Женский", callback_data="gender_F")],
+            [InlineKeyboardButton("Другое", callback_data="gender_N")],
+        ])
     )
     return ONBOARD_GENDER
 
@@ -460,7 +463,7 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     uid = q.from_user.id
     name = ctx.user_data.get("onboard_name", "")
-    gender = "M" if q.data == "gender_M" else "F"
+    gender = "M" if q.data == "gender_M" else ("F" if q.data == "gender_F" else "N")
     update_user(uid, name=name, gender=gender)
 
     await q.message.reply_text(
@@ -3112,7 +3115,7 @@ def main():
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
-    app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MF]$"))
+    app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
