@@ -232,6 +232,7 @@ def init_db():
 
     # Migrate existing DB - add columns if missing
     for col, default in [
+        ("timezone", f"'{USER_TIMEZONE}'"),
         ("buddy_name", "''"),
         ("notif_morning", "'09:00'"),
         ("notif_midday", "'13:00'"),
@@ -350,6 +351,35 @@ def calc_streak(uid):
         else: break
     return count
 
+# ── TIMEZONE HELPERS ───────────────────────────────────────────────────────
+def get_user_tz(user) -> pytz.BaseTzInfo:
+    """Таймзона пользователя — из его профиля, иначе дефолт."""
+    tz_name = user.get("timezone") or USER_TIMEZONE
+    try:
+        return pytz.timezone(tz_name)
+    except Exception:
+        return pytz.timezone(USER_TIMEZONE)
+
+def _sync_tz_lookup(city: str):
+    """Синхронный геокодинг города → название таймзоны. Запускать через run_in_executor."""
+    try:
+        from geopy.geocoders import Nominatim
+        from timezonefinder import TimezoneFinder
+        geolocator = Nominatim(user_agent="adhd_focus_bot", timeout=5)
+        location = geolocator.geocode(city, language="en")
+        if not location:
+            return None
+        tf = TimezoneFinder()
+        return tf.timezone_at(lat=location.latitude, lng=location.longitude)
+    except Exception as e:
+        print(f"Timezone lookup error for '{city}': {e}")
+        return None
+
+async def get_timezone_from_city(city: str):
+    """Асинхронная обёртка над геокодингом."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _sync_tz_lookup, city)
+
 # ── HELPERS ────────────────────────────────────────────────────────────────
 def g(gender, male, female):
     """Вернуть нужную форму слова в зависимости от пола."""
@@ -400,8 +430,8 @@ def evening_cta_kb():
         [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
     ])
 
-def today_str():
-    return datetime.now(pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
+def today_str(tz=None):
+    return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
 def get_daily_skill(uid):
     """Возвращает навык дня — меняется каждый день."""
@@ -417,7 +447,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Если уже зарегистрирован — сразу предложить нужный блок по времени суток
     if user["name"]:
-        hour = datetime.now(pytz.timezone(USER_TIMEZONE)).hour
+        hour = datetime.now(get_user_tz(user)).hour
         if hour < 12:
             await update.message.reply_text(
                 f"С возвращением, {user['name']}! Сейчас утро — самое время настроиться на день 👇",
@@ -527,7 +557,12 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await asyncio.sleep(0.5)
     await q.message.reply_text(
-        "И последнее — из какого ты города? (можно пропустить)",
+        "🌍 *Последнее — из какого ты города?*\n\n"
+        "Это нужно для правильного времени уведомлений — "
+        "чтобы утреннее уведомление приходило в 9 утра *твоего* города, "
+        "а не в 3 ночи 😅\n\n"
+        "Просто напиши название города:",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
@@ -606,7 +641,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(
         f"☀️ *Доброе утро, {name}!*\n"
-        f"_{today_str()}_\n\n"
+        f"_{today_str(get_user_tz(user))}_\n\n"
         f"_{motiv}_{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
         f"_{skill['desc']}_",
@@ -972,7 +1007,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(
         f"🌙 *Хороший был день, {user['name']}!*\n"
-        f"_{today_str()}_{focus_recap}\n\n"
+        f"_{today_str(get_user_tz(user))}_{focus_recap}\n\n"
         f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
         "Давай закроем этот день.",
         parse_mode="Markdown"
@@ -1397,12 +1432,16 @@ def _settings_text_and_kb(user):
 
     status = "✅ включены" if enabled else "❌ выключены"
     beacon_label = f"каждые {bi} ч" if bi == 1 else f"каждые {bi} ч"
+    tz_name = user.get("timezone") or USER_TIMEZONE
+    city_name = user.get("city") or ""
+    tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
     text = (
         "⚙️ *Настройки уведомлений*\n\n"
         f"Уведомления: *{status}*\n\n"
         f"{'✅' if mo else '🔕'} Утро: *{m}*\n"
         f"{'✅' if do else '🔕'} День: *{d}*\n"
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
+        f"🌍 Таймзона: *{tz_display}*\n\n"
         f"{'✅' if be else '🔕'} Маячок внимания: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
         f"_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
         "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
@@ -1521,7 +1560,7 @@ async def send_beacon(app, user):
         uid = user["user_id"]
         if not int(user.get("beacon_enabled") or 0): return
 
-        tz = pytz.timezone(USER_TIMEZONE)
+        tz = get_user_tz(user)
         now = datetime.now(tz)
         interval_h = int(user.get("beacon_interval") or 2)
 
@@ -1761,8 +1800,29 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_city"] = False
         city = update.message.text.strip()
         update_user(uid, city=city)
-        await update.message.reply_text(f"📍 {city} — записал!")
-        # Показываем настройку уведомлений (та же логика что и при «Пропустить»)
+        # Определяем таймзону по городу
+        thinking = await update.message.reply_text(f"📍 Ищу {city}...")
+        tz_name = await get_timezone_from_city(city)
+        if tz_name:
+            update_user(uid, timezone=tz_name)
+            # Показываем offset для удобства
+            tz_obj = pytz.timezone(tz_name)
+            offset = datetime.now(tz_obj).strftime("%z")
+            offset_str = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
+            await thinking.edit_text(
+                f"📍 *{city}* — записал!\n"
+                f"🕐 Твоя таймзона: *{tz_name}* ({offset_str})\n\n"
+                f"Уведомления будут приходить по времени твоего города.",
+                parse_mode="Markdown"
+            )
+        else:
+            await thinking.edit_text(
+                f"📍 {city} — записал!\n\n"
+                f"⚠️ Не удалось определить таймзону автоматически — "
+                f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
+                f"Можно изменить в ⚙️ Настройки позже."
+            )
+        # Показываем настройку уведомлений
         await update.message.reply_text(
             "🔔 *Последний шаг — уведомления*\n\n"
             "Бот пишет три раза в день: утром, днём и вечером. "
@@ -1823,7 +1883,7 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
         try:
             end_dt = datetime.fromisoformat(user["focus_end_time"])
-            tz = pytz.timezone(USER_TIMEZONE)
+            tz = get_user_tz(user)
             now = datetime.now(tz)
             end_dt_tz = end_dt.astimezone(tz)
             remaining = int((end_dt_tz - now).total_seconds() / 60)
@@ -1877,7 +1937,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     minutes = int(q.data.split("_")[2])
 
-    tz = pytz.timezone(USER_TIMEZONE)
+    tz = get_user_tz(get_user(uid))
     now = datetime.now(tz)
     end_dt = now + timedelta(minutes=minutes)
 
@@ -2818,15 +2878,14 @@ async def check_notifications(app):
     _last_heartbeat = time.monotonic()
     try:
         users = get_all_notif_users()
-        tz = pytz.timezone(USER_TIMEZONE)
-        now_dt = datetime.now(tz)
-        now = now_dt.strftime("%H:%M")
-        is_sunday = now_dt.weekday() == 6
-
-        today_date = now_dt.strftime("%Y-%m-%d")
 
         for user in users:
             uid = user["user_id"]
+            # Каждый пользователь — своя таймзона
+            tz = get_user_tz(user)
+            now_dt = datetime.now(tz)
+            now = now_dt.strftime("%H:%M")
+            is_sunday = now_dt.weekday() == 6
             try:
                 def already_sent(kind):
                     key = (uid, kind, now)
