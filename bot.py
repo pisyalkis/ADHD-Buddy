@@ -224,6 +224,11 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, text TEXT, created TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS research (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, day INTEGER, question TEXT,
+        answer TEXT, created TEXT
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -243,6 +248,9 @@ def init_db():
         ("focus_duration", "0"),
         ("focus_minutes_today", "0"),
         ("focus_date", "''"),
+        ("created_at", f"'{date.today().isoformat()}'"),
+        ("research_done", "''"),
+        ("research_awaiting", "0"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -507,7 +515,34 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     await q.message.reply_text(
-        "Отлично! Попробуй начать с утреннего блока 👇",
+        "🔔 *Последний шаг — уведомления*\n\n"
+        "Бот пишет три раза в день: утром, днём и вечером. "
+        "Без уведомлений польза от бота сильно меньше.\n\n"
+        "Включить уведомления?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
+            [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+        ])
+    )
+
+async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, notif_enabled=1)
+    await q.message.reply_text(
+        "✅ *Уведомления включены!*\n\n"
+        "По умолчанию: ☀️ 09:00 · ☕ 13:00 · 🌙 21:00\n"
+        "Изменить время можно в ⚙️ Настройки.\n\n"
+        "Всё готово — начнём! 🚀",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
+
+async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "Окей! Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
         reply_markup=main_menu()
     )
 
@@ -797,6 +832,7 @@ async def finish_morning(message, uid, ctx):
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
     })
+    add_streak(uid)  # стрик растёт и от утра
 
     tasks_text = ""
     if focus:                          tasks_text += f"\n🅰️ {focus}"
@@ -1431,14 +1467,20 @@ async def send_beacon(app):
         morning = get_diary(uid, "morning")
         tasks = build_tasks_summary(morning) if morning else "_задачи не заданы_"
 
+        BEACON_TEXTS = [
+            "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
+            "⏱ *Стоп на секунду*\n\nЗадачи дня:\n{tasks}\n\nНад чем работаешь прямо сейчас?",
+            "🔔 *Проверка*\n\nЗадачи дня:\n{tasks}\n\nКак дела? Всё по плану?",
+            "👁 *Внимание, маячок*\n\nЗадачи дня:\n{tasks}\n\nВернёмся к задачам — что сейчас происходит?",
+            "🧭 *Сориентируемся*\n\nЗадачи дня:\n{tasks}\n\nТы где сейчас по задачам?",
+            "💡 *Короткая пауза*\n\nЗадачи дня:\n{tasks}\n\nНа чём сосредоточен(а) прямо сейчас?",
+        ]
+        beacon_text = random.choice(BEACON_TEXTS).format(tasks=tasks)
+
         update_user(uid, beacon_last_sent=now.isoformat())
         await app.bot.send_message(
             chat_id=uid,
-            text=(
-                f"👀 *Маячок внимания*\n\n"
-                f"Задачи дня:\n{tasks}\n\n"
-                f"Что сейчас делаешь?"
-            ),
+            text=beacon_text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
@@ -1606,6 +1648,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"👥 *Бадди добавлен: {bname}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
             parse_mode="Markdown", reply_markup=main_menu()
         )
+    elif get_user(uid).get("research_awaiting") and str(get_user(uid).get("research_awaiting")) != "0":
+        user = get_user(uid)
+        awaiting = str(user.get("research_awaiting", ""))
+        text = update.message.text.strip()
+        # format: "DAY_open" e.g. "3_open"
+        day = int(awaiting.split("_")[0]) if "_" in awaiting else 0
+        if day:
+            save_research(uid, day, f"day{day}_text", text)
+            update_user(uid, research_awaiting=0)
+            await update.message.reply_text(
+                "Спасибо! Твой ответ очень важен 🙏",
+                reply_markup=main_menu()
+            )
+        return
     elif ctx.user_data.get("awaiting_feedback"):
         ctx.user_data["awaiting_feedback"] = False
         text = update.message.text.strip()
@@ -1780,6 +1836,143 @@ async def send_focus_end(app, uid: int, minutes: int):
         )
     except Exception as e:
         print(f"Ошибка send_focus_end: {e}")
+
+
+# ── RESEARCH QUESTIONS ─────────────────────────────────────────────────────
+def save_research(uid, day, question, answer):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO research(user_id,day,question,answer,created) VALUES(?,?,?,?,?)",
+              (uid, day, question, answer, datetime.now().isoformat()))
+    conn.commit(); conn.close()
+
+async def send_research_question(app, uid, day):
+    """Отправить исследовательский вопрос по дню с момента регистрации."""
+    user = get_user(uid)
+    name = user.get("name", "")
+    research_done = user.get("research_done") or ""
+
+    if str(day) in research_done.split(","): return  # уже отвечал
+
+    if day == 3:
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"🔬 *{name}, короткий вопрос!*\n\n"
+                f"Ты используешь бота уже 3 дня. Как ощущения?\n\n"
+                f"Оцени насколько бот полезен прямо сейчас:"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("1 😕", callback_data="research_3_1"),
+                 InlineKeyboardButton("2 😐", callback_data="research_3_2"),
+                 InlineKeyboardButton("3 🙂", callback_data="research_3_3"),
+                 InlineKeyboardButton("4 😊", callback_data="research_3_4"),
+                 InlineKeyboardButton("5 🤩", callback_data="research_3_5")],
+            ])
+        )
+        update_user(uid, research_awaiting=f"3_open:что было самым полезным за эти дни?")
+
+    elif day == 7:
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"🔬 *{name}, ты с ботом уже неделю!*\n\n"
+                f"Был ли момент когда подумал(а) «о, это работает»?"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Да, был такой момент", callback_data="research_7_yes")],
+                [InlineKeyboardButton("🤔 Не уверен(а)", callback_data="research_7_maybe")],
+                [InlineKeyboardButton("❌ Нет пока", callback_data="research_7_no")],
+            ])
+        )
+
+    elif day == 14:
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"🔬 *{name}, 2 недели вместе!*\n\n"
+                f"Насколько вероятно что порекомендуешь бота другу с СДВГ?\n\n"
+                f"0 — точно не порекомендую, 10 — точно порекомендую"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(0, 6)],
+                [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(6, 11)],
+            ])
+        )
+        update_user(uid, research_awaiting="14_open:что стоит упростить или убрать?")
+
+    elif day == 30:
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"🔬 *{name}, месяц с ботом!*\n\n"
+                f"Если бот перестанет работать — как ты к этому отнесёшься?"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("😢 Очень расстроюсь", callback_data="research_30_sad")],
+                [InlineKeyboardButton("😕 Немного расстроюсь", callback_data="research_30_meh")],
+                [InlineKeyboardButton("😐 Всё равно", callback_data="research_30_nope")],
+                [InlineKeyboardButton("😅 Даже рад(а)", callback_data="research_30_glad")],
+            ])
+        )
+
+async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    parts = q.data.split("_")  # research_DAY_VALUE
+    day = int(parts[1])
+    value = "_".join(parts[2:])
+
+    LABELS = {
+        "yes": "Да, был момент", "maybe": "Не уверен(а)", "no": "Нет пока",
+        "sad": "Очень расстроюсь", "meh": "Немного расстроюсь",
+        "nope": "Всё равно", "glad": "Даже рад(а)",
+    }
+    answer = LABELS.get(value, value)
+    save_research(uid, day, f"day{day}_rating", answer)
+
+    # Отмечаем день как пройденный
+    user = get_user(uid)
+    done = user.get("research_done") or ""
+    done_list = [x for x in done.split(",") if x]
+    if str(day) not in done_list:
+        done_list.append(str(day))
+    update_user(uid, research_done=",".join(done_list))
+
+    if day == 3:
+        update_user(uid, research_awaiting=f"3_open")
+        await q.message.reply_text(
+            f"Спасибо! Оценка {value}/5 записана.\n\n"
+            f"И ещё один вопрос — ответь текстом:\n\n"
+            f"*Что было самым полезным за эти 3 дня?*",
+            parse_mode="Markdown"
+        )
+    elif day == 7:
+        await q.message.reply_text(
+            "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
+            reply_markup=main_menu()
+        )
+        update_user(uid, research_awaiting="7_open")
+        await q.message.reply_text(
+            "*И ещё — что мешало использовать бота на этой неделе?*\n\nОтветь текстом.",
+            parse_mode="Markdown"
+        )
+    elif day == 14:
+        update_user(uid, research_awaiting="14_open")
+        await q.message.reply_text(
+            f"NPS {value} — записал!\n\n"
+            f"*И последнее — ответь текстом:*\n\nЧто стоит упростить или убрать в боте?",
+            parse_mode="Markdown"
+        )
+    elif day == 30:
+        await q.message.reply_text(
+            "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
+            reply_markup=main_menu()
+        )
 
 
 async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2423,9 +2616,49 @@ async def check_notifications(app):
             await midday_notification(app)
         elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
             await evening_notification(app)
+        else:
+            # Напоминание если пропустил утро (+2 часа после утреннего)
+            try:
+                mh, mm = map(int, user.get("notif_morning","09:00").split(":"))
+                tz = pytz.timezone(USER_TIMEZONE)
+                reminder_time = datetime.now(tz).replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                reminder_str = reminder_time.strftime("%H:%M")
+                if now == reminder_str and int(user.get("notif_morning_on") or 1):
+                    today = date.today().isoformat()
+                    morning = get_diary(uid, "morning")
+                    if not morning.get("focus"):
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text=(
+                                f"☀️ *Утро ещё не закрыто*\n\n"
+                                f"Ещё не поздно поставить задачи на день — займёт 2 минуты."
+                            ),
+                            parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                            ]])
+                        )
+            except Exception:
+                pass
 
         # Маячок внимания
         await send_beacon(app)
+
+        # Исследовательские вопросы по дням
+        try:
+            created_at = user.get("created_at") or date.today().isoformat()
+            days_since = (date.today() - date.fromisoformat(str(created_at)[:10])).days
+            research_done = user.get("research_done") or ""
+            done_days = [x for x in research_done.split(",") if x]
+            for milestone in [3, 7, 14, 30]:
+                if days_since >= milestone and str(milestone) not in done_days:
+                    tz = pytz.timezone(USER_TIMEZONE)
+                    cur_hour = datetime.now(tz).hour
+                    if 10 <= cur_hour <= 12:  # шлём только в утренние часы
+                        await send_research_question(app, uid, milestone)
+                    break
+        except Exception as re:
+            print(f"Ошибка research check: {re}")
 
         # Проверяем фокус-таймер
         if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
@@ -2490,6 +2723,89 @@ def _watchdog_loop():
 
 async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
+
+
+async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text(
+            f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+
+        total = cur.execute("SELECT COUNT(*) FROM users WHERE name != ''").fetchone()[0]
+        week_ago  = (date.today() - timedelta(days=7)).isoformat()
+        month_ago = (date.today() - timedelta(days=30)).isoformat()
+        active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
+        active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
+
+        checkins = cur.execute(
+            "SELECT block, COUNT(*) FROM diary GROUP BY block"
+        ).fetchall()
+        block_map = {r[0]: r[1] for r in checkins}
+
+        # Research summary
+        r3_ratings  = cur.execute("SELECT answer FROM research WHERE day=3 AND question='day3_rating'").fetchall()
+        r14_nps     = cur.execute("SELECT answer FROM research WHERE day=14 AND question='day14_rating'").fetchall()
+        r30_pmf     = cur.execute("SELECT answer FROM research WHERE day=30 AND question='day30_rating'").fetchall()
+        r3_texts    = cur.execute("SELECT answer FROM research WHERE day=3 AND question='day3_text'").fetchall()
+        r7_texts    = cur.execute("SELECT answer FROM research WHERE day=7 AND question='day7_text'").fetchall()
+        r14_texts   = cur.execute("SELECT answer FROM research WHERE day=14 AND question='day14_text'").fetchall()
+        conn.close()
+
+        # Avg day-3 rating
+        d3_avg = ""
+        if r3_ratings:
+            nums = [int(r[0]) for r in r3_ratings if r[0].isdigit()]
+            if nums: d3_avg = f"  Оценка день 3: *{sum(nums)/len(nums):.1f}/5* ({len(nums)} отв.)\n"
+
+        # NPS
+        nps_str = ""
+        if r14_nps:
+            scores = [int(r[0]) for r in r14_nps if r[0].isdigit()]
+            if scores:
+                promoters  = sum(1 for s in scores if s >= 9)
+                detractors = sum(1 for s in scores if s <= 6)
+                nps = round((promoters - detractors) / len(scores) * 100)
+                nps_str = f"  NPS (день 14): *{nps}* ({len(scores)} отв.)\n"
+
+        # PMF
+        pmf_str = ""
+        if r30_pmf:
+            sad_count = sum(1 for r in r30_pmf if "Очень" in r[0])
+            pmf_pct = round(sad_count / len(r30_pmf) * 100) if r30_pmf else 0
+            pmf_str = f"  PMF «очень расстроюсь» (день 30): *{pmf_pct}%* ({len(r30_pmf)} отв.)\n"
+
+        # Open answers
+        def fmt_answers(rows, label):
+            if not rows: return ""
+            out = f"\n*{label}:*\n"
+            for r in rows[-3:]:
+                out += f"— _{r[0]}_\n"
+            return out
+
+        text = (
+            f"📊 *Статистика бота*\n\n"
+            f"👤 Всего пользователей: *{total}*\n"
+            f"📅 Активны за 7 дней: *{active7}*\n"
+            f"📅 Активны за 30 дней: *{active30}*\n\n"
+            f"📋 *Чекины:*\n"
+            f"  ☀️ Утро: {block_map.get('morning',0)}\n"
+            f"  ☕ День: {block_map.get('midday',0)}\n"
+            f"  🌙 Вечер: {block_map.get('evening',0)}\n\n"
+            f"🔬 *Исследование:*\n"
+            f"{d3_avg}{nps_str}{pmf_str}"
+            f"{fmt_answers(r3_texts, 'Что полезно (день 3)')}"
+            f"{fmt_answers(r7_texts, 'Что мешало (день 7)')}"
+            f"{fmt_answers(r14_texts, 'Что упростить (день 14)')}"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 
 def main():
@@ -2568,10 +2884,13 @@ def main():
         conversation_timeout=CONV_TIMEOUT_LONG,
     )
 
+    app.add_handler(CommandHandler("admin", admin_stats), group=-1)
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
-    app.add_handler(CallbackQueryHandler(onboard_done,  pattern="^onboard_done$"))
+    app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
+    app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
+    app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
@@ -2588,6 +2907,7 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
+    app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
