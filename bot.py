@@ -401,7 +401,7 @@ def evening_cta_kb():
     ])
 
 def today_str():
-    return datetime.now().strftime("%d %B %Y")
+    return datetime.now(pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
 def get_daily_skill(uid):
     """Возвращает навык дня — меняется каждый день."""
@@ -1979,7 +1979,14 @@ async def send_research_question(app, uid, day):
     name = user.get("name", "")
     research_done = user.get("research_done") or ""
 
-    if str(day) in research_done.split(","): return  # уже отвечал
+    if str(day) in research_done.split(","): return  # уже ответил
+
+    # Помечаем как отправленный СРАЗУ — чтобы не слать повторно каждую минуту
+    # пока пользователь не ответит. Ответ всё равно сохранится через research_callback.
+    done_list = [x for x in research_done.split(",") if x]
+    if str(day) not in done_list:
+        done_list.append(str(day))
+        update_user(uid, research_done=",".join(done_list))
 
     if day == 3:
         await app.bot.send_message(
@@ -2816,19 +2823,33 @@ async def check_notifications(app):
         now = now_dt.strftime("%H:%M")
         is_sunday = now_dt.weekday() == 6
 
+        today_date = now_dt.strftime("%Y-%m-%d")
+
         for user in users:
             uid = user["user_id"]
             try:
+                def already_sent(kind):
+                    key = (uid, kind, now)
+                    if key in _notif_sent: return True
+                    _notif_sent[key] = True
+                    # Чистим записи старше текущей минуты чтобы dict не рос вечно
+                    stale = [k for k in _notif_sent if k[2] != now]
+                    for k in stale: del _notif_sent[k]
+                    return False
+
                 if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
-                    await morning_notification(app, uid)
-                    if is_sunday:
-                        await weekly_report(app, uid)
+                    if not already_sent("morning"):
+                        await morning_notification(app, uid)
+                        if is_sunday:
+                            await weekly_report(app, uid)
 
                 elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
-                    await midday_notification(app, uid)
+                    if not already_sent("midday"):
+                        await midday_notification(app, uid)
 
                 elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
-                    await evening_notification(app, uid)
+                    if not already_sent("evening"):
+                        await evening_notification(app, uid)
 
                 else:
                     # Напоминание если пропустил утро (+2 часа)
@@ -2836,7 +2857,7 @@ async def check_notifications(app):
                         mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                         reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
                         if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                            if not get_diary(uid, "morning").get("focus"):
+                            if not already_sent("morning_reminder") and not get_diary(uid, "morning").get("focus"):
                                 await app.bot.send_message(
                                     chat_id=uid,
                                     text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
@@ -2892,6 +2913,10 @@ async def check_notifications(app):
 _last_heartbeat = time.monotonic()
 HEARTBEAT_TIMEOUT_SEC = 5 * 60
 
+# In-memory guard против дублирования уведомлений в одну минуту.
+# Ключ: (uid, тип, "YYYY-MM-DD HH:MM") → True. Сбрасывается при перезапуске — ок.
+_notif_sent: dict = {}
+
 def _watchdog_loop():
     while True:
         time.sleep(30)
@@ -2925,6 +2950,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Пол
         males   = cur.execute("SELECT COUNT(*) FROM users WHERE gender='M' AND name!=''").fetchone()[0]
         females = cur.execute("SELECT COUNT(*) FROM users WHERE gender='F' AND name!=''").fetchone()[0]
+        nonbin  = cur.execute("SELECT COUNT(*) FROM users WHERE gender='N' AND name!=''").fetchone()[0]
 
         # Города
         cities = cur.execute(
@@ -2981,7 +3007,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = (
             f"📊 *Статистика бота*\n\n"
             f"👤 Всего пользователей: *{total}*\n"
-            f"  👨 Мужчин: {males} · 👩 Женщин: {females}\n"
+            f"  👨 Мужчин: {males} · 👩 Женщин: {females}" + (f" · 🏳️‍🌈 Другое: {nonbin}" if nonbin else "") + "\n"
             f"📅 Активны за 7 дней: *{active7}*\n"
             f"📅 Активны за 30 дней: *{active30}*\n\n"
             f"🌍 *Города:*\n{cities_str}\n\n"
