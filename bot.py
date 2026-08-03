@@ -249,6 +249,7 @@ def init_db():
 
 def get_user(uid):
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     row = c.fetchone()
@@ -257,9 +258,9 @@ def get_user(uid):
         conn.commit()
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
+    result = dict(row)
     conn.close()
-    cols = ["user_id","name","gender","focus","streak","last_skill_date","buddy_name","notif_morning","notif_midday","notif_evening","notif_enabled","notif_morning_on","notif_midday_on","notif_evening_on","focus_active","focus_end_time","focus_duration","focus_minutes_today","focus_date"]
-    return dict(zip(cols, row[:len(cols)]))
+    return result
 
 def update_user(uid, **kwargs):
     conn = sqlite3.connect(DB_PATH)
