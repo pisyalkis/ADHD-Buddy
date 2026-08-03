@@ -1786,12 +1786,17 @@ async def midday_notification(app):
             return
 
         tasks = build_tasks_summary(morning)
+        a_task = morning.get("focus", "")
+        has_b_or_c = any(morning.get(k) for k in ["b1","b2","c1","c2","c3"])
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
-            f"Твои задачи:\n{tasks}\n\nКак идут дела?",
+            f"Твои задачи на сегодня:\n{tasks}\n\n"
+            f"Над чем работаешь сейчас?\n\n"
+            f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Всё по плану", callback_data="mid_ok")],
+                [InlineKeyboardButton("✅ Работаю над А-задачей", callback_data="mid_ok")],
+                *([[InlineKeyboardButton("🅱️ Работаю над Б или В", callback_data="mid_working_b")]] if has_b_or_c else []),
                 [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
                 [InlineKeyboardButton("😰 Задача подавляет/пугает", callback_data="mid_scary")],
                 [InlineKeyboardButton("⏳ Жду подходящего момента", callback_data="mid_waiting")],
@@ -1827,6 +1832,46 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"💪 *Отлично, {name}!*\n\nПродолжай. Помни про перерывы — 5-10 минут каждые 25-30 минут.\n_Гиперфокус истощает — не пропускай отдых._\n\nДо вечера! 🌙",
             parse_mode="Markdown", reply_markup=main_menu()
+        )
+
+    elif action == "mid_working_b":
+        a_task = morning.get("focus", "А-задача")
+        await q.message.reply_text(
+            f"🅱️ *Работаешь над Б или В — понятно.*\n\n"
+            f"А-задача уже сделана?\n\n_{a_task}_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Да, А готова", callback_data="mid_a_done")],
+                [InlineKeyboardButton("❌ Нет, ещё не делал(а)", callback_data="mid_a_skipped")],
+            ])
+        )
+
+    elif action == "mid_a_done":
+        await q.message.reply_text(
+            f"🎉 *Отлично — А сделана, продолжай!*\n\n"
+            f"Самое важное уже выполнено. Работай дальше над Б и В в своём темпе.\n\n"
+            f"Помни про перерывы — 5-10 мин каждые 25-30 мин.",
+            parse_mode="Markdown", reply_markup=main_menu()
+        )
+
+    elif action == "mid_a_skipped":
+        a_task = morning.get("focus", "А-задача")
+        await q.message.reply_text(
+            f"⚠️ *Стоп — А-задача важнее*\n\n"
+            f"_{a_task}_\n\n"
+            f"Система ABC работает так: А — самое важное дело, которое нужно сделать *первым*. "
+            f"Если браться за Б или В пока А не сделана, мозг создаёт иллюзию продуктивности — ты занят(а), но главное откладывается.\n\n"
+            f"Это особенно частая ловушка при СДВГ: браться за лёгкое и приятное вместо важного.\n\n"
+            f"*Что сделать прямо сейчас:*\n"
+            f"👣 Найди один самый маленький первый шаг по А-задаче\n"
+            f"⏱ Поставь таймер на 25 минут только на А\n"
+            f"📝 Б и В никуда не денутся — вернись к ним после",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🍅 Запустить таймер на А", callback_data="go_focus")],
+                [InlineKeyboardButton("🤖 Нужна помощь с А", callback_data="mid_coach")],
+                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+            ])
         )
 
     elif action == "mid_nostart":
