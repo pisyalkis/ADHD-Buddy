@@ -290,6 +290,16 @@ def save_diary(uid, block, data):
               (uid, d, block, json.dumps(data, ensure_ascii=False)))
     conn.commit(); conn.close()
 
+def get_all_notif_users():
+    """Все пользователи с включёнными уведомлениями."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE notif_enabled=1 AND name!=''")
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
 def get_diary(uid, block, for_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1505,27 +1515,22 @@ async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
-async def send_beacon(app):
+async def send_beacon(app, user):
     """Маячок внимания — периодический чекин в течение дня."""
-    if not NOTIFY_USER_ID: return
     try:
-        uid = NOTIFY_USER_ID
-        user = get_user(uid)
+        uid = user["user_id"]
         if not int(user.get("beacon_enabled") or 0): return
-        if not int(user.get("notif_enabled") or 0): return
 
         tz = pytz.timezone(USER_TIMEZONE)
         now = datetime.now(tz)
         interval_h = int(user.get("beacon_interval") or 2)
 
-        # Не слать до утреннего уведомления и после вечернего
         morning_h, morning_m = map(int, user.get("notif_morning","09:00").split(":"))
         evening_h, evening_m = map(int, user.get("notif_evening","21:00").split(":"))
         now_minutes = now.hour * 60 + now.minute
         if now_minutes < morning_h * 60 + morning_m: return
         if now_minutes > evening_h * 60 + evening_m: return
 
-        # Проверяем когда последний раз отправляли
         last_sent = user.get("beacon_last_sent") or ""
         if last_sent:
             try:
@@ -1560,7 +1565,7 @@ async def send_beacon(app):
             ])
         )
     except Exception as e:
-        print(f"Ошибка маячка: {e}")
+        print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
 
 
 def _tasks_text_and_kb(morning, done_set):
@@ -2176,11 +2181,9 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 # ── MIDDAY NOTIFICATION ─────────────────────────────────────────────────────
-async def midday_notification(app):
+async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
-    if not NOTIFY_USER_ID: return
     try:
-        uid = NOTIFY_USER_ID
         user = get_user(uid)
         morning = get_diary(uid, "morning")
 
@@ -2418,10 +2421,8 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=main_menu())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
-async def morning_notification(app):
-    if not NOTIFY_USER_ID: return
+async def morning_notification(app, uid):
     try:
-        uid = NOTIFY_USER_ID
         user = get_user(uid)
         name = user.get("name", "")
         gender = user.get("gender", "M")
@@ -2454,10 +2455,8 @@ async def morning_notification(app):
     except Exception as e:
         print(f"Ошибка утреннего уведомления: {e}")
 
-async def evening_notification(app):
-    if not NOTIFY_USER_ID: return
+async def evening_notification(app, uid):
     try:
-        uid = NOTIFY_USER_ID
         user = get_user(uid)
         name = user.get("name", "")
         await app.bot.send_message(
@@ -2471,11 +2470,9 @@ async def evening_notification(app):
     except Exception as e:
         print(f"Ошибка вечернего уведомления: {e}")
 
-async def weekly_report(app):
+async def weekly_report(app, uid):
     """Воскресный личный отчёт пользователю."""
-    if not NOTIFY_USER_ID: return
     try:
-        uid = NOTIFY_USER_ID
         user = get_user(uid)
         name = user.get("name", "")
 
@@ -2809,87 +2806,76 @@ async def send_guide_section(message, section_id):
 
 
 async def check_notifications(app):
-    """Каждую минуту проверяем нужно ли слать уведомление пользователю.
-
-    Время в настройках пользователя задаётся в локальной таймзоне (USER_TIMEZONE).
-    Используем pytz чтобы корректно сравнивать независимо от таймзоны сервера.
-    """
+    """Каждую минуту — уведомления для всех пользователей у кого они включены."""
     global _last_heartbeat
     _last_heartbeat = time.monotonic()
-    if not NOTIFY_USER_ID: return
     try:
-        uid = NOTIFY_USER_ID
-        user = get_user(uid)
-        if not user.get("notif_enabled", 0): return
-
+        users = get_all_notif_users()
         tz = pytz.timezone(USER_TIMEZONE)
-        now = datetime.now(tz).strftime("%H:%M")
+        now_dt = datetime.now(tz)
+        now = now_dt.strftime("%H:%M")
+        is_sunday = now_dt.weekday() == 6
 
-        if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
-            await morning_notification(app)
-            # Воскресный отчёт — отправляем вместе с утренним в воскресенье
-            tz = pytz.timezone(USER_TIMEZONE)
-            if datetime.now(tz).weekday() == 6:  # 6 = воскресенье
-                await weekly_report(app)
-        elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
-            await midday_notification(app)
-        elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
-            await evening_notification(app)
-        else:
-            # Напоминание если пропустил утро (+2 часа после утреннего)
+        for user in users:
+            uid = user["user_id"]
             try:
-                mh, mm = map(int, user.get("notif_morning","09:00").split(":"))
-                tz = pytz.timezone(USER_TIMEZONE)
-                reminder_time = datetime.now(tz).replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
-                reminder_str = reminder_time.strftime("%H:%M")
-                if now == reminder_str and int(user.get("notif_morning_on") or 1):
-                    today = date.today().isoformat()
-                    morning = get_diary(uid, "morning")
-                    if not morning.get("focus"):
-                        await app.bot.send_message(
-                            chat_id=uid,
-                            text=(
-                                f"☀️ *Утро ещё не закрыто*\n\n"
-                                f"Ещё не поздно поставить задачи на день — займёт 2 минуты."
-                            ),
-                            parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
-                            ]])
-                        )
-            except Exception:
-                pass
+                if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
+                    await morning_notification(app, uid)
+                    if is_sunday:
+                        await weekly_report(app, uid)
 
-        # Маячок внимания
-        await send_beacon(app)
+                elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
+                    await midday_notification(app, uid)
 
-        # Исследовательские вопросы по дням
-        try:
-            created_at = user.get("created_at") or date.today().isoformat()
-            days_since = (date.today() - date.fromisoformat(str(created_at)[:10])).days
-            research_done = user.get("research_done") or ""
-            done_days = [x for x in research_done.split(",") if x]
-            for milestone in [3, 7, 14, 30]:
-                if days_since >= milestone and str(milestone) not in done_days:
-                    tz = pytz.timezone(USER_TIMEZONE)
-                    cur_hour = datetime.now(tz).hour
-                    if 10 <= cur_hour <= 12:  # шлём только в утренние часы
-                        await send_research_question(app, uid, milestone)
-                    break
-        except Exception as re:
-            print(f"Ошибка research check: {re}")
+                elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
+                    await evening_notification(app, uid)
 
-        # Проверяем фокус-таймер
-        if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
-            try:
-                tz = pytz.timezone(USER_TIMEZONE)
-                end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
-                now_dt = datetime.now(tz)
-                if now_dt >= end_dt:
-                    duration = int(user.get("focus_duration", 25) or 25)
-                    await send_focus_end(app, uid, duration)
-            except Exception as fe:
-                print(f"Ошибка focus check: {fe}")
+                else:
+                    # Напоминание если пропустил утро (+2 часа)
+                    try:
+                        mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
+                        reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                        if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
+                            if not get_diary(uid, "morning").get("focus"):
+                                await app.bot.send_message(
+                                    chat_id=uid,
+                                    text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                                    parse_mode="Markdown",
+                                    reply_markup=InlineKeyboardMarkup([[
+                                        InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                                    ]])
+                                )
+                    except Exception:
+                        pass
+
+                # Маячок
+                await send_beacon(app, user)
+
+                # Исследовательские вопросы
+                try:
+                    created_at = user.get("created_at") or date.today().isoformat()
+                    days_since = (date.today() - date.fromisoformat(str(created_at)[:10])).days
+                    done_days = [x for x in (user.get("research_done") or "").split(",") if x]
+                    for milestone in [3, 7, 14, 30]:
+                        if days_since >= milestone and str(milestone) not in done_days:
+                            if 10 <= now_dt.hour <= 12:
+                                await send_research_question(app, uid, milestone)
+                            break
+                except Exception as e:
+                    print(f"Ошибка research uid={uid}: {e}")
+
+                # Фокус-таймер
+                if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+                    try:
+                        end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+                        if now_dt >= end_dt:
+                            await send_focus_end(app, uid, int(user.get("focus_duration", 25) or 25))
+                    except Exception as e:
+                        print(f"Ошибка focus uid={uid}: {e}")
+
+            except Exception as e:
+                print(f"Ошибка check_notifications uid={uid}: {e}")
+
     except Exception as e:
         print(f"Ошибка check_notifications: {e}")
 
