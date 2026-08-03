@@ -169,7 +169,7 @@ MOTIVATIONS_M = [
     "Только одно главное. Остальное подождёт.",
     "Твой мозг нестандартный. Это сила.",
     "Чуть больше чем вчера — этого достаточно.",
-    "Ты проснулся. Уже хорошо. Дальше легче.",
+    "Проснулся — уже хорошо. Дальше легче.",
     "Сделай одно дело. Потом ещё одно.",
 ]
 
@@ -179,7 +179,7 @@ MOTIVATIONS_F = [
     "Только одно главное. Остальное подождёт.",
     "Твой мозг нестандартный. Это сила.",
     "Чуть больше чем вчера — этого достаточно.",
-    "Ты проснулась. Уже хорошо. Дальше легче.",
+    "Проснулась — уже хорошо. Дальше легче.",
     "Сделай одно дело. Потом ещё одно.",
 ]
 
@@ -462,9 +462,10 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
-    name = ctx.user_data.get("onboard_name", "")
+    # ctx.user_data может быть пустым если ConversationHandler перезапустился — берём имя из БД
+    name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
     gender = "M" if q.data == "gender_M" else ("F" if q.data == "gender_F" else "N")
-    update_user(uid, name=name, gender=gender)
+    update_user(uid, gender=gender)  # имя уже сохранено в got_name, не перезаписываем
 
     await q.message.reply_text(
         f"Отлично, {name}! Давай я коротко расскажу как работает бот 👇",
@@ -1755,9 +1756,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_city"] = False
         city = update.message.text.strip()
         update_user(uid, city=city)
+        await update.message.reply_text(f"📍 {city} — записал!")
+        # Показываем настройку уведомлений (та же логика что и при «Пропустить»)
         await update.message.reply_text(
-            f"📍 {city} — записал!\n\nВсё готово — начнём! 🚀",
-            reply_markup=main_menu()
+            "🔔 *Последний шаг — уведомления*\n\n"
+            "Бот пишет три раза в день: утром, днём и вечером. "
+            "Без уведомлений польза от бота сильно меньше.\n\n"
+            "Включить уведомления?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
+                [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+            ])
         )
         return
     elif get_user(uid).get("research_awaiting") and str(get_user(uid).get("research_awaiting")) != "0":
@@ -2424,7 +2434,7 @@ async def morning_notification(app):
             if ev.get("e_b2"): plan_text += f"\n🅱️ {ev['e_b2']}"
 
         skill = get_daily_skill(uid)
-        motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
+        motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
 
         last_energy = int(ev.get("e_energy", 0) or 0)
         energy_note = ""
@@ -2477,7 +2487,6 @@ async def weekly_report(app):
         evenings_done = 0
         tasks_total = 0
         tasks_done = 0
-        focus_minutes = 0
         energy_sum = 0
         energy_count = 0
 
@@ -2877,34 +2886,8 @@ async def check_notifications(app):
                 end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
                 now_dt = datetime.now(tz)
                 if now_dt >= end_dt:
-                    # Считаем сколько минут было задано
-                    start_approx = end_dt  # у нас нет start_time, но знаем end
-                    # Вычисляем из разницы focus_end_time и текущего времени сколько прошло
-                    # Проще: возьмём из записанного end_time минус now (уже прошло), но
-                    # надёжнее хранить start. Пока считаем через разницу end - (end - 25/45/60)
-                    # Берём просто: нашли что таймер истёк — добавим реально отработанное время
-                    # Используем focus_end_time - момент запуска не знаем, но запоминаем duration
-                    # Временное решение: добавляем фиксированный блок по умолчанию
-                    # Лучший вариант: записывать focus_start_time и focus_duration
-                    user2 = get_user(uid)
-                    today = date.today().isoformat()
-                    prev = int(user2.get("focus_minutes_today", 0)) if user2.get("focus_date") == today else 0
-                    duration = int(user2.get("focus_duration", 25) or 25)
-                    new_mins = prev + duration
-                    update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
-                    await app.bot.send_message(
-                        chat_id=uid,
-                        text=(
-                            f"⏰ *Время вышло! Отличная работа!*\n\n"
-                            f"Сделай перерыв 5 минут: встань, выпей воды, отойди от экрана.\n\n"
-                            f"Сегодня в фокусе: *{new_mins} мин* 🎯"
-                        ),
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("🍅 Ещё раунд", callback_data="go_focus")],
-                            [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="go_menu")],
-                        ])
-                    )
+                    duration = int(user.get("focus_duration", 25) or 25)
+                    await send_focus_end(app, uid, duration)
             except Exception as fe:
                 print(f"Ошибка focus check: {fe}")
     except Exception as e:
@@ -3126,7 +3109,6 @@ def main():
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
-    app.add_handler(CallbackQueryHandler(settings_menu,    pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
