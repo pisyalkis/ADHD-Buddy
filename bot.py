@@ -444,6 +444,8 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Имя слишком длинное, напиши покороче:")
         return ONBOARD_NAME
     ctx.user_data["onboard_name"] = name
+    # Сохраняем имя в БД сразу — чтобы оно не потерялось при перезапуске бота
+    update_user(update.effective_user.id, name=name)
     await update.message.reply_text(
         f"Отлично, {name}! Один вопрос для персонализации 👇",
         reply_markup=InlineKeyboardMarkup([[
@@ -3109,6 +3111,8 @@ def main():
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
+    # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
+    app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MF]$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
