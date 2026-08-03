@@ -235,6 +235,9 @@ def init_db():
         ("notif_morning_on", "1"),
         ("notif_midday_on",  "1"),
         ("notif_evening_on", "1"),
+        ("beacon_enabled", "0"),
+        ("beacon_interval", "2"),
+        ("beacon_last_sent", "''"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -1266,23 +1269,33 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
 # ── SETTINGS: NOTIFICATION TIMES ───────────────────────────────────────────
 def _settings_text_and_kb(user):
-    enabled = int(user.get("notif_enabled") or 0)
+    enabled  = int(user.get("notif_enabled") or 0)
     m  = user.get("notif_morning", "09:00")
     d  = user.get("notif_midday",  "13:00")
     e  = user.get("notif_evening", "21:00")
     mo = int(user.get("notif_morning_on") or 1)
     do = int(user.get("notif_midday_on")  or 1)
     eo = int(user.get("notif_evening_on") or 1)
+    be = int(user.get("beacon_enabled")   or 0)
+    bi = int(user.get("beacon_interval")  or 2)
 
     status = "✅ включены" if enabled else "❌ выключены"
+    beacon_label = f"каждые {bi} ч" if bi == 1 else f"каждые {bi} ч"
     text = (
         "⚙️ *Настройки уведомлений*\n\n"
         f"Уведомления: *{status}*\n\n"
         f"{'✅' if mo else '🔕'} Утро: *{m}*\n"
         f"{'✅' if do else '🔕'} День: *{d}*\n"
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
+        f"{'✅' if be else '🔕'} Маячок внимания: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
+        f"_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
         "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
     )
+    beacon_interval_row = [
+        InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
+        InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
+        InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
+    ]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
          InlineKeyboardButton(f"☀️ {m}", callback_data="set_morning")],
@@ -1290,6 +1303,10 @@ def _settings_text_and_kb(user):
          InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
         [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
          InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
+        [InlineKeyboardButton(
+            f"{'✅' if be else '🔕'} Маячок", callback_data="toggle_beacon"),
+         *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
+        *([ beacon_interval_row ] if be else []),
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
@@ -1354,6 +1371,84 @@ async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     except Exception:
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+    cur = int(user.get("beacon_enabled") or 0)
+    update_user(uid, beacon_enabled=0 if cur else 1)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    interval = int(q.data.split("_")[2])
+    update_user(uid, beacon_interval=interval)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+
+async def send_beacon(app):
+    """Маячок внимания — периодический чекин в течение дня."""
+    if not NOTIFY_USER_ID: return
+    try:
+        uid = NOTIFY_USER_ID
+        user = get_user(uid)
+        if not int(user.get("beacon_enabled") or 0): return
+        if not int(user.get("notif_enabled") or 0): return
+
+        tz = pytz.timezone(USER_TIMEZONE)
+        now = datetime.now(tz)
+        interval_h = int(user.get("beacon_interval") or 2)
+
+        # Не слать до утреннего уведомления и после вечернего
+        morning_h, morning_m = map(int, user.get("notif_morning","09:00").split(":"))
+        evening_h, evening_m = map(int, user.get("notif_evening","21:00").split(":"))
+        now_minutes = now.hour * 60 + now.minute
+        if now_minutes < morning_h * 60 + morning_m: return
+        if now_minutes > evening_h * 60 + evening_m: return
+
+        # Проверяем когда последний раз отправляли
+        last_sent = user.get("beacon_last_sent") or ""
+        if last_sent:
+            try:
+                last_dt = datetime.fromisoformat(last_sent).astimezone(tz)
+                if (now - last_dt).total_seconds() < interval_h * 3600 - 30: return
+            except Exception:
+                pass
+
+        morning = get_diary(uid, "morning")
+        tasks = build_tasks_summary(morning) if morning else "_задачи не заданы_"
+
+        update_user(uid, beacon_last_sent=now.isoformat())
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                f"👀 *Маячок внимания*\n\n"
+                f"Задачи дня:\n{tasks}\n\n"
+                f"Что сейчас делаешь?"
+            ),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
+                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
+                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
+                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
+            ])
+        )
+    except Exception as e:
+        print(f"Ошибка маячка: {e}")
 
 
 async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2329,6 +2424,9 @@ async def check_notifications(app):
         elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
             await evening_notification(app)
 
+        # Маячок внимания
+        await send_beacon(app)
+
         # Проверяем фокус-таймер
         if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
             try:
@@ -2487,6 +2585,9 @@ def main():
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
+    app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
+    app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
+    app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(show_tasks,       pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
