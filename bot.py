@@ -42,8 +42,8 @@ CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерн�
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
  M_WRITING, M_GRATITUDE, M_CHILD,
- E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE,
- E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(23)
+ E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE, E_ENERGY,
+ E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(24)
 
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
@@ -471,7 +471,9 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Поэтому важные дела откладываются, а день рассыпается.\n\n"
         f"Этот бот даёт мозгу то, чего ему не хватает — *внешнюю структуру*.\n\n"
         f"Структура дня при СДВГ — это не про дисциплину. "
-        f"Это про то, чтобы каждое утро знать *одно* главное дело, и каждый вечер видеть что ты {g(gender, 'сделал', 'сделала')}.",
+        f"Это про то, чтобы каждое утро знать *одно* главное дело, и каждый вечер видеть что ты {g(gender, 'сделал', 'сделала')}.\n\n"
+        f"📚 *Основа бота* — доказательные методы: DBT-тренинг навыков для взрослых с СДВГ и когнитивно-поведенческая терапия (программа Safren). "
+        f"Это не мотивашки — это конкретные техники, которые работают на уровне нейробиологии.",
         parse_mode="Markdown"
     )
     await asyncio.sleep(0.8)
@@ -577,28 +579,52 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     skill = get_daily_skill(uid)
 
+    # Адаптивное приветствие по уровню энергии вечера
+    last_energy = int(ev.get("e_energy", 0) or 0)
+    energy_note = ""
+    if last_energy in (1, 2):
+        energy_note = (
+            f"\n\n🔋 *Вчера был тяжёлый день* — ты отметил(а) низкий уровень энергии.\n"
+            "Сегодня можно взять темп помедленнее. Главное — одна задача A."
+        )
+
     await q.message.reply_text(
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str()}_\n\n"
-        f"_{motiv}_{plans_text}\n\n"
+        f"_{motiv}_{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
         f"_{skill['desc']}_",
         parse_mode="Markdown"
     )
     await asyncio.sleep(0.5)
-    await q.message.reply_text(
-        "🏃 *2 минуты утренней разминки*\n\n"
-        "Тело нужно разбудить — это важно для мозга с СДВГ.\n\n"
-        "_Это программа-минимум, просто чтобы напомнить и помочь начать. "
-        "Если хочется — сделай свою разминку подольше, бот не ограничивает._",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
+
+    # Если энергия была низкой — сразу предложить быстрый режим первой кнопкой
+    if last_energy in (1, 2):
+        warmup_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Только задачи (5 мин)", callback_data="morning_quick")],
+            [InlineKeyboardButton("▶️ Полное утро с разминкой", callback_data="warmup_go")],
+            [InlineKeyboardButton("✅ Разминку уже сделал(а)", callback_data="warmup_done")],
+        ])
+        warmup_text = (
+            "🏃 *Разминка или сразу к делу?*\n\n"
+            "Вчера был тяжёлый день — можно пропустить разминку и сразу поставить задачи.\n"
+            "_Даже в лёгкий день одна задача A — уже победа._"
+        )
+    else:
+        warmup_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Начать разминку", callback_data="warmup_go")],
             [InlineKeyboardButton("✅ Уже сделал(а)", callback_data="warmup_done")],
             [InlineKeyboardButton("Пропустить →", callback_data="skip_warmup")],
             [InlineKeyboardButton("⚡ Быстро — только задачи", callback_data="morning_quick")],
         ])
-    )
+        warmup_text = (
+            "🏃 *2 минуты утренней разминки*\n\n"
+            "Тело нужно разбудить — это важно для мозга с СДВГ.\n\n"
+            "_Это программа-минимум, просто чтобы напомнить и помочь начать. "
+            "Если хочется — сделай свою разминку подольше, бот не ограничивает._"
+        )
+
+    await q.message.reply_text(warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
     return M_EXERCISE
 
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1028,6 +1054,27 @@ async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    await ask_energy(q.message)
+    return E_ENERGY
+
+async def ask_energy(message):
+    await message.reply_text(
+        "🔋 *Уровень энергии сейчас*\n\n"
+        "Как ты себя чувствуешь по итогам дня?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("😴 1 — выжат(а) полностью", callback_data="energy_1")],
+            [InlineKeyboardButton("😔 2 — устал(а), тяжело", callback_data="energy_2")],
+            [InlineKeyboardButton("😐 3 — нормально, средне", callback_data="energy_3")],
+            [InlineKeyboardButton("😊 4 — хорошо, в ресурсе", callback_data="energy_4")],
+            [InlineKeyboardButton("⚡ 5 — заряжен(а) на 100%", callback_data="energy_5")],
+        ])
+    )
+
+async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    level = int(q.data.split("_")[1])
+    ctx.user_data["e_energy"] = level
     await ask_plan_a(q.message)
     return E_A
 
@@ -1100,6 +1147,7 @@ async def finish_evening(message, uid, ctx):
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
+    data["e_energy"] = ctx.user_data.get("e_energy", 0)
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
     save_diary(uid, "evening", data)
     add_streak(uid)
@@ -2373,10 +2421,15 @@ async def morning_notification(app):
         skill = get_daily_skill(uid)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
 
+        last_energy = int(ev.get("e_energy", 0) or 0)
+        energy_note = ""
+        if last_energy in (1, 2):
+            energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
+
         await app.bot.send_message(
             uid,
             f"☀️ *Доброе утро, {name}!*\n\n"
-            f"_{motiv}_{plan_text}\n\n"
+            f"_{motiv}_{plan_text}{energy_note}\n\n"
             f"💡 *Навык дня:* {skill['name']}\n"
             f"_{skill['desc']}_\n\n"
             "Готов(а) начать? 👇",
@@ -2402,6 +2455,95 @@ async def evening_notification(app):
         )
     except Exception as e:
         print(f"Ошибка вечернего уведомления: {e}")
+
+async def weekly_report(app):
+    """Воскресный личный отчёт пользователю."""
+    if not NOTIFY_USER_ID: return
+    try:
+        uid = NOTIFY_USER_ID
+        user = get_user(uid)
+        name = user.get("name", "")
+
+        # Собираем данные за последние 7 дней
+        today = date.today()
+        days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+
+        mornings_done = 0
+        evenings_done = 0
+        tasks_total = 0
+        tasks_done = 0
+        focus_minutes = 0
+        energy_sum = 0
+        energy_count = 0
+
+        for d in days:
+            m = get_diary(uid, "morning", d)
+            e = get_diary(uid, "evening", d)
+
+            if m.get("focus"):
+                mornings_done += 1
+                # Считаем задачи из утра
+                for key, _ in TASK_FIELDS:
+                    if m.get(key):
+                        tasks_total += 1
+
+            if e.get("e_ach") or e.get("e_a"):
+                evenings_done += 1
+                done_set = set(e.get("e_tasks_done") or [])
+                tasks_done += len(done_set)
+
+            # Энергия вечером
+            en = e.get("e_energy")
+            if en:
+                try:
+                    energy_sum += int(en)
+                    energy_count += 1
+                except:
+                    pass
+
+        # Фокус-минуты берём из DB пользователя (накопленное за неделю нет — считаем по записям)
+        # Простая версия: показываем что есть
+        avg_energy = round(energy_sum / energy_count, 1) if energy_count else None
+
+        streak = calc_streak(uid)
+
+        # Формируем текст отчёта
+        lines = [f"📊 *Итоги недели, {name}*\n_{days[0]} — {days[-1]}_\n"]
+
+        lines.append(f"☀️ Утренних блоков заполнено: *{mornings_done} из 7*")
+        lines.append(f"🌙 Вечерних блоков закрыто: *{evenings_done} из 7*")
+
+        if tasks_total:
+            pct = round(tasks_done / tasks_total * 100) if tasks_total else 0
+            lines.append(f"✅ Задач выполнено: *{tasks_done} из {tasks_total}* ({pct}%)")
+
+        if avg_energy:
+            energy_label = {1:"😴 низкая", 2:"😔 ниже среднего", 3:"😐 средняя", 4:"😊 хорошая", 5:"⚡ отличная"}.get(round(avg_energy), "")
+            lines.append(f"🔋 Средний уровень энергии: *{avg_energy}/5* {energy_label}")
+
+        lines.append(f"🔥 Текущий стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*")
+
+        # Мотивационный вывод
+        lines.append("")
+        if mornings_done >= 5:
+            lines.append("🏆 Отличная неделя! Стабильность — суперсила при СДВГ.")
+        elif mornings_done >= 3:
+            lines.append("💪 Хорошая работа. Больше половины дней — уже результат.")
+        else:
+            lines.append("🌱 Неделя была непростой — и это нормально. Новая начинается завтра.")
+
+        lines.append("\n_Следующая неделя начинается с одной задачи A. Ты справишься 💙_")
+
+        await app.bot.send_message(
+            uid,
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("☀️ Начать новую неделю", callback_data="go_morning")
+            ]])
+        )
+    except Exception as e:
+        print(f"Ошибка еженедельного отчёта: {e}")
 
 # ── MAIN ───────────────────────────────────────────────────────────────────
 # ── ADHD GUIDE ─────────────────────────────────────────────────────────────
@@ -2671,6 +2813,10 @@ async def check_notifications(app):
 
         if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
             await morning_notification(app)
+            # Воскресный отчёт — отправляем вместе с утренним в воскресенье
+            tz = pytz.timezone(USER_TIMEZONE)
+            if datetime.now(tz).weekday() == 6:  # 6 = воскресенье
+                await weekly_report(app)
         elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
             await midday_notification(app)
         elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
@@ -2945,6 +3091,7 @@ def main():
             E_PRAISE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_praise),   CallbackQueryHandler(skip_e_praise,   pattern="^skip_e_praise$")],
             E_HIGHLIGHTS:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_highlights),CallbackQueryHandler(skip_e_highlights,pattern="^skip_e_highlights$")],
             E_SELFCARE:  [CallbackQueryHandler(selfcare_done,  pattern="^sc_done$"), CallbackQueryHandler(toggle_selfcare, pattern="^sc_")],
+            E_ENERGY:    [CallbackQueryHandler(got_energy, pattern="^energy_[1-5]$")],
             E_A:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_a),        CallbackQueryHandler(skip_e_a,        pattern="^skip_e_a$")],
             E_B1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b1),       CallbackQueryHandler(skip_e_b1,       pattern="^skip_e_b1$")],
             E_B2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b2),       CallbackQueryHandler(skip_e_b2,       pattern="^skip_e_b2$")],
