@@ -581,6 +581,7 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    ctx.user_data["awaiting_city"] = False
     await q.message.reply_text(
         "🔔 *Последний шаг — уведомления*\n\n"
         "Бот пишет три раза в день: утром, днём и вечером "
@@ -1018,7 +1019,8 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     streak = calc_streak(uid)
 
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
 
     await q.message.reply_text(
@@ -1232,7 +1234,7 @@ async def finish_evening(message, uid, ctx):
     if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
 
     tasks_summary = ""
-    morning_for_summary = get_diary(uid, "morning")
+    morning_for_summary = get_diary(uid, "morning", today)
     if any(morning_for_summary.get(k) for k, _ in TASK_FIELDS):
         done = set(data["e_tasks_done"])
         lines = []
@@ -1254,7 +1256,7 @@ async def finish_evening(message, uid, ctx):
     # AI анализ дня
     ai_analysis = ""
     if ANTHROPIC_KEY:
-        morning = get_diary(uid, "morning")
+        morning = get_diary(uid, "morning", today)
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
@@ -1319,7 +1321,8 @@ async def send_coach(message, text, uid):
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     tasks = build_tasks_summary(morning)
     tasks_hint = (
         f"\n\nЗадачи пользователя на сегодня:\n{tasks}\n"
@@ -1613,7 +1616,7 @@ async def send_beacon(app, user):
             except Exception:
                 pass
 
-        morning = get_diary(uid, "morning")
+        morning = get_diary(uid, "morning", now.date().isoformat())
         tasks = build_tasks_summary(morning) if morning else "_задачи не заданы_"
 
         BEACON_TEXTS = [
@@ -1797,6 +1800,8 @@ async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_time"] = False
+    ctx.user_data["awaiting_city"] = False
+    ctx.user_data.pop("city_from_settings", None)
     await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1946,7 +1951,7 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(get_user_tz(user)).date().isoformat()
     mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
 
-    morning_data = get_diary(uid, "morning")
+    morning_data = get_diary(uid, "morning", today)
     task_hint = ""
     if morning_data.get("focus"):
         task_hint = f"\n\n📌 Твоя задача дня: *{morning_data['focus']}*"
@@ -1990,7 +1995,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     end_str = end_dt.strftime("%H:%M")
 
-    morning_data = get_diary(uid, "morning")
+    morning_data = get_diary(uid, "morning", now.date().isoformat())
     task_hint = ""
     if morning_data.get("focus"):
         task_hint = f"\n📌 Задача: *{morning_data['focus']}*"
@@ -2278,7 +2283,8 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     buddy = user.get("buddy_name","бадди")
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     focus = morning.get("focus","моя главная задача")
     await q.message.reply_text(
         f"👥 *Шаблон для {buddy}:*\n\n"
@@ -2293,7 +2299,8 @@ async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
     try:
         user = get_user(uid)
-        morning = get_diary(uid, "morning")
+        today = datetime.now(get_user_tz(user)).date().isoformat()
+        morning = get_diary(uid, "morning", today)
 
         if not morning:
             await app.bot.send_message(uid,
@@ -2328,7 +2335,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     name = user["name"]
-    morning = get_diary(uid, "morning")
+    morning = get_diary(uid, "morning", datetime.now(get_user_tz(user)).date().isoformat())
     focus = morning.get("focus", "твоя A-задача")
     action = q.data
 
@@ -2936,7 +2943,7 @@ async def check_notifications(app):
                         mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                         reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
                         if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                            if not already_sent("morning_reminder") and not get_diary(uid, "morning").get("focus"):
+                            if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key).get("focus"):
                                 await app.bot.send_message(
                                     chat_id=uid,
                                     text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
