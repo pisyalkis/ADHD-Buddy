@@ -48,6 +48,11 @@ CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерн�
 _morning_conv = None
 _evening_conv = None
 
+# APScheduler-инстанс — заполняется в main(), нужен чтобы ставить разовые
+# отложенные задачи (например "напомнить через 15 минут после отдыха")
+# вне обычного ежеминутного тика check_notifications.
+_scheduler = None
+
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
@@ -1395,15 +1400,29 @@ COACH_PROMPTS = {
 
 # Человекочитаемые подписи состояния для дневного чекина — сохраняются в карточку дня
 MIDDAY_LABELS = {
-    "mid_ok":      "✅ Всё по плану",
-    "mid_nostart": "❓ Непонятно с чего начать",
-    "mid_scary":   "😰 Задача подавляет/пугает",
-    "mid_waiting": "⏳ Жду подходящего момента",
-    "mid_perfect": "🎯 Боюсь сделать плохо",
-    "mid_resist":  "🧱 Внутреннее сопротивление",
-    "mid_time":    "⚡ Мало времени",
-    "mid_phone":   "📱 Залип(ла) в телефоне",
+    "mid_ok":       "✅ Всё по плану",
+    "mid_nostart":  "❓ Непонятно с чего начать",
+    "mid_scary":    "😰 Задача подавляет/пугает",
+    "mid_waiting":  "⏳ Жду подходящего момента",
+    "mid_perfect":  "🎯 Боюсь сделать плохо",
+    "mid_resist":   "🧱 Внутреннее сопротивление",
+    "mid_time":     "⚡ Мало времени",
+    "mid_phone":    "📱 Залип(ла) в телефоне",
+    "mid_all_done": "🎉 Все задачи дня сделаны",
+    "mid_resting":  "☕ Отдыхаю",
 }
+
+def midday_kb():
+    """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
+    и в маячке, и в повторной проверке после отдыха."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
+        [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
+        [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
+        [InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")],
+        [InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")],
+        [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
+    ])
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1672,12 +1691,7 @@ async def send_beacon(app, user):
             chat_id=uid,
             text=beacon_text,
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
-                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
-                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
-            ])
+            reply_markup=midday_kb()
         )
     except Exception as e:
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
@@ -2347,6 +2361,36 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
 
+async def send_resume_check(bot, uid):
+    """Повторная проверка через 10-15 мин после того как человек отметил «отдыхаю»."""
+    try:
+        user = get_user(uid)
+        today = datetime.now(get_user_tz(user)).date().isoformat()
+        morning = get_diary(uid, "morning", today)
+        done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+        tasks = build_tasks_summary(morning, done_set)
+        await bot.send_message(
+            chat_id=uid,
+            text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\nВернулся(ась) к работе?",
+            parse_mode="Markdown",
+            reply_markup=midday_kb()
+        )
+    except Exception as e:
+        print(f"Ошибка resume-check uid={uid}: {e}")
+
+def schedule_resume_check(bot, uid):
+    """Ставит одноразовую задачу на ~15 минут вперёд. Повторное нажатие
+    «отдыхаю» просто переставляет таймер (replace_existing), а не копит
+    несколько напоминаний подряд."""
+    if _scheduler is None:
+        return
+    run_at = datetime.now() + timedelta(minutes=15)
+    _scheduler.add_job(
+        send_resume_check, "date", run_date=run_at,
+        args=[bot, uid], id=f"resume_check_{uid}",
+        replace_existing=True, misfire_grace_time=300,
+    )
+
 # ── MIDDAY NOTIFICATION ─────────────────────────────────────────────────────
 async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
@@ -2374,12 +2418,7 @@ async def midday_notification(app, uid):
             f"Над чем работаешь сейчас?\n\n"
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
-                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
-                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
-            ])
+            reply_markup=midday_kb()
         )
     except Exception as e: print(f"Ошибка дневного уведомления: {e}")
 
@@ -2442,6 +2481,22 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
             parse_mode="Markdown", reply_markup=main_menu()
+        )
+
+    elif action == "mid_all_done":
+        all_keys = [k for k, _ in TASK_FIELDS if morning.get(k)]
+        mark_tasks_done(uid, all_keys, today)
+        await q.message.reply_text(
+            f"🎉 *Все задачи дня выполнены — отличная работа, {name}!*\n\n"
+            f"Можно отдыхать спокойно. Не забудь закрыть день вечером 🌙",
+            parse_mode="Markdown", reply_markup=main_menu()
+        )
+
+    elif action == "mid_resting":
+        schedule_resume_check(ctx.bot, uid)
+        await q.message.reply_text(
+            "☕ *Окей, отдыхай!*\n\nНапишу снова через 10-15 минут — вернёшься со свежей головой 💪",
+            parse_mode="Markdown"
         )
 
     elif action == "mid_nostart":
@@ -3172,7 +3227,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    global _morning_conv, _evening_conv
+    global _morning_conv, _evening_conv, _scheduler
     init_db()
     app = (
         Application.builder()
@@ -3298,6 +3353,7 @@ def main():
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
     scheduler.start()
+    _scheduler = scheduler
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
 
