@@ -1412,17 +1412,40 @@ MIDDAY_LABELS = {
     "mid_resting":  "☕ Отдыхаю",
 }
 
-def midday_kb():
+def midday_kb(morning=None, done_set=None):
     """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
-    и в маячке, и в повторной проверке после отдыха."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
-        [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
-        [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
-        [InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")],
-        [InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")],
-        [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
-    ])
+    и в маячке, и в повторной проверке после отдыха.
+
+    Показывает только ту кнопку прогресса (A / A и B / A, B и C), которая
+    ещё актуальна — если бот уже знает что A и B сделаны (через 📋 Задачи,
+    маячок или чекин), незачем снова предлагать «Работаю над A» или
+    «Сделал A, работаю над B» — это уже не так, и выглядит будто бот забыл.
+    """
+    morning = morning or {}
+    done_set = done_set or set()
+
+    def has(k): return bool(morning.get(k))
+    def is_done(k): return k in done_set
+
+    a_done = (not has("focus")) or is_done("focus")
+    b_keys = [k for k in ("b1", "b2") if has(k)]
+    b_done = all(is_done(k) for k in b_keys)
+    c_keys = [k for k in ("c1", "c2", "c3") if has(k)]
+    c_done = all(is_done(k) for k in c_keys)
+
+    rows = []
+    if not a_done:
+        rows.append([InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")])
+    elif not b_done:
+        rows.append([InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")])
+    elif not c_done:
+        rows.append([InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")])
+
+    if not (a_done and b_done and c_done):
+        rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
+    rows.append([InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")])
+    rows.append([InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")])
+    return InlineKeyboardMarkup(rows)
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1691,7 +1714,7 @@ async def send_beacon(app, user):
             chat_id=uid,
             text=beacon_text,
             parse_mode="Markdown",
-            reply_markup=midday_kb()
+            reply_markup=midday_kb(morning, done_set)
         )
     except Exception as e:
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
@@ -2373,7 +2396,7 @@ async def send_resume_check(bot, uid):
             chat_id=uid,
             text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\nВернулся(ась) к работе?",
             parse_mode="Markdown",
-            reply_markup=midday_kb()
+            reply_markup=midday_kb(morning, done_set)
         )
     except Exception as e:
         print(f"Ошибка resume-check uid={uid}: {e}")
@@ -2418,7 +2441,7 @@ async def midday_notification(app, uid):
             f"Над чем работаешь сейчас?\n\n"
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
-            reply_markup=midday_kb()
+            reply_markup=midday_kb(morning, done_set)
         )
     except Exception as e: print(f"Ошибка дневного уведомления: {e}")
 
