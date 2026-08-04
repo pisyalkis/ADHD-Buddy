@@ -254,6 +254,8 @@ def init_db():
         ("beacon_enabled", "0"),
         ("beacon_interval", "2"),
         ("beacon_last_sent", "''"),
+        ("beacon_start", "'09:00'"),
+        ("beacon_end", "'21:00'"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -558,57 +560,21 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = "M" if q.data == "gender_M" else ("F" if q.data == "gender_F" else "N")
     update_user(uid, gender=gender)  # имя уже сохранено в got_name, не перезаписываем
 
+    await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
+    await asyncio.sleep(0.4)
     await q.message.reply_text(
-        f"Отлично, {name}! Давай я коротко расскажу как работает бот 👇",
+        "Рассказать коротко, как я устроен и чем буду полезен? Полминуты, не больше — "
+        "или можем сразу перейти к делу.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Расскажи", callback_data="onboard_explain_yes")],
+            [InlineKeyboardButton("Не надо, давай сразу", callback_data="onboard_explain_no")],
+        ])
     )
-    await asyncio.sleep(0.5)
+    return ConversationHandler.END
+
+async def _onboard_prompt_city(q, ctx, update):
     await q.message.reply_text(
-        "🧠 *Зачем этот бот?*\n\n"
-        f"У мозга с СДВГ есть одна особенность: он управляется *интересом и срочностью*, а не важностью. "
-        f"Поэтому важные дела откладываются, а день рассыпается.\n\n"
-        f"Этот бот даёт мозгу то, чего ему не хватает — *внешнюю структуру*.\n\n"
-        f"Структура дня при СДВГ — это не про дисциплину. "
-        f"Это про то, чтобы каждое утро знать *одно* главное дело, и каждый вечер видеть что ты {g(gender, 'сделал', 'сделала')}.\n\n"
-        f"📚 *Основа бота* — доказательные методы: DBT-тренинг навыков для взрослых с СДВГ и когнитивно-поведенческая терапия (программа Safren). "
-        f"Это не мотивашки — это конкретные техники, которые работают на уровне нейробиологии.",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "☀️☕🌙 *Как работает бот — три точки за день*\n\n"
-        "*Утром* — помогаю настроиться на день:\n"
-        "• Разминка (тело будит мозг)\n"
-        "• Свободное письмо — выгрузить всё из головы\n"
-        "• Благодарность — настрой на день\n"
-        "• Задачи A, B, C — одно главное, ничего лишнего\n\n"
-        "*Днём* — напоминаю о задачах и проверяю как ты:\n"
-        "• Показываю что запланировано на сегодня\n"
-        "• Спрашиваю как дела — застрял(а), не знаешь с чего начать, тревожно?\n"
-        "• Даю конкретную технику под ситуацию, а не общий совет «соберись»\n\n"
-        "*Вечером* — проверяю каким был день:\n"
-        "• Что получилось — даже маленькое\n"
-        "• Похвалить себя (это важно — об этом ниже)\n"
-        "• Записать A-задачу на завтра\n\n"
-        "Утро — это *разгон*, день — *опора*, вечер — *посадка*. "
-        "Всё что ты заполняешь за день сохраняется в 🗂 *карточку дня* — можно вернуться и посмотреть.",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "🏆 *Почему важно отмечать победы*\n\n"
-        "Мозг с СДВГ плохо вырабатывает дофамин от долгосрочных целей — "
-        "он живёт в настоящем.\n\n"
-        "Когда ты каждый вечер *замечаешь что сделал(а)* — даже маленькое — "
-        "мозг получает сигнал: «это работает, продолжай». "
-        "Это не самодовольство, это *топливо* для следующего дня.\n\n"
-        "Поэтому вечерний блок начинается не с планов, а с достижений и похвалы себе. "
-        "Стрик — это видимое доказательство прогресса.\n\n"
-        "_Маленькие победы замеченные каждый день — это и есть мотивация._",
-        parse_mode="Markdown",
-    )
-    await asyncio.sleep(0.5)
-    await q.message.reply_text(
-        "🌍 *Последнее — из какого ты города?*\n\n"
+        "🌍 *Из какого ты города?*\n\n"
         "Это нужно для правильного времени уведомлений — "
         "чтобы утреннее уведомление приходило в 9 утра *твоего* города, "
         "а не в 3 ночи 😅\n\n"
@@ -620,7 +586,36 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_city"] = True
-    return ConversationHandler.END
+
+async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await _onboard_prompt_city(q, ctx, update)
+
+async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
+        "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
+        "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
+        "главное дело на день, а каждый вечер — заметить, что получилось. "
+        "Утро — разгон, день — опора, вечер — посадка.\n\n"
+        "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+        "и когнитивно-поведенческой терапии (протокол Safren).",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.8)
+    await q.message.reply_text(
+        "Как это выглядит на практике:\n\n"
+        "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
+        "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
+        "ситуацию — а не общее «соберись».\n\n"
+        "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
+        "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
+        "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.5)
+    await _onboard_prompt_city(q, ctx, update)
 
 async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1549,6 +1544,8 @@ def _settings_text_and_kb(user):
     eo = int(user.get("notif_evening_on") or 1)
     be = int(user.get("beacon_enabled")   or 0)
     bi = int(user.get("beacon_interval")  or 2)
+    bs = user.get("beacon_start") or "09:00"
+    bfin = user.get("beacon_end") or "21:00"
 
     status = "✅ включены" if enabled else "❌ выключены"
     beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
@@ -1563,13 +1560,18 @@ def _settings_text_and_kb(user):
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
         f"🌍 Таймзона: *{tz_display}*\n\n"
         f"{'✅' if be else '🔕'} Маячок внимания: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
-        f"_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
+        + (f"🕐 Рабочие часы маячка: *{bs}–{bfin}*\n" if be else "")
+        + "_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
         "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
     )
     beacon_interval_row = [
         InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
         InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
         InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
+    ]
+    beacon_hours_row = [
+        InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
+        InlineKeyboardButton(f"🌇 До {bfin}", callback_data="set_beacon_end"),
     ]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
@@ -1582,6 +1584,7 @@ def _settings_text_and_kb(user):
             f"{'✅' if be else '🔕'} Маячок", callback_data="toggle_beacon"),
          *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
         *([ beacon_interval_row ] if be else []),
+        *([ beacon_hours_row ] if be else []),
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
@@ -1593,12 +1596,17 @@ def _settings_text_and_kb(user):
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    block = q.data.replace("set_", "")  # morning / midday / evening
+    block = q.data.replace("set_", "")  # morning / midday / evening / beacon_start / beacon_end
     labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
+    beacon_labels = {"beacon_start": "🌅 начало", "beacon_end": "🌇 конец"}
     clear_awaiting_flags(ctx, update)
     ctx.user_data["setting_notif"] = block
+    if block in beacon_labels:
+        prompt = f"Введи {beacon_labels[block]} рабочих часов маячка"
+    else:
+        prompt = f"Введи время для {labels.get(block,'')} уведомления"
     await q.message.reply_text(
-        f"Введи время для {labels.get(block,'')} уведомления\n\n"
+        f"{prompt}\n\n"
         "Формат: *ЧЧ:ММ* (например: `08:30` или `20:00`)",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -1697,11 +1705,13 @@ async def send_beacon(app, user):
         now = datetime.now(tz)
         interval_h = int(user.get("beacon_interval") or 2)
 
-        morning_h, morning_m = map(int, user.get("notif_morning","09:00").split(":"))
-        evening_h, evening_m = map(int, user.get("notif_evening","21:00").split(":"))
+        # Рабочие часы маячка — отдельные от времени утро/вечер уведомлений,
+        # настраиваются в ⚙️ Настройки
+        start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
+        end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
         now_minutes = now.hour * 60 + now.minute
-        if now_minutes < morning_h * 60 + morning_m: return
-        if now_minutes > evening_h * 60 + evening_m: return
+        if now_minutes < start_h * 60 + start_m: return
+        if now_minutes > end_h * 60 + end_m: return
 
         last_sent = user.get("beacon_last_sent") or ""
         if last_sent:
@@ -1930,15 +1940,24 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Validate HH:MM format
         import re
         if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
-            field = f"notif_{block}"
-            update_user(uid, **{field: text})
-            update_user(uid, notif_enabled=1)
-            labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
-            await update.message.reply_text(
-                f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
-            )
+            if block in ("beacon_start", "beacon_end"):
+                update_user(uid, **{block: text})
+                beacon_labels = {"beacon_start": "🌅 Начало", "beacon_end": "🌇 Конец"}
+                await update.message.reply_text(
+                    f"{beacon_labels.get(block,'')} рабочих часов маячка установлен на *{text}* ✅",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
+                )
+            else:
+                field = f"notif_{block}"
+                update_user(uid, **{field: text})
+                update_user(uid, notif_enabled=1)
+                labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
+                await update.message.reply_text(
+                    f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
+                )
         else:
             await update.message.reply_text(
                 "Неверный формат. Введи время в формате ЧЧ:ММ, например: `08:30`",
@@ -3379,6 +3398,8 @@ def main():
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_yes, pattern="^onboard_explain_yes$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
@@ -3392,7 +3413,7 @@ def main():
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
-    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
+    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
     app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
