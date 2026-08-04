@@ -38,6 +38,16 @@ DB_PATH = os.getenv("DB_PATH", "adhd.db")
 CONV_TIMEOUT_SHORT = 600   # 10 минут — онбординг (имя/пол)
 CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерний блок
 
+# Утренний и вечерний ConversationHandler — независимые друг от друга и оба
+# зарегистрированы в одной группе, поэтому если один из них "застрял" на
+# текстовом шаге (пользователь начал, но не закончил), он молча перехватит
+# любое следующее текстовое сообщение — даже предназначенное для другого
+# потока. Ссылки заполняются в main() и используются morning_start/
+# evening_start, чтобы сбрасывать "застрявшее" состояние друг друга при
+# явном переключении между потоками.
+_morning_conv = None
+_evening_conv = None
+
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
@@ -575,6 +585,7 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
     )
+    clear_awaiting_flags(ctx)
     ctx.user_data["awaiting_city"] = True
     return ConversationHandler.END
 
@@ -621,6 +632,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+    if _evening_conv is not None:
+        _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
     user = get_user(uid)
     name = user["name"]
     gender = user["gender"]
@@ -992,13 +1005,15 @@ async def ask_tasks_done(message, uid, ctx):
 
 async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    uid = q.from_user.id
     key = q.data.replace("td_", "")
     done = ctx.user_data.setdefault("e_tasks_done", [])
     if key in done:
         done.remove(key)
     else:
         done.append(key)
-    morning = get_diary(q.from_user.id, "morning")
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
 
@@ -1016,6 +1031,8 @@ async def ask_achievements(message):
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    if _morning_conv is not None:
+        _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
     user = get_user(uid)
     streak = calc_streak(uid)
 
@@ -1384,6 +1401,7 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
+    clear_awaiting_flags(ctx)
     ctx.user_data["coach_mode"] = True
 
 async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1499,6 +1517,7 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     block = q.data.replace("set_", "")  # morning / midday / evening
     labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
+    clear_awaiting_flags(ctx)
     ctx.user_data["setting_notif"] = block
     await q.message.reply_text(
         f"Введи время для {labels.get(block,'')} уведомления\n\n"
@@ -1522,6 +1541,7 @@ async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Отмена", callback_data="go_settings")
         ]])
     )
+    clear_awaiting_flags(ctx)
     ctx.user_data["awaiting_city"] = True
     ctx.user_data["city_from_settings"] = True
 
@@ -1540,10 +1560,7 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    ctx.user_data.pop("awaiting_time", None)
-    ctx.user_data.pop("setting_notif", None)
-    ctx.user_data.pop("awaiting_city", None)
-    ctx.user_data.pop("city_from_settings", None)
+    clear_awaiting_flags(ctx)
     text, kb = _settings_text_and_kb(get_user(uid))
     try:
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1794,14 +1811,27 @@ async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = build_day_card_text(uid, for_date)
     await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, user_today))
 
-async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
+    """Сбросить все взаимоисключающие "жду текстовый ответ" флаги.
+
+    В любой момент активен максимум один такой флаг — иначе следующее
+    сообщение может быть перехвачено не тем обработчиком в handle_text()
+    (например ответ на фидбек молча сохраняется как имя бадди). Вызывается
+    и при возврате в меню, и в начале каждого обработчика, который сам
+    взводит один из этих флагов — чтобы не полагаться на то, что именно
+    go_menu() окажется на пути пользователя перед этим.
+    """
     ctx.user_data["coach_mode"] = False
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_time"] = False
     ctx.user_data["awaiting_city"] = False
     ctx.user_data.pop("city_from_settings", None)
+    ctx.user_data.pop("setting_notif", None)
+
+async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx)
     await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2236,6 +2266,7 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FEEDBACK ───────────────────────────────────────────────────────────────
 async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx)
     ctx.user_data["awaiting_feedback"] = True
     await q.message.reply_text(
         "💬 *Обратная связь*\n\n"
@@ -2275,6 +2306,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx)
     ctx.user_data["awaiting_buddy"] = True
     await q.message.reply_text("Напиши имя своего бадди:")
 
@@ -2335,12 +2367,13 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     name = user["name"]
-    morning = get_diary(uid, "morning", datetime.now(get_user_tz(user)).date().isoformat())
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     focus = morning.get("focus", "твоя A-задача")
     action = q.data
 
     if action in MIDDAY_LABELS:
-        save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]})
+        save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]}, for_date=today)
 
     back_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🤖 Коуч поможет", callback_data="mid_coach")],
@@ -2487,6 +2520,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_coach":
+        clear_awaiting_flags(ctx)
         ctx.user_data["coach_mode"] = True
         await q.message.reply_text(
             f"🤖 *Коуч на связи, {name}.* Что происходит?",
@@ -2943,7 +2977,7 @@ async def check_notifications(app):
                         mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                         reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
                         if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                            if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key).get("focus"):
+                            if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key):
                                 await app.bot.send_message(
                                     chat_id=uid,
                                     text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
@@ -3114,6 +3148,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    global _morning_conv, _evening_conv
     init_db()
     app = (
         Application.builder()
@@ -3193,6 +3228,8 @@ def main():
 
     app.add_handler(CommandHandler("admin", admin_stats), group=-1)
     app.add_handler(onboard_conv)
+    _morning_conv = morning_conv
+    _evening_conv = evening_conv
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
