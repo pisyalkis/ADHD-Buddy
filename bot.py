@@ -9,7 +9,7 @@ ADHD Focus Bot v5
 - Уведомления: 9:00 и 21:00 по Тбилиси (UTC+4)
 """
 
-import os, json, sqlite3, asyncio, random, threading, time
+import os, json, sqlite3, asyncio, random, threading, time, hashlib
 from datetime import datetime, date, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -319,10 +319,11 @@ def get_latest_evening_plan(uid):
     не находит, план молча пропадает. Берём непустую запись, отдавая
     приоритет более свежей (сегодняшней), если она есть.
     """
-    today = get_diary(uid, "evening", date.today().isoformat())
+    user_today = datetime.now(get_user_tz(get_user(uid))).date()
+    today = get_diary(uid, "evening", user_today.isoformat())
     if today.get("e_a"):
         return today
-    yesterday = get_diary(uid, "evening", (date.today() - timedelta(days=1)).isoformat())
+    yesterday = get_diary(uid, "evening", (user_today - timedelta(days=1)).isoformat())
     return yesterday
 
 def save_feedback(uid, text):
@@ -435,9 +436,15 @@ def today_str(tz=None):
     return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
 def get_daily_skill(uid):
-    """Возвращает навык дня — меняется каждый день."""
-    today = date.today().isoformat()
-    idx = hash(today + str(uid)) % len(SKILLS)
+    """Возвращает навык дня — меняется каждый день (по таймзоне пользователя).
+
+    Используем hashlib, а не встроенный hash(): для строк он рандомизирован
+    per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
+    дня для той же даты мог бы внезапно смениться.
+    """
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
+    idx = int(digest, 16) % len(SKILLS)
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
@@ -970,12 +977,16 @@ def tasks_done_kb(morning, done):
     return InlineKeyboardMarkup(rows)
 
 async def ask_tasks_done(message, uid, ctx):
-    morning = get_diary(uid, "morning")
-    ctx.user_data["e_tasks_done"] = []
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    # Подхватываем отметки, уже сделанные днём в меню "📋 Задачи" —
+    # иначе вечерний блок затирает их пустым списком.
+    already_done = list(get_diary(uid, "tasks_done", today).get("done", []))
+    ctx.user_data["e_tasks_done"] = already_done
     await message.reply_text(
         "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
         parse_mode="Markdown",
-        reply_markup=tasks_done_kb(morning, [])
+        reply_markup=tasks_done_kb(morning, already_done)
     )
 
 async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1208,6 +1219,9 @@ async def finish_evening(message, uid, ctx):
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
     save_diary(uid, "evening", data, for_date=today)
+    # Синхронизируем с "tasks_done" — источником для дневного меню "📋 Задачи",
+    # чтобы отметки, поставленные здесь вечером, тоже были видны там.
+    save_diary(uid, "tasks_done", {"done": data["e_tasks_done"]}, for_date=today)
     add_streak(uid, for_date=today)
     streak = calc_streak(uid)
 
@@ -1438,7 +1452,7 @@ def _settings_text_and_kb(user):
     bi = int(user.get("beacon_interval")  or 2)
 
     status = "✅ включены" if enabled else "❌ выключены"
-    beacon_label = f"каждые {bi} ч" if bi == 1 else f"каждые {bi} ч"
+    beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
     tz_name = user.get("timezone") or USER_TIMEZONE
     city_name = user.get("city") or ""
     tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
@@ -1477,12 +1491,6 @@ def _settings_text_and_kb(user):
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
-
-async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    uid = q.from_user.id
-    text, kb = _settings_text_and_kb(get_user(uid))
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1529,6 +1537,10 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    ctx.user_data.pop("awaiting_time", None)
+    ctx.user_data.pop("setting_notif", None)
+    ctx.user_data.pop("awaiting_city", None)
+    ctx.user_data.pop("city_from_settings", None)
     text, kb = _settings_text_and_kb(get_user(uid))
     try:
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1631,25 +1643,23 @@ async def send_beacon(app, user):
 
 
 def _tasks_text_and_kb(morning, done_set):
-    """Строит текст и клавиатуру задач с отметками выполнения."""
-    task_defs = [
-        ("focus", "🅰️", "A"),
-        ("b1",    "🅱️", "B1"),
-        ("b2",    "🅱️", "B2"),
-        ("c1",    "🅲",  "C1"),
-        ("c2",    "🅲",  "C2"),
-        ("c3",    "🅲",  "C3"),
-    ]
+    """Строит текст и клавиатуру задач с отметками выполнения.
+
+    done_set — множество ключей TASK_FIELDS (focus/b1/b2/c1/c2/c3), а не
+    отдельных "A/B1/.." меток — тот же формат, что использует вечерний
+    блок и карточка дня, чтобы отметки, поставленные днём в этом меню,
+    не терялись при вечернем ревью и наоборот.
+    """
     lines = []
     buttons = []
-    for key, icon, label in task_defs:
+    for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
         if not val: continue
-        done = label in done_set
+        done = key in done_set
         prefix = "✅" if done else icon
         lines.append(f"{prefix} {'~' if done else ''}{val}{'~' if done else ''}")
         if not done:
-            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{label}")])
+            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{key}")])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи не заданы_")
     kb_rows = buttons + [
@@ -1662,7 +1672,8 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать все задачи на сегодня."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
 
     if not morning:
         await q.message.reply_text(
@@ -1671,7 +1682,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    done_data = get_diary(uid, "tasks_done")
+    done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
     text, kb = _tasks_text_and_kb(morning, done_set)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1680,23 +1691,21 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Отметить задачу выполненной."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    label = q.data.replace("task_done_", "")  # A, B1, B2, C1, C2, C3
+    key = q.data.replace("task_done_", "")  # focus, b1, b2, c1, c2, c3
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
 
-    done_data = get_diary(uid, "tasks_done")
+    done_data = get_diary(uid, "tasks_done", today)
     done_list = done_data.get("done", [])
-    if label not in done_list:
-        done_list.append(label)
-    save_diary(uid, "tasks_done", {"done": done_list})
+    if key not in done_list:
+        done_list.append(key)
+    save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
 
-    morning = get_diary(uid, "morning")
+    morning = get_diary(uid, "morning", today)
     done_set = set(done_list)
     text, kb = _tasks_text_and_kb(morning, done_set)
 
-    all_keys = [k for k in ["focus","b1","b2","c1","c2","c3"] if morning.get(k)]
-    label_map = {"focus":"A","b1":"B1","b2":"B2","c1":"C1","c2":"C2","c3":"C3"}
-    all_labels = {label_map[k] for k in all_keys}
-
-    if all_labels and all_labels <= done_set:
+    all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
+    if all_keys and all_keys <= done_set:
         text += "\n\n🎉 *Все задачи выполнены! Отличный день!*"
 
     try:
@@ -1710,13 +1719,14 @@ def build_day_card_text(uid, for_date):
     morning = get_diary(uid, "morning", for_date)
     midday  = get_diary(uid, "midday",  for_date)
     evening = get_diary(uid, "evening", for_date)
+    tasks_done = get_diary(uid, "tasks_done", for_date)
 
     d = date.fromisoformat(for_date)
     lines = [f"🗂 *Карточка дня — {d.strftime('%d.%m.%Y')}*"]
 
     if morning:
         lines.append("\n☀️ *Утро*")
-        done = set(evening.get("e_tasks_done", []))
+        done = set(tasks_done.get("done", [])) | set(evening.get("e_tasks_done", []))
         tasks = []
         for key, icon in TASK_FIELDS:
             text = morning.get(key)
@@ -1755,11 +1765,11 @@ def build_day_card_text(uid, for_date):
 
     return "\n".join(lines)
 
-def day_card_kb(for_date):
+def day_card_kb(for_date, user_today):
     d = date.fromisoformat(for_date)
     prev_d = (d - timedelta(days=1)).isoformat()
     buttons = [[InlineKeyboardButton("◀️ Пред. день", callback_data=f"daycard_{prev_d}")]]
-    if d < date.today():
+    if d < user_today:
         next_d = (d + timedelta(days=1)).isoformat()
         buttons[0].append(InlineKeyboardButton("След. день ▶️", callback_data=f"daycard_{next_d}"))
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
@@ -1768,16 +1778,18 @@ def day_card_kb(for_date):
 async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    for_date = date.today().isoformat()
+    user_today = datetime.now(get_user_tz(get_user(uid))).date()
+    for_date = user_today.isoformat()
     text = build_day_card_text(uid, for_date)
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date))
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, user_today))
 
 async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     for_date = q.data.replace("daycard_", "")
+    user_today = datetime.now(get_user_tz(get_user(uid))).date()
     text = build_day_card_text(uid, for_date)
-    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date))
+    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, user_today))
 
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1931,7 +1943,7 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     # Считаем сколько минут в фокусе сегодня
-    today = date.today().isoformat()
+    today = datetime.now(get_user_tz(user)).date().isoformat()
     mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
 
     morning_data = get_diary(uid, "morning")
@@ -1998,26 +2010,29 @@ async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     user = get_user(uid)
+    tz = get_user_tz(user)
+    now = datetime.now(tz)
 
-    # Считаем сколько успел(а) отработать
+    # Считаем сколько реально успел(а) отработать до досрочной остановки:
+    # start = end_time - запланированная длительность, worked = now - start
     worked_mins = 0
-    if user.get("focus_end_time") and str(user.get("focus_active","0")) == "1":
+    if user.get("focus_end_time") and str(user.get("focus_active", "0")) == "1":
         try:
-            tz = pytz.timezone(USER_TIMEZONE)
             end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
-            # Мы не знаем когда стартовали, но знаем end_time и оставшееся время
-            # Проще: просто не добавляем минуты при досрочной остановке
-            pass
+            duration = int(user.get("focus_duration") or 0)
+            start_dt = end_dt - timedelta(minutes=duration)
+            worked_mins = max(0, min(duration, int((now - start_dt).total_seconds() / 60)))
         except Exception:
-            pass
+            worked_mins = 0
 
-    update_user(uid, focus_active=0, focus_end_time="")
+    today = now.date().isoformat()
+    prev_mins = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
+    mins_today = prev_mins + worked_mins
+    update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=mins_today, focus_date=today)
 
-    today = date.today().isoformat()
-    mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
-
+    worked_note = f" — {worked_mins} мин в фокусе" if worked_mins else ""
     await q.message.reply_text(
-        f"⏹ *Таймер остановлен*\n\n"
+        f"⏹ *Таймер остановлен*{worked_note}\n\n"
         f"Сегодня в фокусе: *{mins_today} мин*\n\n"
         f"Хочешь начать новый раунд?",
         parse_mode="Markdown",
@@ -2031,7 +2046,7 @@ async def send_focus_end(app, uid: int, minutes: int):
     """Вызывается из check_notifications когда таймер истёк."""
     try:
         user = get_user(uid)
-        today = date.today().isoformat()
+        today = datetime.now(get_user_tz(user)).date().isoformat()
         prev_mins = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
         new_mins = prev_mins + minutes
         update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
@@ -2294,8 +2309,6 @@ async def midday_notification(app, uid):
             return
 
         tasks = build_tasks_summary(morning)
-        a_task = morning.get("focus", "")
-        has_b_or_c = any(morning.get(k) for k in ["b1","b2","c1","c2","c3"])
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
             f"Твои задачи на сегодня:\n{tasks}\n\n"
@@ -2367,26 +2380,6 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
             parse_mode="Markdown", reply_markup=main_menu()
-        )
-
-    elif action == "mid_a_skipped":
-        a_task = morning.get("focus", "А-задача")
-        await q.message.reply_text(
-            f"⚠️ *Стоп — А-задача важнее*\n\n"
-            f"_{a_task}_\n\n"
-            f"Система ABC работает так: А — самое важное дело, которое нужно сделать *первым*. "
-            f"Если браться за Б или В пока А не сделана, мозг создаёт иллюзию продуктивности — ты занят(а), но главное откладывается.\n\n"
-            f"Это особенно частая ловушка при СДВГ: браться за лёгкое и приятное вместо важного.\n\n"
-            f"*Что сделать прямо сейчас:*\n"
-            f"👣 Найди один самый маленький первый шаг по А-задаче\n"
-            f"⏱ Поставь таймер на 25 минут только на А\n"
-            f"📝 Б и В никуда не денутся — вернись к ним после",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🍅 Запустить таймер на А", callback_data="go_focus")],
-                [InlineKeyboardButton("🤖 Нужна помощь с А", callback_data="mid_coach")],
-                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-            ])
         )
 
     elif action == "mid_nostart":
@@ -2571,8 +2564,8 @@ async def weekly_report(app, uid):
         user = get_user(uid)
         name = user.get("name", "")
 
-        # Собираем данные за последние 7 дней
-        today = date.today()
+        # Собираем данные за последние 7 дней (по таймзоне пользователя)
+        today = datetime.now(get_user_tz(user)).date()
         days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
 
         mornings_done = 0
@@ -2962,8 +2955,8 @@ async def check_notifications(app):
 
                 # Исследовательские вопросы
                 try:
-                    created_at = user.get("created_at") or date.today().isoformat()
-                    days_since = (date.today() - date.fromisoformat(str(created_at)[:10])).days
+                    created_at = user.get("created_at") or now_dt.date().isoformat()
+                    days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
                     done_days = [x for x in (user.get("research_done") or "").split(",") if x]
                     for milestone in [3, 7, 14, 30]:
                         if days_since >= milestone and str(milestone) not in done_days:
@@ -3019,7 +3012,7 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if not NOTIFY_USER_ID or uid != NOTIFY_USER_ID:
         await update.message.reply_text(
             f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
             parse_mode="Markdown"
@@ -3029,9 +3022,10 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
 
+        admin_today = datetime.now(pytz.timezone(USER_TIMEZONE)).date()
         total = cur.execute("SELECT COUNT(*) FROM users WHERE name != ''").fetchone()[0]
-        week_ago  = (date.today() - timedelta(days=7)).isoformat()
-        month_ago = (date.today() - timedelta(days=30)).isoformat()
+        week_ago  = (admin_today - timedelta(days=7)).isoformat()
+        month_ago = (admin_today - timedelta(days=30)).isoformat()
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
 
