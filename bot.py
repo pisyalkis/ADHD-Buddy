@@ -2108,7 +2108,6 @@ async def send_research_question(app, uid, day):
                  InlineKeyboardButton("5 🤩", callback_data="research_3_5")],
             ])
         )
-        update_user(uid, research_awaiting=f"3_open:что было самым полезным за эти дни?")
 
     elif day == 7:
         await app.bot.send_message(
@@ -2139,7 +2138,6 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(6, 11)],
             ])
         )
-        update_user(uid, research_awaiting="14_open:что стоит упростить или убрать?")
 
     elif day == 30:
         await app.bot.send_message(
