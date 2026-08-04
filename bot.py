@@ -207,7 +207,7 @@ def init_db():
         notif_morning TEXT DEFAULT '09:00',
         notif_midday TEXT DEFAULT '13:00',
         notif_evening TEXT DEFAULT '21:00',
-        notif_enabled INTEGER DEFAULT 0
+        notif_enabled INTEGER DEFAULT 1
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS diary (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,7 +237,7 @@ def init_db():
         ("notif_morning", "'09:00'"),
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
-        ("notif_enabled", "0"),
+        ("notif_enabled", "1"),
         ("notif_morning_on", "1"),
         ("notif_midday_on",  "1"),
         ("notif_evening_on", "1"),
@@ -576,13 +576,13 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     await q.message.reply_text(
         "🔔 *Последний шаг — уведомления*\n\n"
-        "Бот пишет три раза в день: утром, днём и вечером. "
-        "Без уведомлений польза от бота сильно меньше.\n\n"
-        "Включить уведомления?",
+        "Бот пишет три раза в день: утром, днём и вечером "
+        "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
+        "Если не хочешь их получать, можешь отключить.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
-            [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+            [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
+            [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
         ])
     )
 
@@ -601,8 +601,10 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, notif_enabled=0)
     await q.message.reply_text(
-        "Окей! Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
+        "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
         reply_markup=main_menu()
     )
 
@@ -1471,6 +1473,7 @@ def _settings_text_and_kb(user):
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
         )],
+        [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
@@ -1495,6 +1498,21 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]])
     )
     ctx.user_data["awaiting_time"] = True
+
+async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "🌍 *Из какого ты города?*\n\n"
+        "По названию города бот определит твою таймзону, "
+        "чтобы уведомления приходили по местному времени.\n\n"
+        "Просто напиши название города:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Отмена", callback_data="go_settings")
+        ]])
+    )
+    ctx.user_data["awaiting_city"] = True
+    ctx.user_data["city_from_settings"] = True
 
 async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1803,6 +1821,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     elif ctx.user_data.get("awaiting_city"):
         ctx.user_data["awaiting_city"] = False
+        from_settings = ctx.user_data.pop("city_from_settings", False)
         city = update.message.text.strip()
         update_user(uid, city=city)
         # Определяем таймзону по городу
@@ -1827,16 +1846,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
                 f"Можно изменить в ⚙️ Настройки позже."
             )
+        if from_settings:
+            text, kb = _settings_text_and_kb(get_user(uid))
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+            return
         # Показываем настройку уведомлений
         await update.message.reply_text(
             "🔔 *Последний шаг — уведомления*\n\n"
-            "Бот пишет три раза в день: утром, днём и вечером. "
-            "Без уведомлений польза от бота сильно меньше.\n\n"
-            "Включить уведомления?",
+            "Бот пишет три раза в день: утром, днём и вечером "
+            "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
+            "Если не хочешь их получать, можешь отключить.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
-                [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+                [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
+                [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
             ])
         )
         return
@@ -3188,6 +3211,7 @@ def main():
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
+    app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
