@@ -618,7 +618,7 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
     )
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_city"] = True
     return ConversationHandler.END
 
@@ -1441,7 +1441,8 @@ def midday_kb(morning=None, done_set=None):
     def has(k): return bool(morning.get(k))
     def is_done(k): return k in done_set
 
-    a_done = (not has("focus")) or is_done("focus")
+    a_exists = has("focus")
+    a_done = (not a_exists) or is_done("focus")
     b_keys = [k for k in ("b1", "b2") if has(k)]
     b_done = all(is_done(k) for k in b_keys)
     c_keys = [k for k in ("c1", "c2", "c3") if has(k)]
@@ -1451,9 +1452,11 @@ def midday_kb(morning=None, done_set=None):
     if not a_done:
         rows.append([InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")])
     elif not b_done:
-        rows.append([InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")])
+        label = "✅ Сделал A, работаю над B" if a_exists else "Работаю над B"
+        rows.append([InlineKeyboardButton(label, callback_data="mid_a_done_b")])
     elif not c_done:
-        rows.append([InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")])
+        label = "✅✅ Сделал A и B, работаю над C" if (a_exists or b_keys) else "Работаю над C"
+        rows.append([InlineKeyboardButton(label, callback_data="mid_ab_done_c")])
 
     if not (a_done and b_done and c_done):
         rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
@@ -1476,7 +1479,7 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["coach_mode"] = True
 
 async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1592,7 +1595,7 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     block = q.data.replace("set_", "")  # morning / midday / evening
     labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["setting_notif"] = block
     await q.message.reply_text(
         f"Введи время для {labels.get(block,'')} уведомления\n\n"
@@ -1616,7 +1619,7 @@ async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Отмена", callback_data="go_settings")
         ]])
     )
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_city"] = True
     ctx.user_data["city_from_settings"] = True
 
@@ -1635,7 +1638,7 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     text, kb = _settings_text_and_kb(get_user(uid))
     try:
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1886,7 +1889,7 @@ async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = build_day_card_text(uid, for_date)
     await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, user_today))
 
-def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
+def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     """Сбросить все взаимоисключающие "жду текстовый ответ" флаги.
 
     В любой момент активен максимум один такой флаг — иначе следующее
@@ -1895,6 +1898,10 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     и при возврате в меню, и в начале каждого обработчика, который сам
     взводит один из этих флагов — чтобы не полагаться на то, что именно
     go_menu() окажется на пути пользователя перед этим.
+
+    research_awaiting — тот же класс флага, но хранится в БД, а не в
+    ctx.user_data (переживает рестарт бота), поэтому чистится отдельно,
+    когда есть update (чтобы узнать uid).
     """
     ctx.user_data["coach_mode"] = False
     ctx.user_data["awaiting_feedback"] = False
@@ -1903,10 +1910,15 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["awaiting_city"] = False
     ctx.user_data.pop("city_from_settings", None)
     ctx.user_data.pop("setting_notif", None)
+    if update is not None and update.effective_user is not None:
+        uid = update.effective_user.id
+        user = get_user(uid)
+        if str(user.get("research_awaiting") or "0") != "0":
+            update_user(uid, research_awaiting=0)
 
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2057,9 +2069,9 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
 
     morning_data = get_diary(uid, "morning", today)
-    task_hint = ""
-    if morning_data.get("focus"):
-        task_hint = f"\n\n📌 Твоя задача дня: *{morning_data['focus']}*"
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    current_task = next_undone_task(morning_data, done_set)
+    task_hint = f"\n\n📌 Твоя задача: *{current_task}*" if current_task else ""
 
     stats_hint = f"\n\n⏱ Сегодня в фокусе: *{mins_today} мин*" if mins_today > 0 else ""
 
@@ -2100,10 +2112,11 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     end_str = end_dt.strftime("%H:%M")
 
-    morning_data = get_diary(uid, "morning", now.date().isoformat())
-    task_hint = ""
-    if morning_data.get("focus"):
-        task_hint = f"\n📌 Задача: *{morning_data['focus']}*"
+    today_iso = now.date().isoformat()
+    morning_data = get_diary(uid, "morning", today_iso)
+    done_set = set(get_diary(uid, "tasks_done", today_iso).get("done", []))
+    current_task = next_undone_task(morning_data, done_set)
+    task_hint = f"\n📌 Задача: *{current_task}*" if current_task else ""
 
     await q.message.reply_text(
         f"🍅 *Таймер запущен на {minutes} мин*\n\n"
@@ -2341,7 +2354,7 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FEEDBACK ───────────────────────────────────────────────────────────────
 async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
     await q.message.reply_text(
         "💬 *Обратная связь*\n\n"
@@ -2381,7 +2394,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx)
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_buddy"] = True
     await q.message.reply_text("Напиши имя своего бадди:")
 
@@ -2392,7 +2405,8 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     buddy = user.get("buddy_name","бадди")
     today = datetime.now(get_user_tz(user)).date().isoformat()
     morning = get_diary(uid, "morning", today)
-    focus = morning.get("focus","моя главная задача")
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    focus = next_undone_task(morning, done_set) or "моя главная задача"
     await q.message.reply_text(
         f"👥 *Шаблон для {buddy}:*\n\n"
         f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Можно просто видеозвонок с тишиной.»_\n\n"
@@ -2401,8 +2415,12 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
 
-async def send_resume_check(bot, uid):
-    """Повторная проверка через 10-15 мин после того как человек отметил «отдыхаю»."""
+async def send_resume_check(bot, uid) -> bool:
+    """Повторная проверка через 10-15 мин после того как человек отметил «отдыхаю».
+    Возвращает True только если сообщение реально ушло — вызывающий код
+    сбрасывает resume_check_due лишь при успехе, чтобы временный сбой
+    отправки не терял напоминание навсегда, а просто повторялся на
+    следующем тике."""
     try:
         user = get_user(uid)
         today = datetime.now(get_user_tz(user)).date().isoformat()
@@ -2415,8 +2433,10 @@ async def send_resume_check(bot, uid):
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
+        return True
     except Exception as e:
         print(f"Ошибка resume-check uid={uid}: {e}")
+        return False
 
 def schedule_resume_check(uid, tz):
     """Отмечает время следующей resume-check в БД (а не эфемерным job'ом
@@ -2634,7 +2654,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_coach":
-        clear_awaiting_flags(ctx)
+        clear_awaiting_flags(ctx, update)
         ctx.user_data["coach_mode"] = True
         await q.message.reply_text(
             f"🤖 *Коуч на связи, {name}.* Что происходит?",
@@ -3113,8 +3133,8 @@ async def check_notifications(app):
                     try:
                         due_dt = datetime.fromisoformat(due_raw)
                         if now_dt >= due_dt:
-                            update_user(uid, resume_check_due="")
-                            await send_resume_check(app.bot, uid)
+                            if await send_resume_check(app.bot, uid):
+                                update_user(uid, resume_check_due="")
                     except Exception as e:
                         print(f"Ошибка resume_check_due uid={uid}: {e}")
 
