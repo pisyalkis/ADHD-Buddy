@@ -399,16 +399,34 @@ def g(gender, male, female):
     if gender == 'N': return f"{male}(а)"
     return male
 
-def build_tasks_summary(morning_data):
-    """Формирует текстовый список задач из утреннего дневника."""
+def build_tasks_summary(morning_data, done_set=None):
+    """Формирует текстовый список задач из утреннего дневника.
+
+    done_set (опционально) — множество ключей из TASK_FIELDS, уже отмеченных
+    выполненными (через 📋 Задачи или дневной чекин) — такие задачи помечаются
+    ✅, чтобы не выглядело будто бот снова спрашивает про уже сделанное.
+    """
+    done_set = done_set or set()
+    def mark(key, icon, text):
+        return f"✅ ~{text}~" if key in done_set else f"{icon} {text}"
     lines = []
-    if morning_data.get("focus"): lines.append(f"🅰️ {morning_data['focus']}")
-    if morning_data.get("b1"):    lines.append(f"🅱️ {morning_data['b1']}")
-    if morning_data.get("b2"):    lines.append(f"🅱️ {morning_data['b2']}")
-    if morning_data.get("c1"):    lines.append(f"🅲 {morning_data['c1']}")
-    if morning_data.get("c2"):    lines.append(f"🅲 {morning_data['c2']}")
-    if morning_data.get("c3"):    lines.append(f"🅲 {morning_data['c3']}")
+    if morning_data.get("focus"): lines.append(mark("focus", "🅰️", morning_data['focus']))
+    if morning_data.get("b1"):    lines.append(mark("b1", "🅱️", morning_data['b1']))
+    if morning_data.get("b2"):    lines.append(mark("b2", "🅱️", morning_data['b2']))
+    if morning_data.get("c1"):    lines.append(mark("c1", "🅲", morning_data['c1']))
+    if morning_data.get("c2"):    lines.append(mark("c2", "🅲", morning_data['c2']))
+    if morning_data.get("c3"):    lines.append(mark("c3", "🅲", morning_data['c3']))
     return "\n".join(lines) if lines else "_задачи не заданы_"
+
+def mark_tasks_done(uid, keys, for_date):
+    """Отмечает задачи (ключи TASK_FIELDS) выполненными в общем tasks_done —
+    том же хранилище, что использует меню 📋 Задачи и вечерний чек-лист."""
+    done_data = get_diary(uid, "tasks_done", for_date)
+    done_list = done_data.get("done", [])
+    for key in keys:
+        if key not in done_list:
+            done_list.append(key)
+    save_diary(uid, "tasks_done", {"done": done_list}, for_date=for_date)
 
 
 def skip_kb(cb):
@@ -1340,7 +1358,8 @@ async def send_coach(message, text, uid):
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
     today = datetime.now(get_user_tz(user)).date().isoformat()
     morning = get_diary(uid, "morning", today)
-    tasks = build_tasks_summary(morning)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    tasks = build_tasks_summary(morning, done_set)
     tasks_hint = (
         f"\n\nЗадачи пользователя на сегодня:\n{tasks}\n"
         "Если из сообщения понятно, к какой задаче относится проблема — обращайся к ней прямо по названию. "
@@ -1633,8 +1652,10 @@ async def send_beacon(app, user):
             except Exception:
                 pass
 
-        morning = get_diary(uid, "morning", now.date().isoformat())
-        tasks = build_tasks_summary(morning) if morning else "_задачи не заданы_"
+        today_iso = now.date().isoformat()
+        morning = get_diary(uid, "morning", today_iso)
+        done_set = set(get_diary(uid, "tasks_done", today_iso).get("done", []))
+        tasks = build_tasks_summary(morning, done_set) if morning else "_задачи не заданы_"
 
         BEACON_TEXTS = [
             "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
@@ -2345,7 +2366,8 @@ async def midday_notification(app, uid):
             )
             return
 
-        tasks = build_tasks_summary(morning)
+        done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+        tasks = build_tasks_summary(morning, done_set)
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
             f"Твои задачи на сегодня:\n{tasks}\n\n"
@@ -2405,6 +2427,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_a_done_b":
+        mark_tasks_done(uid, ["focus"], today)
         await q.message.reply_text(
             f"🎉 *А сделана — это главное!*\n\n"
             f"Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
@@ -2413,6 +2436,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_ab_done_c":
+        mark_tasks_done(uid, ["focus", "b1", "b2"], today)
         await q.message.reply_text(
             f"🏆 *А и Б сделаны — отличный день!*\n\n"
             f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
@@ -2488,7 +2512,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_time":
-        tasks = build_tasks_summary(morning)
+        tasks = build_tasks_summary(morning, set(get_diary(uid, "tasks_done", today).get("done", [])))
         await q.message.reply_text(
             "⚡ *Мало времени — расставляем приоритеты*\n\n"
             f"Твои задачи:\n{tasks}\n\n"
