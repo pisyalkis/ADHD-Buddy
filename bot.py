@@ -423,6 +423,20 @@ def build_tasks_summary(morning_data, done_set=None):
     if morning_data.get("c3"):    lines.append(mark("c3", "🅲", morning_data['c3']))
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
+def next_undone_task(morning_data, done_set=None):
+    """Первая ещё не отмеченная выполненной задача дня (A → B1 → B2 → C1 → C2 → C3).
+
+    Используется вместо жёстко зашитой A-задачи в ветке «Прокрастинирую» —
+    иначе после того как A уже сделана, бот продолжает показывать именно её
+    как «твою задачу», хотя человек застрял уже на чём-то другом.
+    """
+    done_set = done_set or set()
+    for key in ("focus", "b1", "b2", "c1", "c2", "c3"):
+        val = morning_data.get(key)
+        if val and key not in done_set:
+            return val
+    return None
+
 def mark_tasks_done(uid, keys, for_date):
     """Отмечает задачи (ключи TASK_FIELDS) выполненными в общем tasks_done —
     том же хранилище, что использует меню 📋 Задачи и вечерний чек-лист."""
@@ -2453,7 +2467,8 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = user["name"]
     today = datetime.now(get_user_tz(user)).date().isoformat()
     morning = get_diary(uid, "morning", today)
-    focus = morning.get("focus", "твоя A-задача")
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
     action = q.data
 
     if action in MIDDAY_LABELS:
@@ -2472,9 +2487,8 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_procr":
-        a_task = morning.get("focus", "А-задача")
         await q.message.reply_text(
-            f"Окей, разберёмся. Что происходит?\n\n_{a_task}_",
+            f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
@@ -2590,11 +2604,11 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_time":
-        tasks = build_tasks_summary(morning, set(get_diary(uid, "tasks_done", today).get("done", [])))
+        tasks = build_tasks_summary(morning, done_set)
         await q.message.reply_text(
             "⚡ *Мало времени — расставляем приоритеты*\n\n"
             f"Твои задачи:\n{tasks}\n\n"
-            f"*Только A-задача:* _{focus}_\n\n"
+            f"*Сфокусируйся только на этом:* _{focus}_\n\n"
             "🐘 *Разделить слона* — какой самый маленький шаг прямо сейчас?\n\n"
             "🌸 *Начать с приятной части* — войди через то, что не пугает\n\n"
             "⏱ *Работа по таймеру* — короткие спринты, не марафон\n\n"
@@ -2612,7 +2626,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "👣 *Т* — Шаг назад. Глубокий вдох.\n"
             "👀 *О* — Осмотрись. 5 предметов вокруг.\n"
             "✅ *П* — Попытайся. Возвращайся к задаче.\n\n"
-            f"Твоя A-задача: *{focus}*\n\n"
+            f"Возвращайся к: *{focus}*\n\n"
             "_Поставь таймер на 10 минут и просто открой нужный файл._",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
