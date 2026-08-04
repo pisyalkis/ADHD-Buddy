@@ -48,11 +48,6 @@ CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерн�
 _morning_conv = None
 _evening_conv = None
 
-# APScheduler-инстанс — заполняется в main(), нужен чтобы ставить разовые
-# отложенные задачи (например "напомнить через 15 минут после отдыха")
-# вне обычного ежеминутного тика check_notifications.
-_scheduler = None
-
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
  M_EXERCISE, M_FOCUS, M_B1, M_B2, M_C1, M_C2, M_C3,
@@ -268,6 +263,7 @@ def init_db():
         ("created_at", f"'{date.today().isoformat()}'"),
         ("research_done", "''"),
         ("research_awaiting", "0"),
+        ("resume_check_due", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -413,7 +409,7 @@ def build_tasks_summary(morning_data, done_set=None):
     """
     done_set = done_set or set()
     def mark(key, icon, text):
-        return f"✅ ~{text}~" if key in done_set else f"{icon} {text}"
+        return f"✅ {text}" if key in done_set else f"{icon} {text}"
     lines = []
     if morning_data.get("focus"): lines.append(mark("focus", "🅰️", morning_data['focus']))
     if morning_data.get("b1"):    lines.append(mark("b1", "🅱️", morning_data['b1']))
@@ -974,6 +970,10 @@ async def finish_morning(message, uid, ctx):
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
     }, for_date=today)
+    # Если утро уже заполнялось сегодня и заполняется заново — старые отметки
+    # "выполнено" (по ключам focus/b1/b2/...) больше не про эти задачи,
+    # иначе новая, ещё не начатая задача может показаться уже сделанной.
+    save_diary(uid, "tasks_done", {"done": []}, for_date=today)
     add_streak(uid, for_date=today)
 
     tasks_text = ""
@@ -1709,13 +1709,16 @@ async def send_beacon(app, user):
         ]
         beacon_text = random.choice(BEACON_TEXTS).format(tasks=tasks)
 
-        update_user(uid, beacon_last_sent=now.isoformat())
         await app.bot.send_message(
             chat_id=uid,
             text=beacon_text,
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
+        # Отмечаем как отправленный только после успешной отправки — иначе
+        # один неудачный send (заблокировал бота и т.п.) молча "съедает"
+        # весь интервал маячка, будто он уже сработал.
+        update_user(uid, beacon_last_sent=now.isoformat())
     except Exception as e:
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
 
@@ -1735,7 +1738,7 @@ def _tasks_text_and_kb(morning, done_set):
         if not val: continue
         done = key in done_set
         prefix = "✅" if done else icon
-        lines.append(f"{prefix} {'~' if done else ''}{val}{'~' if done else ''}")
+        lines.append(f"{prefix} {val}")
         if not done:
             buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{key}")])
 
@@ -2401,18 +2404,13 @@ async def send_resume_check(bot, uid):
     except Exception as e:
         print(f"Ошибка resume-check uid={uid}: {e}")
 
-def schedule_resume_check(bot, uid):
-    """Ставит одноразовую задачу на ~15 минут вперёд. Повторное нажатие
-    «отдыхаю» просто переставляет таймер (replace_existing), а не копит
-    несколько напоминаний подряд."""
-    if _scheduler is None:
-        return
-    run_at = datetime.now() + timedelta(minutes=15)
-    _scheduler.add_job(
-        send_resume_check, "date", run_date=run_at,
-        args=[bot, uid], id=f"resume_check_{uid}",
-        replace_existing=True, misfire_grace_time=300,
-    )
+def schedule_resume_check(uid, tz):
+    """Отмечает время следующей resume-check в БД (а не эфемерным job'ом
+    планировщика) — иначе рестарт процесса (в т.ч. от вотчдога) молча
+    отменяет обещанное напоминание. check_notifications() вычитывает
+    resume_check_due на каждом тике, как и все остальные уведомления."""
+    due = datetime.now(tz) + timedelta(minutes=15)
+    update_user(uid, resume_check_due=due.isoformat())
 
 # ── MIDDAY NOTIFICATION ─────────────────────────────────────────────────────
 async def midday_notification(app, uid):
@@ -2516,7 +2514,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_resting":
-        schedule_resume_check(ctx.bot, uid)
+        schedule_resume_check(uid, get_user_tz(user))
         await q.message.reply_text(
             "☕ *Окей, отдыхай!*\n\nНапишу снова через 10-15 минут — вернёшься со свежей головой 💪",
             parse_mode="Markdown"
@@ -3094,6 +3092,18 @@ async def check_notifications(app):
                 # Маячок
                 await send_beacon(app, user)
 
+                # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
+                # (не в памяти планировщика), чтобы рестарт процесса её не терял
+                due_raw = user.get("resume_check_due") or ""
+                if due_raw:
+                    try:
+                        due_dt = datetime.fromisoformat(due_raw)
+                        if now_dt >= due_dt:
+                            update_user(uid, resume_check_due="")
+                            await send_resume_check(app.bot, uid)
+                    except Exception as e:
+                        print(f"Ошибка resume_check_due uid={uid}: {e}")
+
                 # Исследовательские вопросы
                 try:
                     created_at = user.get("created_at") or now_dt.date().isoformat()
@@ -3250,7 +3260,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
-    global _morning_conv, _evening_conv, _scheduler
+    global _morning_conv, _evening_conv
     init_db()
     app = (
         Application.builder()
@@ -3376,7 +3386,6 @@ def main():
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
     scheduler.start()
-    _scheduler = scheduler
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
 
