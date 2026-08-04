@@ -2367,6 +2367,8 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Бот напишет когда время вышло и предложит перерыв. "
         "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
         "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
+        "📚 В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
+        "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
         "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
