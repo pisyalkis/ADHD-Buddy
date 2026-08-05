@@ -15,7 +15,8 @@ import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ConversationHandler, filters, ContextTypes
+    MessageHandler, ConversationHandler, filters, ContextTypes,
+    PicklePersistence
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -30,6 +31,15 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
+# ctx.user_data и состояния диалогов (онбординг/утро/вечер) раньше жили только
+# в памяти процесса — рестарт (в т.ч. от вотчдога при зависании) стирал любой
+# незаконченный диалог или введённый-но-не-отправленный ответ. Файл кладём
+# рядом с БД — если DB_PATH указывает на смонтированный volume, персистентность
+# автоматически переживает передеплой вместе с базой, без отдельной настройки.
+PERSISTENCE_PATH = os.getenv(
+    "PERSISTENCE_PATH",
+    os.path.join(os.path.dirname(DB_PATH) or ".", "bot_persistence.pickle")
+)
 
 # Автосброс зависших диалогов (утро/вечер/онбординг). Без таймаута человек,
 # бросивший шаг с вводом текста на середине, застревает в нём навсегда —
@@ -454,6 +464,19 @@ def next_undone_task(morning_data, done_set=None):
         if val and key not in done_set:
             return val
     return None
+
+def get_today_context(user):
+    """(today_iso, morning_data, done_set) для user — эта тройка нужна почти
+    везде, где бот показывает "задачи на сегодня": маячок, коуч, фокус-таймер,
+    дневной чекин, меню задач. Раньше каждое место само повторяло
+    today = datetime.now(get_user_tz(user)).date().isoformat() + два вызова
+    get_diary() — с риском, что где-то забудут таймзону пользователя и
+    возьмут наивную дату (это уже несколько раз было реальным багом)."""
+    uid = user["user_id"]
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    return today, morning, done_set
 
 def mark_tasks_done(uid, keys, for_date):
     """Отмечает задачи (ключи TASK_FIELDS) выполненными в общем tasks_done —
@@ -1391,9 +1414,7 @@ async def send_coach(message, text, uid):
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
-    today = datetime.now(get_user_tz(user)).date().isoformat()
-    morning = get_diary(uid, "morning", today)
-    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    today, morning, done_set = get_today_context(user)
     tasks = build_tasks_summary(morning, done_set)
     tasks_hint = (
         f"\n\nЗадачи пользователя на сегодня:\n{tasks}\n"
@@ -1742,13 +1763,11 @@ async def send_beacon(app, user):
             except Exception:
                 pass
 
-        today_iso = now.date().isoformat()
-        morning = get_diary(uid, "morning", today_iso)
         # Маячок спрашивает "что сейчас делаешь?" по задачам дня — бессмысленно
         # (и раздражает), пока эти задачи ещё не поставлены утром, даже если
         # рабочие часы маячка уже наступили
+        today_iso, morning, done_set = get_today_context(user)
         if not morning: return
-        done_set = set(get_diary(uid, "tasks_done", today_iso).get("done", []))
         tasks = build_tasks_summary(morning, done_set)
 
         BEACON_TEXTS = [
@@ -2109,11 +2128,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     # Считаем сколько минут в фокусе сегодня
-    today = datetime.now(get_user_tz(user)).date().isoformat()
+    today, morning_data, done_set = get_today_context(user)
     mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
-
-    morning_data = get_diary(uid, "morning", today)
-    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
     current_task = next_undone_task(morning_data, done_set)
     task_hint = f"\n\n📌 Твоя задача: *{current_task}*" if current_task else ""
 
@@ -2143,7 +2159,8 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     minutes = int(q.data.split("_")[2])
 
-    tz = get_user_tz(get_user(uid))
+    user = get_user(uid)
+    tz = get_user_tz(user)
     now = datetime.now(tz)
     end_dt = now + timedelta(minutes=minutes)
 
@@ -2156,9 +2173,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     end_str = end_dt.strftime("%H:%M")
 
-    today_iso = now.date().isoformat()
-    morning_data = get_diary(uid, "morning", today_iso)
-    done_set = set(get_diary(uid, "tasks_done", today_iso).get("done", []))
+    _, morning_data, done_set = get_today_context(user)
     current_task = next_undone_task(morning_data, done_set)
     task_hint = f"\n📌 Задача: *{current_task}*" if current_task else ""
 
@@ -2451,9 +2466,7 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     buddy = user.get("buddy_name","бадди")
-    today = datetime.now(get_user_tz(user)).date().isoformat()
-    morning = get_diary(uid, "morning", today)
-    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    _, morning, done_set = get_today_context(user)
     focus = next_undone_task(morning, done_set) or "моя главная задача"
     await q.message.reply_text(
         f"👥 *Шаблон для {buddy}:*\n\n"
@@ -2471,9 +2484,7 @@ async def send_resume_check(bot, uid) -> bool:
     следующем тике."""
     try:
         user = get_user(uid)
-        today = datetime.now(get_user_tz(user)).date().isoformat()
-        morning = get_diary(uid, "morning", today)
-        done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+        _, morning, done_set = get_today_context(user)
         tasks = build_tasks_summary(morning, done_set)
         await bot.send_message(
             chat_id=uid,
@@ -2499,8 +2510,7 @@ async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
     try:
         user = get_user(uid)
-        today = datetime.now(get_user_tz(user)).date().isoformat()
-        morning = get_diary(uid, "morning", today)
+        today, morning, done_set = get_today_context(user)
 
         if not morning:
             await app.bot.send_message(uid,
@@ -2513,7 +2523,6 @@ async def midday_notification(app, uid):
             )
             return
 
-        done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
         tasks = build_tasks_summary(morning, done_set)
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
@@ -2531,9 +2540,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     name = user["name"]
-    today = datetime.now(get_user_tz(user)).date().isoformat()
-    morning = get_diary(uid, "morning", today)
-    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    today, morning, done_set = get_today_context(user)
     focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
     action = q.data
 
@@ -3359,6 +3366,7 @@ def main():
         .get_updates_read_timeout(40)
         .get_updates_write_timeout(30)
         .get_updates_pool_timeout(30)
+        .persistence(PicklePersistence(filepath=PERSISTENCE_PATH))
         .build()
     )
     app.add_error_handler(on_error)
@@ -3373,6 +3381,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_SHORT,
+        persistent=True, name="onboard_conv",
     )
 
     # Утренний flow (порядок: разминка → ритуал → задачи)
@@ -3400,6 +3409,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_LONG,
+        persistent=True, name="morning_conv",
     )
 
     # Вечерний flow
@@ -3422,6 +3432,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_LONG,
+        persistent=True, name="evening_conv",
     )
 
     app.add_handler(CommandHandler("admin", admin_stats), group=-1)
