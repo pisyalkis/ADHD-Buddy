@@ -516,20 +516,40 @@ def skip_kb(cb):
     return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить →", callback_data=cb)]])
 
 def main_menu():
+    """Верхний уровень меню — только то, к чему обращаются каждый день.
+    Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
+    убраны под «🧩 Ещё», см. menu_more_kb()."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus"),
-         InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
-        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
-         InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
-        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
+        [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
+         InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
+        [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
-        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard"),
-         InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
-        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
-         InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings"),
+         InlineKeyboardButton("🧩 Ещё", callback_data="go_menu_more")],
     ])
+
+def menu_more_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
+        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
+async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text("🧩 Ещё 👇", reply_markup=menu_more_kb())
+
+def menu_button_kb():
+    """Свёрнутое меню — одна кнопка «◀️ Меню», раскрывающая полный main_menu()
+    только по нажатию. Раньше main_menu() (12 кнопок) подставлялся почти
+    под каждым ответом бота, из-за чего громоздкая раскладка появлялась
+    после любого действия, а не только когда пользователь реально просил меню."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
 
 def morning_cta_kb():
     return InlineKeyboardMarkup([
@@ -576,7 +596,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif hour < 18:
             await update.message.reply_text(
                 f"С возвращением, {user['name']}! Сейчас день — работаем 👇",
-                reply_markup=main_menu()
+                reply_markup=menu_button_kb()
             )
         else:
             await update.message.reply_text(
@@ -710,7 +730,7 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Изменить время можно в ⚙️ Настройки.\n\n"
         "Всё готово — начнём! 🚀",
         parse_mode="Markdown",
-        reply_markup=main_menu()
+        reply_markup=menu_button_kb()
     )
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -719,7 +739,7 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(uid, notif_enabled=0)
     await q.message.reply_text(
         "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
-        reply_markup=main_menu()
+        reply_markup=menu_button_kb()
     )
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
@@ -1093,7 +1113,7 @@ async def finish_morning(message, uid, ctx):
             f"{ai_msg}\n\n"
             f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
             parse_mode="Markdown",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
     except Exception as e:
         # Даже если сборка Markdown-сообщения не удалась (например из-за
@@ -1102,7 +1122,7 @@ async def finish_morning(message, uid, ctx):
         print(f"Ошибка отправки итога утра uid={uid}: {e}")
         await message.reply_text(
             f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
@@ -1417,7 +1437,7 @@ async def finish_evening(message, uid, ctx):
             f"{ai_analysis}\n\n"
             f"_Молодец. До завтра, {user['name']}_ 👋",
             parse_mode="Markdown",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
     except Exception as e:
         # См. комментарий в finish_morning — не даём сбою отправки итога
@@ -1425,7 +1445,7 @@ async def finish_evening(message, uid, ctx):
         print(f"Ошибка отправки итога вечера uid={uid}: {e}")
         await message.reply_text(
             f"✅ День закрыт! 🔥 Стрик: {streak}. До завтра, {user['name']} 👋",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
@@ -1473,7 +1493,7 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
 async def send_coach(message, text, uid):
     """Отправить запрос AI-коучу."""
     if not ANTHROPIC_KEY:
-        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=main_menu())
+        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=menu_button_kb())
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
@@ -1634,7 +1654,7 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'Продолжай! Каждый день считается.' if s>0 else 'Заполни утро или вечер — и стрик пойдёт.'}\n\n"
         "_Стрик растёт когда ты закрываешь вечерний блок._",
         parse_mode="Markdown",
-        reply_markup=main_menu()
+        reply_markup=menu_button_kb()
     )
 
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
@@ -1897,7 +1917,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not morning:
         await q.message.reply_text(
             "📋 *Задачи на сегодня*\n\n_Утренний дневник ещё не заполнен._\n\nЗаполни утро чтобы поставить задачи 👇",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         return
 
@@ -2091,7 +2111,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         update_user(uid, buddy_name=bname)
         await update.message.reply_text(
             f"👥 *Бадди добавлен: {bname}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("awaiting_city"):
         ctx.user_data["awaiting_city"] = False
@@ -2148,7 +2168,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             update_user(uid, research_awaiting=0)
             await update.message.reply_text(
                 "Спасибо! Твой ответ очень важен 🙏",
-                reply_markup=main_menu()
+                reply_markup=menu_button_kb()
             )
         return
     elif ctx.user_data.get("awaiting_feedback"):
@@ -2167,12 +2187,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 print(f"Не удалось переслать обратную связь: {e}")
         await update.message.reply_text(
             "Спасибо! Идею записал(а) 🙏",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid)
     else:
-        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=main_menu())
+        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=menu_button_kb())
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
@@ -2464,7 +2484,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif day == 7:
         await q.message.reply_text(
             "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
         update_user(uid, research_awaiting="7_open")
         await q.message.reply_text(
@@ -2481,7 +2501,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif day == 30:
         await q.message.reply_text(
             "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
 
 
@@ -2649,7 +2669,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "mid_ok":
         await q.message.reply_text(
             f"💪 *Отлично, {name}!*\n\nПродолжай. Помни про перерывы — 5-10 минут каждые 25-30 минут.\n_Гиперфокус истощает — не пропускай отдых._\n\nДо вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_procr":
@@ -2674,7 +2694,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🎉 *А сделана — это главное!*\n\n"
             f"Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_ab_done_c":
@@ -2683,7 +2703,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🏆 *А и Б сделаны — отличный день!*\n\n"
             f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_all_done":
@@ -2692,7 +2712,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"🎉 *Все задачи дня выполнены — отличная работа, {name}!*\n\n"
             f"Можно отдыхать спокойно. Не забудь закрыть день вечером 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_resting":
@@ -2827,7 +2847,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
             )
         else:
-            await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=main_menu())
+            await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
 async def morning_notification(app, uid):
@@ -3547,6 +3567,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
+    app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
