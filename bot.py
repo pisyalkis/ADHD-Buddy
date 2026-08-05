@@ -516,20 +516,33 @@ def skip_kb(cb):
     return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить →", callback_data=cb)]])
 
 def main_menu():
+    """Верхний уровень меню — только то, к чему обращаются каждый день.
+    Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
+    убраны под «🧩 Ещё», см. menu_more_kb()."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus"),
-         InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
-        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
-         InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
-        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
+        [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
+         InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
+        [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
-        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard"),
-         InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
-        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
-         InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings"),
+         InlineKeyboardButton("🧩 Ещё", callback_data="go_menu_more")],
     ])
+
+def menu_more_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
+        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
+async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text("🧩 Ещё 👇", reply_markup=menu_more_kb())
 
 def menu_button_kb():
     """Свёрнутое меню — одна кнопка «◀️ Меню», раскрывающая полный main_menu()
@@ -3554,6 +3567,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
+    app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
