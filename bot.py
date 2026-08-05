@@ -216,6 +216,10 @@ WARMUP = [
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # WAL персистится в самом файле БД, достаточно включить один раз —
+    # без него параллельная запись (тик планировщика раз в минуту против
+    # обработчика нажатой кнопки) рискует получить "database is locked".
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         name TEXT DEFAULT '',
@@ -300,9 +304,13 @@ def get_user(uid):
         # один раз, все новые пользователи получали бы одну и ту же
         # "дату регистрации" — что ломает расчёт триала и cadence
         # исследовательских вопросов (день 3/7/14/30).
+        # date.today() — наивная серверная дата (зависит от TZ хостинга, не
+        # пользователя, чей часовой пояс на этот момент ещё не известен —
+        # он задаётся позже, в онбординге). Берём тот же дефолтный пояс,
+        # что и колонка timezone у нового пользователя, а не сырой UTC/локальный.
         c.execute(
             "INSERT INTO users(user_id, created_at) VALUES(?,?)",
-            (uid, date.today().isoformat())
+            (uid, datetime.now(pytz.timezone(USER_TIMEZONE)).date().isoformat())
         )
         conn.commit()
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
@@ -432,6 +440,20 @@ def g(gender, male, female):
     if gender == 'N': return f"{male}(а)"
     return male
 
+def md_escape(text):
+    """Экранирует спецсимволы legacy Markdown (_ * ` [) в свободном
+    пользовательском тексте перед подстановкой в сообщение с
+    parse_mode="Markdown". Без этого непарный символ в тексте задачи/дневника
+    (например одиночное подчёркивание) роняет отправку с BadRequest —
+    а если это происходит в finish_morning/finish_evening ПОСЛЕ записи в БД,
+    но ДО return ConversationHandler.END, диалог зависает в последнем
+    состоянии и следующее обычное сообщение пользователя утекает в него."""
+    if not text:
+        return text
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
 def build_tasks_summary(morning_data, done_set=None):
     """Формирует текстовый список задач из утреннего дневника.
 
@@ -441,6 +463,7 @@ def build_tasks_summary(morning_data, done_set=None):
     """
     done_set = done_set or set()
     def mark(key, icon, text):
+        text = md_escape(text)
         return f"✅ {text}" if key in done_set else f"{icon} {text}"
     lines = []
     if morning_data.get("focus"): lines.append(mark("focus", "🅰️", morning_data['focus']))
@@ -462,7 +485,7 @@ def next_undone_task(morning_data, done_set=None):
     for key in ("focus", "b1", "b2", "c1", "c2", "c3"):
         val = morning_data.get(key)
         if val and key not in done_set:
-            return val
+            return md_escape(val)
     return None
 
 def get_today_context(user):
@@ -539,6 +562,7 @@ def get_daily_skill(uid):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     init_db()
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
 
     # Если уже зарегистрирован — сразу предложить нужный блок по времени суток
@@ -724,6 +748,26 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
 
+    # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
+    # то, что человек сам решил перенести на сегодня вечером; здесь же —
+    # объективный remainder из вчерашних A/B/C, которые не отметили ✅).
+    yesterday_iso = (datetime.now(get_user_tz(user)).date() - timedelta(days=1)).isoformat()
+    y_morning = get_diary(uid, "morning", yesterday_iso)
+    y_done = set(get_diary(uid, "tasks_done", yesterday_iso).get("done", []))
+    undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
+    undone_text = ""
+    reply_markup = None
+    if undone_yesterday:
+        undone_list = "\n".join(f"• {t}" for t in undone_yesterday)
+        undone_text = (
+            f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
+            "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
+            "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
+        )
+        todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
+        if todolist_idx is not None:
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")]])
+
     skill = get_daily_skill(uid)
 
     # Адаптивное приветствие по уровню энергии вечера
@@ -738,10 +782,11 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str(get_user_tz(user))}_\n\n"
-        f"_{motiv}_{plans_text}{energy_note}\n\n"
+        f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
         f"_{skill['desc']}_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=reply_markup
     )
     await asyncio.sleep(0.5)
 
@@ -1028,13 +1073,12 @@ async def finish_morning(message, uid, ctx):
     save_diary(uid, "tasks_done", {"done": []}, for_date=today)
     add_streak(uid, for_date=today)
 
-    tasks_text = ""
-    if focus:                          tasks_text += f"\n🅰️ {focus}"
-    if ctx.user_data.get("m_b1"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b1']}"
-    if ctx.user_data.get("m_b2"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b2']}"
-    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🅲 {ctx.user_data['m_c1']}"
-    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🅲 {ctx.user_data['m_c2']}"
-    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🅲 {ctx.user_data['m_c3']}"
+    morning_for_summary = {
+        "focus": focus, "b1": ctx.user_data.get("m_b1", ""), "b2": ctx.user_data.get("m_b2", ""),
+        "c1": ctx.user_data.get("m_c1", ""), "c2": ctx.user_data.get("m_c2", ""), "c3": ctx.user_data.get("m_c3", ""),
+    }
+    tasks_text = build_tasks_summary(morning_for_summary)
+    tasks_text = "\n" + tasks_text if tasks_text != "_задачи не заданы_" else "_(задачи не заданы)_"
 
     # AI мотивация если есть ключ
     ai_msg = ""
@@ -1042,14 +1086,24 @@ async def finish_morning(message, uid, ctx):
         ai_msg = await ai_morning_boost(user["name"], user["gender"], focus)
         if ai_msg: ai_msg = f"\n\n🤖 _{ai_msg}_"
 
-    await message.reply_text(
-        f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
-        f"{tasks_text if tasks_text else '_(задачи не заданы)_'}"
-        f"{ai_msg}\n\n"
-        f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    try:
+        await message.reply_text(
+            f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
+            f"{tasks_text}"
+            f"{ai_msg}\n\n"
+            f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        # Даже если сборка Markdown-сообщения не удалась (например из-за
+        # спецсимвола, который md_escape не покрыл) — диалог уже должен
+        # завершиться штатно, а не зависнуть в последнем ConversationHandler-состоянии.
+        print(f"Ошибка отправки итога утра uid={uid}: {e}")
+        await message.reply_text(
+            f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            reply_markup=main_menu()
+        )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
 TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
@@ -1321,10 +1375,10 @@ async def finish_evening(message, uid, ctx):
     streak = calc_streak(uid)
 
     plans = ""
-    if data["e_a"]:  plans += f"\n🅰️ {data['e_a']}"
-    if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
-    if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
-    if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
+    if data["e_a"]:  plans += f"\n🅰️ {md_escape(data['e_a'])}"
+    if data["e_b1"]: plans += f"\n🅱️ {md_escape(data['e_b1'])}"
+    if data["e_b2"]: plans += f"\n🅱️ {md_escape(data['e_b2'])}"
+    if data["e_c1"]: plans += f"\n🅲 {md_escape(data['e_c1'])}"
 
     tasks_summary = ""
     morning_for_summary = get_diary(uid, "morning", today)
@@ -1335,7 +1389,7 @@ async def finish_evening(message, uid, ctx):
             text = morning_for_summary.get(key)
             if not text: continue
             mark = "✅" if key in done else "▫️"
-            lines.append(f"{mark} {icon} {text}")
+            lines.append(f"{mark} {icon} {md_escape(text)}")
         if lines:
             tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
 
@@ -1353,17 +1407,26 @@ async def finish_evening(message, uid, ctx):
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
-    await message.reply_text(
-        "✅ *День закрыт!*\n\n"
-        f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
-        f"{tasks_summary}"
-        f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
-        f"{selfcare_summary}"
-        f"{ai_analysis}\n\n"
-        f"_Молодец. До завтра, {user['name']}_ 👋",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    try:
+        await message.reply_text(
+            "✅ *День закрыт!*\n\n"
+            f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
+            f"{tasks_summary}"
+            f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
+            f"{selfcare_summary}"
+            f"{ai_analysis}\n\n"
+            f"_Молодец. До завтра, {user['name']}_ 👋",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        # См. комментарий в finish_morning — не даём сбою отправки итога
+        # оставить ConversationHandler в подвисшем состоянии.
+        print(f"Ошибка отправки итога вечера uid={uid}: {e}")
+        await message.reply_text(
+            f"✅ День закрыт! 🔥 Стрик: {streak}. До завтра, {user['name']} 👋",
+            reply_markup=main_menu()
+        )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
 async def ai_morning_boost(name, gender, focus):
@@ -1752,8 +1815,12 @@ async def send_beacon(app, user):
         start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
         end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
         now_minutes = now.hour * 60 + now.minute
-        if now_minutes < start_h * 60 + start_m: return
-        if now_minutes > end_h * 60 + end_m: return
+        start_minutes, end_minutes = start_h * 60 + start_m, end_h * 60 + end_m
+        if start_minutes <= end_minutes:
+            if not (start_minutes <= now_minutes <= end_minutes): return
+        else:
+            # Окно через полночь (например 22:00–06:00) — вне [end, start) считается рабочим временем.
+            if end_minutes < now_minutes < start_minutes: return
 
         last_sent = user.get("beacon_last_sent") or ""
         if last_sent:
@@ -1996,6 +2063,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 field = f"notif_{block}"
                 update_user(uid, **{field: text})
                 update_user(uid, notif_enabled=1)
+                # check_notifications шлёт как только "now >= время И сегодня
+                # ещё не отправлено" (чтобы переживать пропущенные тики) — если
+                # новое время уже прошло сегодня, это без правки прислало бы
+                # уведомление немедленно, "задним числом". Помечаем сегодняшний
+                # день как уже отправленный, чтобы новое время подхватилось с завтра.
+                user_tz = get_user_tz(get_user(uid))
+                now_tz = datetime.now(user_tz)
+                new_h, new_m = map(int, text.split(":"))
+                if (new_h, new_m) <= (now_tz.hour, now_tz.minute):
+                    update_user(uid, **{f"{block}_sent_date": now_tz.date().isoformat()})
                 labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
                 await update.message.reply_text(
                     f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
@@ -2162,6 +2239,22 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     tz = get_user_tz(user)
     now = datetime.now(tz)
+
+    # Кнопки запуска таймера не одноразовые — если уже идёт другой таймер
+    # (например нажали кнопку из старого, ещё не убранного сообщения
+    # /go_focus, пока свежий таймер уже тикает), не перезаписываем его молча.
+    if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+        try:
+            active_end = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+            if active_end > now:
+                await q.message.reply_text(
+                    f"🍅 Таймер уже идёт — до *{active_end.strftime('%H:%M')}*. Эта кнопка устарела.",
+                    parse_mode="Markdown"
+                )
+                return
+        except Exception:
+            pass
+
     end_dt = now + timedelta(minutes=minutes)
 
     # Обновляем DB
