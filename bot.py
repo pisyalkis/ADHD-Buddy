@@ -1723,8 +1723,12 @@ async def send_beacon(app, user):
 
         today_iso = now.date().isoformat()
         morning = get_diary(uid, "morning", today_iso)
+        # Маячок спрашивает "что сейчас делаешь?" по задачам дня — бессмысленно
+        # (и раздражает), пока эти задачи ещё не поставлены утром, даже если
+        # рабочие часы маячка уже наступили
+        if not morning: return
         done_set = set(get_diary(uid, "tasks_done", today_iso).get("done", []))
-        tasks = build_tasks_summary(morning, done_set) if morning else "_задачи не заданы_"
+        tasks = build_tasks_summary(morning, done_set)
 
         BEACON_TEXTS = [
             "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
