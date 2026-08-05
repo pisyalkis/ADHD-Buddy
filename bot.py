@@ -1566,7 +1566,10 @@ def midday_kb(morning=None, done_set=None):
 
     rows = []
     if not a_done:
-        rows.append([InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")])
+        # Не "Работаю над A" — бот не знает, что человек делает именно A
+        # (он мог отметить B/C сделанными раньше и сейчас быть на них),
+        # а не пометить это явной кнопкой "mid_a_done_b" ниже.
+        rows.append([InlineKeyboardButton("✅ Работаю над задачами", callback_data="mid_ok")])
     elif not b_done:
         label = "✅ Сделал A, работаю над B" if a_exists else "Работаю над B"
         rows.append([InlineKeyboardButton(label, callback_data="mid_a_done_b")])
