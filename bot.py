@@ -183,6 +183,102 @@ SKILLS = [
     },
 ]
 
+# ── ONBOARDING: ГЛАВНЫЕ ТРУДНОСТИ ──────────────────────────────────────────
+# Выбранные при онбординге пункты (user.struggles, через запятую) используются
+# в двух местах: ротация навыка дня (get_daily_skill) чаще берёт навык из
+# релевантной группы, а ветка "Прокрастинирую" в дневном чекине поднимает
+# соответствующие варианты наверх списка — вместо того чтобы каждый раз
+# показывать все 7 причин в одном и том же порядке всем подряд.
+PROBLEM_ITEMS = [
+    ("nostart",    "❓ Не знаю, с чего начать"),
+    ("scary",      "😰 Задачи пугают, откладываю"),
+    ("resist",     "🧱 Внутреннее сопротивление, лень"),
+    ("phone",      "📱 Залипаю в телефоне"),
+    ("time",       "⏰ Не чувствую время"),
+    ("memory",     "🧠 Забываю о делах"),
+    ("hyperfocus", "🌀 Не могу остановиться (гиперфокус)"),
+    ("emotions",   "🎢 Резкие эмоции, тяжело успокоиться"),
+]
+
+PROBLEM_TO_MID = {
+    "nostart":  ["mid_nostart"],
+    "scary":    ["mid_scary", "mid_perfect"],
+    "resist":   ["mid_resist"],
+    "phone":    ["mid_phone"],
+    "time":     ["mid_time"],
+    "emotions": ["mid_scary", "mid_resist"],
+}
+
+PROBLEM_TO_SKILLS = {
+    "nostart":    ["Первый неподавляющий шаг", "Активация", "Список дел", "Приоритеты"],
+    "scary":      ["Первый неподавляющий шаг", "Готовность и полуулыбка", "Бросить якорь", "Холодная вода", "Дыхание"],
+    "resist":     ["Готовность и полуулыбка", "Активация", "За и против"],
+    "phone":      ["Навык СТОП", "Изменение среды", "Маячки внимания"],
+    "time":       ["Работа по таймеру", "Маячки внимания"],
+    "memory":     ["Список дел", "Бумажка гениальных мыслей"],
+    "hyperfocus": ["Работа по таймеру", "Планирование отдыха", "Маячки внимания"],
+    "emotions":   ["Бросить якорь", "Аптечка самоуспокоения", "заземления", "Дыхание", "Холодная вода"],
+}
+
+PROBLEM_HELP_TEXT = {
+    "nostart":    "❓ *Не знаю, с чего начать* — если задача не идёт, подскажу конкретную технику: искать не весь план, а только один маленький первый шаг.",
+    "scary":      "😰 *Задачи пугают* — подскажу, как снять напряжение перед тем как начинать: расслабленная поза и техника заземления через тело.",
+    "resist":     "🧱 *Внутреннее сопротивление* — подскажу, как запустить тело раньше, чем появится мотивация — вместо того чтобы её ждать.",
+    "phone":      "📱 *Залипаю в телефоне* — подскажу технику «остановись и осмотрись», а ещё можно включить периодические напоминания в течение дня, которые мягко возвращают к задаче.",
+    "time":       "⏰ *Не чувствую время* — есть встроенный таймер — задаёт время снаружи, когда изнутри мозг его не чувствует.",
+    "memory":     "🧠 *Забываю о делах* — всё, что вводишь за день, сохраняется и не теряется — можно вернуться и посмотреть в любой момент.",
+    "hyperfocus": "🌀 *Гиперфокус* — таймер и периодические напоминания работают как внешний будильник, который напомнит остановиться, когда сам не заметишь.",
+    "emotions":   "🎢 *Резкие эмоции* — есть быстрые техники снижения напряжения: дыхание, холодная вода, заземление через тело — подскажу их именно в моменте, когда трудно.",
+}
+
+# Короткие фразы для итогового «а чему в итоге научимся» — не тактика на
+# сегодня, а то, что тренируется со временем. Собираются в одно предложение
+# в конце персонализированного объяснения, а не повторяются под каждым пунктом,
+# иначе сообщение раздувается пропорционально числу отмеченных трудностей.
+PROBLEM_GOAL = {
+    "nostart":    "начинать даже когда план ещё не ясен",
+    "scary":      "начинать несмотря на страх",
+    "resist":     "запускать себя без мотивации",
+    "phone":      "самому замечать момент, когда залип, и возвращаться",
+    "time":       "лучше чувствовать, сколько времени занимают дела",
+    "memory":     "не держать всё в голове и не терять важное",
+    "hyperfocus": "замечать усталость раньше, чем понадобится внешний будильник",
+    "emotions":   "быстрее возвращаться в равновесие, когда накрыло",
+}
+
+def problems_kb(selected):
+    rows = []
+    for key, label in PROBLEM_ITEMS:
+        mark = "✅ " if key in selected else "▫️ "
+        rows.append([InlineKeyboardButton(mark + label, callback_data=f"prob_{key}")])
+    rows.append([InlineKeyboardButton("Готово ✅", callback_data="prob_done")])
+    return InlineKeyboardMarkup(rows)
+
+MID_PROCR_OPTIONS = [
+    ("mid_nostart", "❓ Непонятно с чего начать"),
+    ("mid_scary",   "😰 Задача подавляет/пугает"),
+    ("mid_waiting", "⏳ Жду подходящего момента"),
+    ("mid_perfect", "🎯 Боюсь сделать плохо"),
+    ("mid_resist",  "🧱 Внутреннее сопротивление"),
+    ("mid_time",    "⚡ Мало времени"),
+    ("mid_phone",   "📱 Залип(ла) в телефоне"),
+]
+
+def mid_procr_kb(struggles):
+    """Варианты ветки «Прокрастинирую» — если при онбординге отмечены
+    релевантные трудности (PROBLEM_TO_MID), они поднимаются наверх списка,
+    остальные идут следом в исходном порядке. Без выбранных трудностей —
+    порядок как раньше."""
+    priority = []
+    for s in struggles:
+        priority.extend(PROBLEM_TO_MID.get(s, []))
+    priority_set = dict.fromkeys(priority)
+    ordered = [opt for opt in MID_PROCR_OPTIONS if opt[0] in priority_set] + \
+              [opt for opt in MID_PROCR_OPTIONS if opt[0] not in priority_set]
+    rows = [[InlineKeyboardButton(label, callback_data=cb)] for cb, label in ordered]
+    rows.append([InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")])
+    return InlineKeyboardMarkup(rows)
+
 MOTIVATIONS_M = [
     "Сегодня хороший день чтобы сделать то, что важно.",
     "Один шаг — и ты уже в движении.",
@@ -284,6 +380,7 @@ def init_db():
         ("research_done", "''"),
         ("research_awaiting", "0"),
         ("resume_check_due", "''"),
+        ("struggles", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -572,10 +669,25 @@ def get_daily_skill(uid):
     Используем hashlib, а не встроенный hash(): для строк он рандомизирован
     per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
     дня для той же даты мог бы внезапно смениться.
+
+    Если при онбординге отмечены главные трудности (user.struggles) — ротация
+    идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
+    а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
     """
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    user = get_user(uid)
+    today = datetime.now(get_user_tz(user)).date().isoformat()
     digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
-    idx = int(digest, 16) % len(SKILLS)
+
+    struggles = [s for s in (user.get("struggles") or "").split(",") if s]
+    pool = []
+    if struggles:
+        keywords = set()
+        for s in struggles:
+            keywords.update(PROBLEM_TO_SKILLS.get(s, []))
+        pool = [i for i, sk in enumerate(SKILLS) if any(kw in sk["name"] for kw in keywords)]
+
+    indices = pool or list(range(len(SKILLS)))
+    idx = indices[int(digest, 16) % len(indices)]
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
@@ -645,15 +757,40 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
     await asyncio.sleep(0.4)
+    ctx.user_data["onboard_problems"] = []
     await q.message.reply_text(
-        "Рассказать коротко, как я устроен и чем буду полезен? Полминуты, не больше — "
-        "или можем сразу перейти к делу.",
+        "С чем тебе труднее всего? Отметь, что откликается — по этому я подскажу конкретные вещи под тебя, "
+        "а не буду грузить всем подряд. Можно пропустить.",
+        reply_markup=problems_kb([])
+    )
+    return ConversationHandler.END
+
+async def toggle_problem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("prob_", "")
+    selected = ctx.user_data.setdefault("onboard_problems", [])
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    await q.message.edit_reply_markup(reply_markup=problems_kb(selected))
+
+async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    selected = ctx.user_data.get("onboard_problems", [])
+    update_user(uid, struggles=",".join(selected))
+    if not selected:
+        await _onboard_prompt_city(q, ctx, update)
+        return
+    name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
+    await q.message.reply_text(
+        f"{name}, рассказать, как именно я помогу с этим?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Расскажи", callback_data="onboard_explain_yes")],
             [InlineKeyboardButton("Не надо, давай сразу", callback_data="onboard_explain_no")],
         ])
     )
-    return ConversationHandler.END
 
 async def _onboard_prompt_city(q, ctx, update):
     await q.message.reply_text(
@@ -676,27 +813,61 @@ async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await q.message.reply_text(
-        "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
-        "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
-        "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
-        "главное дело на день, а каждый вечер — заметить, что получилось. "
-        "Утро — разгон, день — опора, вечер — посадка.\n\n"
-        "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
-        "и когнитивно-поведенческой терапии (протокол Safren).",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "Как это выглядит на практике:\n\n"
-        "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
-        "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
-        "ситуацию — а не общее «соберись».\n\n"
-        "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
-        "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
-        "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
-        parse_mode="Markdown"
-    )
+    uid = q.from_user.id
+    name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
+    selected = ctx.user_data.get("onboard_problems") or [
+        s for s in (get_user(uid).get("struggles") or "").split(",") if s
+    ]
+    lines = [PROBLEM_HELP_TEXT[k] for k in selected if k in PROBLEM_HELP_TEXT]
+
+    if lines:
+        await q.message.reply_text(
+            f"{name}, вот как мы будем работать вместе: утром ставим 1-2 главные задачи на день, "
+            "в течение дня я слежу как идут дела и подсказываю если что-то забуксовало, "
+            "а вечером подводим итоги — и обязательно засчитываем победы, даже маленькие. "
+            "Это не разовый совет, а привычка, которая тренируется каждый день.",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.6)
+        await q.message.reply_text(
+            "Вот что конкретно предложу с твоими сложностями:\n\n" + "\n\n".join(lines),
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.6)
+        goals = [PROBLEM_GOAL[k] for k in selected if k in PROBLEM_GOAL]
+        goals_text = ", ".join(goals)
+        await q.message.reply_text(
+            f"Цель — не просто пережить сегодня, а натренировать навык: {goals_text}. "
+            "Со временем это начинает получаться само, без подсказок.\n\n"
+            "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+            "и когнитивно-поведенческой терапии (протокол Safren).",
+            parse_mode="Markdown"
+        )
+    else:
+        # Резервный сценарий, если explain_yes вызван без выбранных трудностей
+        # (например ConversationHandler перезапустился между шагами).
+        await q.message.reply_text(
+            "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
+            "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
+            "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
+            "главное дело на день, а каждый вечер — заметить, что получилось. "
+            "Утро — разгон, день — опора, вечер — посадка.\n\n"
+            "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+            "и когнитивно-поведенческой терапии (протокол Safren).",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.8)
+        await q.message.reply_text(
+            "Как это выглядит на практике:\n\n"
+            "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
+            "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
+            "ситуацию — а не общее «соберись».\n\n"
+            "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
+            "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
+            "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
+            parse_mode="Markdown"
+        )
+
     await asyncio.sleep(0.5)
     await _onboard_prompt_city(q, ctx, update)
 
@@ -2669,19 +2840,11 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_procr":
+        struggles = [s for s in (user.get("struggles") or "").split(",") if s]
         await q.message.reply_text(
             f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
-                [InlineKeyboardButton("😰 Задача подавляет/пугает", callback_data="mid_scary")],
-                [InlineKeyboardButton("⏳ Жду подходящего момента", callback_data="mid_waiting")],
-                [InlineKeyboardButton("🎯 Боюсь сделать плохо", callback_data="mid_perfect")],
-                [InlineKeyboardButton("🧱 Внутреннее сопротивление", callback_data="mid_resist")],
-                [InlineKeyboardButton("⚡ Мало времени", callback_data="mid_time")],
-                [InlineKeyboardButton("📱 Залип(ла) в телефоне", callback_data="mid_phone")],
-                [InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")],
-            ])
+            reply_markup=mid_procr_kb(struggles)
         )
 
     elif action == "mid_a_done_b":
@@ -3555,6 +3718,8 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
+    app.add_handler(CallbackQueryHandler(problems_done,  pattern="^prob_done$"))
+    app.add_handler(CallbackQueryHandler(toggle_problem, pattern="^prob_"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
