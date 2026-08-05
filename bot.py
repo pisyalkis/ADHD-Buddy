@@ -724,6 +724,26 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
 
+    # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
+    # то, что человек сам решил перенести на сегодня вечером; здесь же —
+    # объективный remainder из вчерашних A/B/C, которые не отметили ✅).
+    yesterday_iso = (datetime.now(get_user_tz(user)).date() - timedelta(days=1)).isoformat()
+    y_morning = get_diary(uid, "morning", yesterday_iso)
+    y_done = set(get_diary(uid, "tasks_done", yesterday_iso).get("done", []))
+    undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
+    undone_text = ""
+    reply_markup = None
+    if undone_yesterday:
+        undone_list = "\n".join(f"• {t}" for t in undone_yesterday)
+        undone_text = (
+            f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
+            "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
+            "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
+        )
+        todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
+        if todolist_idx is not None:
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")]])
+
     skill = get_daily_skill(uid)
 
     # Адаптивное приветствие по уровню энергии вечера
@@ -738,10 +758,11 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str(get_user_tz(user))}_\n\n"
-        f"_{motiv}_{plans_text}{energy_note}\n\n"
+        f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
         f"_{skill['desc']}_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=reply_markup
     )
     await asyncio.sleep(0.5)
 
