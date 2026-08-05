@@ -259,6 +259,7 @@ def init_db():
         ("morning_sent_date", "''"),
         ("midday_sent_date", "''"),
         ("evening_sent_date", "''"),
+        ("morning_reminder_sent_date", "''"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -283,7 +284,16 @@ def get_user(uid):
     c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     row = c.fetchone()
     if not row:
-        c.execute("INSERT INTO users(user_id) VALUES(?)", (uid,))
+        # created_at НЕ оставляем на дефолт колонки — SQLite "запекает" DEFAULT
+        # в момент ALTER TABLE как фиксированный литерал, а не выражение,
+        # переоцениваемое на каждый INSERT. Раз колонка добавлена миграцией
+        # один раз, все новые пользователи получали бы одну и ту же
+        # "дату регистрации" — что ломает расчёт триала и cadence
+        # исследовательских вопросов (день 3/7/14/30).
+        c.execute(
+            "INSERT INTO users(user_id, created_at) VALUES(?,?)",
+            (uid, date.today().isoformat())
+        )
         conn.commit()
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
@@ -308,11 +318,18 @@ def save_diary(uid, block, data, for_date=None):
     conn.commit(); conn.close()
 
 def get_all_notif_users():
-    """Все пользователи с включёнными уведомлениями."""
+    """Все зарегистрированные пользователи, сканируемые в check_notifications.
+
+    Раньше здесь стоял WHERE notif_enabled=1, и общий тумблер "выключить все"
+    в Настройках заодно молча отключал фокус-таймер (никогда не приходило
+    "время вышло"), маячок и resume-check — хотя это отдельные, не завязанные
+    на этот тумблер функции. Теперь фильтр notif_enabled применяется точечно,
+    только к самим утро/день/вечер уведомлениям, внутри check_notifications.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE notif_enabled=1 AND name!=''")
+    c.execute("SELECT * FROM users WHERE name!=''")
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
@@ -665,6 +682,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     if _evening_conv is not None:
         _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
     name = user["name"]
     gender = user["gender"]
@@ -760,7 +778,6 @@ async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["quick_morning"] = True
     ctx.user_data["m_writing"] = ""
     ctx.user_data["m_gratitude"] = ""
     ctx.user_data["m_child"] = ""
@@ -1068,6 +1085,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     if _morning_conv is not None:
         _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
     streak = calc_streak(uid)
 
@@ -3112,52 +3130,52 @@ async def check_notifications(app):
             is_sunday = now_dt.weekday() == 6
             try:
                 day_key = now_dt.strftime("%Y-%m-%d")
-                def already_sent(kind):
-                    key = (uid, kind, day_key)
-                    if key in _notif_sent: return True
-                    _notif_sent[key] = True
-                    # Чистим записи старше сегодня (по дате пользователя)
-                    stale = [k for k in _notif_sent if k[2] < day_key]
-                    for k in stale: del _notif_sent[k]
-                    return False
 
-                # Морнинг/день/вечер отмечаются как отправленные в БД (не только
-                # в памяти _notif_sent), и триггер — "время уже наступило и
-                # сегодня ещё не отправлено", а не "ровно эта минута". Иначе
-                # один пропущенный тик (рестарт от вотчдога, деплой ровно в
-                # нужную минуту) молча хоронит уведомление на весь день —
-                # это реально случалось.
-                if (now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
+                # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
+                # в БД, и триггер — "время уже наступило и сегодня ещё не
+                # отправлено", а не "ровно эта минута". Иначе один пропущенный
+                # тик (рестарт от вотчдога, деплой ровно в нужную минуту)
+                # молча хоронит уведомление на весь день — это реально
+                # случалось.
+                # notif_enabled — общий тумблер конкретно для этих 3x/день
+                # уведомлений; маячок/фокус-таймер/resume-check ниже от него
+                # не зависят — у них своё собственное включение.
+                notif_master_on = int(user.get("notif_enabled") or 0)
+                if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                         and user.get("morning_sent_date") != day_key):
                     update_user(uid, morning_sent_date=day_key)
                     await morning_notification(app, uid)
                     if is_sunday:
                         await weekly_report(app, uid)
 
-                if (now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
+                if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
                         and user.get("midday_sent_date") != day_key):
                     update_user(uid, midday_sent_date=day_key)
                     await midday_notification(app, uid)
 
-                if (now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
+                if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
                         and user.get("evening_sent_date") != day_key):
                     update_user(uid, evening_sent_date=day_key)
                     await evening_notification(app, uid)
 
-                # Напоминание если пропустил утро (+2 часа)
+                # Напоминание если пропустил утро (+2 часа) — та же логика
+                # "время прошло и сегодня ещё не отправлено", что и для
+                # утро/день/вечер выше, а не точное совпадение минуты.
                 try:
                     mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                     reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
-                    if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                        if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key):
-                            await app.bot.send_message(
-                                chat_id=uid,
-                                text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
-                                parse_mode="Markdown",
-                                reply_markup=InlineKeyboardMarkup([[
-                                    InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
-                                ]])
-                            )
+                    if (notif_master_on and now >= reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1)
+                            and user.get("morning_reminder_sent_date") != day_key
+                            and not get_diary(uid, "morning", day_key)):
+                        update_user(uid, morning_reminder_sent_date=day_key)
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                            parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                            ]])
+                        )
                 except Exception:
                     pass
 
@@ -3216,10 +3234,6 @@ async def check_notifications(app):
 # ON_FAILURE) поднимет контейнер заново.
 _last_heartbeat = time.monotonic()
 HEARTBEAT_TIMEOUT_SEC = 5 * 60
-
-# In-memory guard против дублирования уведомлений в одну минуту.
-# Ключ: (uid, тип, "YYYY-MM-DD HH:MM") → True. Сбрасывается при перезапуске — ок.
-_notif_sent: dict = {}
 
 def _watchdog_loop():
     while True:
