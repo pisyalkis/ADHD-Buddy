@@ -256,6 +256,9 @@ def init_db():
         ("beacon_last_sent", "''"),
         ("beacon_start", "'09:00'"),
         ("beacon_end", "'21:00'"),
+        ("morning_sent_date", "''"),
+        ("midday_sent_date", "''"),
+        ("evening_sent_date", "''"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -3118,37 +3121,45 @@ async def check_notifications(app):
                     for k in stale: del _notif_sent[k]
                     return False
 
-                if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
-                    if not already_sent("morning"):
-                        await morning_notification(app, uid)
-                        if is_sunday:
-                            await weekly_report(app, uid)
+                # Морнинг/день/вечер отмечаются как отправленные в БД (не только
+                # в памяти _notif_sent), и триггер — "время уже наступило и
+                # сегодня ещё не отправлено", а не "ровно эта минута". Иначе
+                # один пропущенный тик (рестарт от вотчдога, деплой ровно в
+                # нужную минуту) молча хоронит уведомление на весь день —
+                # это реально случалось.
+                if (now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
+                        and user.get("morning_sent_date") != day_key):
+                    update_user(uid, morning_sent_date=day_key)
+                    await morning_notification(app, uid)
+                    if is_sunday:
+                        await weekly_report(app, uid)
 
-                elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
-                    if not already_sent("midday"):
-                        await midday_notification(app, uid)
+                if (now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
+                        and user.get("midday_sent_date") != day_key):
+                    update_user(uid, midday_sent_date=day_key)
+                    await midday_notification(app, uid)
 
-                elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
-                    if not already_sent("evening"):
-                        await evening_notification(app, uid)
+                if (now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
+                        and user.get("evening_sent_date") != day_key):
+                    update_user(uid, evening_sent_date=day_key)
+                    await evening_notification(app, uid)
 
-                else:
-                    # Напоминание если пропустил утро (+2 часа)
-                    try:
-                        mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
-                        reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
-                        if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                            if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key):
-                                await app.bot.send_message(
-                                    chat_id=uid,
-                                    text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
-                                    parse_mode="Markdown",
-                                    reply_markup=InlineKeyboardMarkup([[
-                                        InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
-                                    ]])
-                                )
-                    except Exception:
-                        pass
+                # Напоминание если пропустил утро (+2 часа)
+                try:
+                    mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
+                    reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                    if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
+                        if not already_sent("morning_reminder") and not get_diary(uid, "morning", day_key):
+                            await app.bot.send_message(
+                                chat_id=uid,
+                                text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                                parse_mode="Markdown",
+                                reply_markup=InlineKeyboardMarkup([[
+                                    InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                                ]])
+                            )
+                except Exception:
+                    pass
 
                 # Маячок
                 await send_beacon(app, user)
