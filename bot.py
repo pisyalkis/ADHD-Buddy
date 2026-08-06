@@ -384,6 +384,18 @@ def save_feedback(uid, text):
               (uid, text, datetime.now().isoformat()))
     conn.commit(); conn.close()
 
+async def notify_admin(bot, text):
+    """Единая точка пересылки владельцу бота (NOTIFY_USER_ID) — фидбек и
+    ответы опроса. Раньше у каждого была своя копия try/except, а ответы
+    опроса вообще никуда не пересылались (видны были только через /admin).
+    Если NOTIFY_USER_ID не задан — молча ничего не делает, как и раньше."""
+    if not NOTIFY_USER_ID:
+        return
+    try:
+        await bot.send_message(NOTIFY_USER_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Не удалось переслать уведомление админу: {e}")
+
 def add_streak(uid, for_date=None):
     user = get_user(uid)
     streak = json.loads(user["streak"])
@@ -2162,6 +2174,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if day:
             save_research(uid, day, f"day{day}_text", text)
             update_user(uid, research_awaiting=0)
+            await notify_admin(ctx.bot, f"📝 *Опрос, день {day} (текст)* от {user['name'] or uid}:\n\n{text}")
             await update.message.reply_text(
                 "Спасибо! Твой ответ очень важен 🙏",
                 reply_markup=menu_button_kb()
@@ -2172,15 +2185,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         save_feedback(uid, text)
         user = get_user(uid)
-        if NOTIFY_USER_ID:
-            try:
-                await ctx.bot.send_message(
-                    NOTIFY_USER_ID,
-                    f"💬 *Обратная связь от {user['name'] or uid}:*\n\n{text}",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                print(f"Не удалось переслать обратную связь: {e}")
+        await notify_admin(ctx.bot, f"💬 *Обратная связь* от {user['name'] or uid}:\n\n{text}")
         await update.message.reply_text(
             "Спасибо! Идею записал(а) 🙏",
             reply_markup=menu_button_kb()
@@ -2461,8 +2466,10 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     answer = LABELS.get(value, value)
     save_research(uid, day, f"day{day}_rating", answer)
 
-    # Отмечаем день как пройденный
     user = get_user(uid)
+    await notify_admin(ctx.bot, f"📊 *Опрос, день {day}* от {user['name'] or uid}: {answer}")
+
+    # Отмечаем день как пройденный
     done = user.get("research_done") or ""
     done_list = [x for x in done.split(",") if x]
     if str(day) not in done_list:
