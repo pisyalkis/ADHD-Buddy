@@ -2147,11 +2147,14 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Переслать ответ администратору
     user = get_user(uid)
+    low_rating = value in ("1", "2")  # флаг низкой оценки
     if NOTIFY_USER_ID:
         try:
+            alert = "⚠️ *НИЗКАЯ ОЦЕНКА — нужна связь!*\n\n" if low_rating else ""
+            contact = f"\n🔗 Telegram ID: `{uid}`" if low_rating else ""
             await q.message.bot.send_message(
                 NOTIFY_USER_ID,
-                f"🔬 *Исследование день {day} от {user['name'] or uid}:*\n\nОценка: {answer}",
+                f"{alert}🔬 *Исследование день {day} от {user['name'] or uid}:*\n\nОценка: {answer}{contact}",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -2167,12 +2170,19 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if day == 3:
         update_user(uid, research_awaiting=f"3_open")
-        await q.message.reply_text(
-            f"Спасибо! Оценка {value}/5 записана.\n\n"
-            f"И ещё один вопрос — ответь текстом:\n\n"
-            f"*Что было самым полезным за эти 3 дня?*",
-            parse_mode="Markdown"
-        )
+        if low_rating:
+            followup = (
+                f"Записал. Оценка {value}/5 — буду разбираться.\n\n"
+                f"Расскажи подробнее текстом:\n\n"
+                f"*Что не получилось или что было неудобно?* Любая деталь поможет."
+            )
+        else:
+            followup = (
+                f"Спасибо! Оценка {value}/5 записана.\n\n"
+                f"И ещё один вопрос — ответь текстом:\n\n"
+                f"*Что было самым полезным за эти 3 дня?*"
+            )
+        await q.message.reply_text(followup, parse_mode="Markdown")
     elif day == 7:
         await q.message.reply_text(
             "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
@@ -3159,6 +3169,40 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 
+async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text(
+            f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        rows = cur.execute(
+            "SELECT user_id, name, gender, city, reg_date FROM users WHERE name != '' ORDER BY reg_date DESC"
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text("Пользователей пока нет.")
+            return
+
+        lines = []
+        for r in rows:
+            uid_u, name, gender, city, reg = r
+            g = {"M": "👨", "F": "👩", "N": "🏳️‍🌈"}.get(gender, "")
+            loc = f", {city}" if city else ""
+            lines.append(f"{g} *{name}*{loc}\nID: `{uid_u}`\nРег: {reg}")
+
+        msg = "\n\n".join(lines)
+        for i in range(0, len(msg), 4000):
+            await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
+
+
 def main():
     init_db()
     persistence = PicklePersistence(filepath=os.path.join(os.path.dirname(DB_PATH), "ptb_persistence"))
@@ -3242,6 +3286,7 @@ def main():
     app.add_handler(CommandHandler("admin", admin_stats), group=-1)
     app.add_handler(CommandHandler("feedback", admin_feedback), group=-1)
     app.add_handler(CommandHandler("research", admin_research), group=-1)
+    app.add_handler(CommandHandler("users", admin_users), group=-1)
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
