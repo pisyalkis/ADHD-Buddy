@@ -3202,6 +3202,29 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 
+async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text(f"⛔ Нет доступа.", parse_mode="Markdown")
+        return
+    args = ctx.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Использование: `/send <user_id> <текст>`\n\nПример:\n`/send 123456789 Привет, увидел твою оценку`",
+            parse_mode="Markdown"
+        )
+        return
+    try:
+        target_id = int(args[0])
+        text = " ".join(args[1:])
+        await ctx.bot.send_message(target_id, text)
+        await update.message.reply_text(f"✅ Отправлено пользователю `{target_id}`", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ Неверный ID — должно быть число.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Не удалось отправить: `{e}`", parse_mode="Markdown")
+
+
 def main():
     init_db()
     persistence = PicklePersistence(filepath=os.path.join(os.path.dirname(DB_PATH), "ptb_persistence"))
@@ -3286,6 +3309,7 @@ def main():
     app.add_handler(CommandHandler("feedback", admin_feedback), group=-1)
     app.add_handler(CommandHandler("research", admin_research), group=-1)
     app.add_handler(CommandHandler("users", admin_users), group=-1)
+    app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
