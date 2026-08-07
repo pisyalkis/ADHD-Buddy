@@ -3181,7 +3181,7 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         rows = cur.execute(
-            "SELECT user_id, name, gender, city, reg_date FROM users WHERE name != '' ORDER BY reg_date DESC"
+            "SELECT user_id, name, gender FROM users WHERE name != ''"
         ).fetchall()
         conn.close()
 
@@ -3191,10 +3191,9 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         lines = []
         for r in rows:
-            uid_u, name, gender, city, reg = r
+            uid_u, name, gender = r
             g = {"M": "👨", "F": "👩", "N": "🏳️‍🌈"}.get(gender, "")
-            loc = f", {city}" if city else ""
-            lines.append(f"{g} *{name}*{loc}\nID: `{uid_u}`\nРег: {reg}")
+            lines.append(f"{g} *{name}*\nID: `{uid_u}`")
 
         msg = "\n\n".join(lines)
         for i in range(0, len(msg), 4000):
