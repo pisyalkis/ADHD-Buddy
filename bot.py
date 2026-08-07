@@ -15,7 +15,8 @@ import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ConversationHandler, filters, ContextTypes
+    MessageHandler, ConversationHandler, filters, ContextTypes,
+    PicklePersistence
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -3115,9 +3116,11 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
+    persistence = PicklePersistence(filepath=os.path.join(os.path.dirname(DB_PATH), "ptb_persistence"))
     app = (
         Application.builder()
         .token(BOT_TOKEN)
+        .persistence(persistence)
         .connect_timeout(30)
         .read_timeout(30)
         .write_timeout(30)
