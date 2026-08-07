@@ -3017,6 +3017,51 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
 
 
+async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text(f"⛔ Нет доступа.\n\nТвой ID: `{uid}`", parse_mode="Markdown")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, text, created FROM feedback ORDER BY created DESC LIMIT 50").fetchall()
+    conn.close()
+    if not rows:
+        await update.message.reply_text("Фидбэков пока нет.")
+        return
+    lines = []
+    for user_id, text, created in rows:
+        user = get_user(user_id)
+        name = user["name"] if user and user["name"] else str(user_id)
+        date_str = created[:10] if created else "?"
+        lines.append(f"*{name}* ({date_str}):\n{text}")
+    msg = "\n\n─────\n\n".join(lines)
+    # Telegram limit 4096 chars per message
+    for i in range(0, len(msg), 4000):
+        await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+
+
+async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text(f"⛔ Нет доступа.\n\nТвой ID: `{uid}`", parse_mode="Markdown")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, day, question, answer, created FROM research ORDER BY created DESC LIMIT 100").fetchall()
+    conn.close()
+    if not rows:
+        await update.message.reply_text("Ответов на исследования пока нет.")
+        return
+    lines = []
+    for user_id, day, question, answer, created in rows:
+        user = get_user(user_id)
+        name = user["name"] if user and user["name"] else str(user_id)
+        date_str = created[:10] if created else "?"
+        lines.append(f"*{name}* · день {day} ({date_str}):\n{answer}")
+    msg = "\n\n─────\n\n".join(lines)
+    for i in range(0, len(msg), 4000):
+        await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+
+
 async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
@@ -3195,6 +3240,8 @@ def main():
     )
 
     app.add_handler(CommandHandler("admin", admin_stats), group=-1)
+    app.add_handler(CommandHandler("feedback", admin_feedback), group=-1)
+    app.add_handler(CommandHandler("research", admin_research), group=-1)
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
