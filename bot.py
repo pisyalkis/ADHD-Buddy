@@ -1883,6 +1883,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Спасибо! Идею записал(а) 🙏",
             reply_markup=main_menu()
         )
+    elif ctx.user_data.get("admin_msg_target"):
+        target_id = ctx.user_data.pop("admin_msg_target")
+        name = ctx.user_data.pop("admin_msg_name", str(target_id))
+        text = update.message.text.strip()
+        try:
+            await ctx.bot.send_message(target_id, text)
+            await update.message.reply_text(f"✅ Отправлено {name}.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Не удалось: `{e}`", parse_mode="Markdown")
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid)
     else:
@@ -3200,14 +3209,39 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пользователей пока нет.")
             return
 
+        # Кнопка на каждого пользователя — нажать чтобы написать
+        buttons = []
         for uid_u, name, gender in rows:
             g = {"M": "👨", "F": "👩", "N": "🏳️‍🌈"}.get(gender, "")
-            await update.message.reply_text(
-                f"{g} *{name}*\n`{uid_u}`",
-                parse_mode="Markdown"
-            )
+            buttons.append([InlineKeyboardButton(f"{g} {name}", callback_data=f"admin_msg_{uid_u}")])
+
+        await update.message.reply_text(
+            f"👥 *Пользователи ({len(rows)})*\n\nНажми на имя чтобы написать:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
+
+
+async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Нажата кнопка с именем пользователя — спрашиваем текст сообщения."""
+    q = update.callback_query; await q.answer()
+    admin_uid = q.from_user.id
+    if NOTIFY_USER_ID and admin_uid != NOTIFY_USER_ID:
+        return
+    target_id = int(q.data.split("_")[2])
+    # Найдём имя
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT name FROM users WHERE user_id=?", (target_id,)).fetchone()
+    conn.close()
+    name = row[0] if row else str(target_id)
+    ctx.user_data["admin_msg_target"] = target_id
+    ctx.user_data["admin_msg_name"] = name
+    await q.message.reply_text(
+        f"✉️ Пишешь *{name}*.\n\nВведи текст сообщения:",
+        parse_mode="Markdown"
+    )
 
 
 async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3318,6 +3352,7 @@ def main():
     app.add_handler(CommandHandler("research", admin_research), group=-1)
     app.add_handler(CommandHandler("users", admin_users), group=-1)
     app.add_handler(CommandHandler("send", admin_send), group=-1)
+    app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(onboard_conv)
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
