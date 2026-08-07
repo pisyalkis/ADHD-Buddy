@@ -3200,15 +3200,12 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пользователей пока нет.")
             return
 
-        lines = []
-        for r in rows:
-            uid_u, name, gender = r
+        for uid_u, name, gender in rows:
             g = {"M": "👨", "F": "👩", "N": "🏳️‍🌈"}.get(gender, "")
-            lines.append(f"{g} *{name}*\nID: `{uid_u}`")
-
-        msg = "\n\n".join(lines)
-        for i in range(0, len(msg), 4000):
-            await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+            await update.message.reply_text(
+                f"{g} *{name}*\n`{uid_u}`",
+                parse_mode="Markdown"
+            )
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
