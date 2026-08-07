@@ -1886,6 +1886,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid)
     else:
+        # Пересылаем свободное сообщение администратору
+        if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+            user = get_user(uid)
+            try:
+                await ctx.bot.send_message(
+                    NOTIFY_USER_ID,
+                    f"💬 *Сообщение от {user['name'] or uid}* (`{uid}`):\n\n{update.message.text}",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                print(f"Не удалось переслать сообщение: {e}")
         await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=main_menu())
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
