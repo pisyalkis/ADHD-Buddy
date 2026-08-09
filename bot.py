@@ -9,7 +9,7 @@ ADHD Focus Bot v5
 - Уведомления: 9:00 и 21:00 по Тбилиси (UTC+4)
 """
 
-import os, json, sqlite3, asyncio, random, threading, time
+import os, json, sqlite3, asyncio, random, threading, time, hashlib
 from datetime import datetime, date, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,6 +31,15 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
+# ctx.user_data и состояния диалогов (онбординг/утро/вечер) раньше жили только
+# в памяти процесса — рестарт (в т.ч. от вотчдога при зависании) стирал любой
+# незаконченный диалог или введённый-но-не-отправленный ответ. Файл кладём
+# рядом с БД — если DB_PATH указывает на смонтированный volume, персистентность
+# автоматически переживает передеплой вместе с базой, без отдельной настройки.
+PERSISTENCE_PATH = os.getenv(
+    "PERSISTENCE_PATH",
+    os.path.join(os.path.dirname(DB_PATH) or ".", "bot_persistence.pickle")
+)
 
 # Автосброс зависших диалогов (утро/вечер/онбординг). Без таймаута человек,
 # бросивший шаг с вводом текста на середине, застревает в нём навсегда —
@@ -38,6 +47,16 @@ DB_PATH = os.getenv("DB_PATH", "adhd.db")
 # по ошибке принято за ответ на давно забытый вопрос.
 CONV_TIMEOUT_SHORT = 600   # 10 минут — онбординг (имя/пол)
 CONV_TIMEOUT_LONG  = 1800  # 30 минут — утренний и вечерний блок
+
+# Утренний и вечерний ConversationHandler — независимые друг от друга и оба
+# зарегистрированы в одной группе, поэтому если один из них "застрял" на
+# текстовом шаге (пользователь начал, но не закончил), он молча перехватит
+# любое следующее текстовое сообщение — даже предназначенное для другого
+# потока. Ссылки заполняются в main() и используются morning_start/
+# evening_start, чтобы сбрасывать "застрявшее" состояние друг друга при
+# явном переключении между потоками.
+_morning_conv = None
+_evening_conv = None
 
 # ── CONVERSATION STATES ────────────────────────────────────────────────────
 (ONBOARD_NAME, ONBOARD_GENDER,
@@ -197,6 +216,10 @@ WARMUP = [
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # WAL персистится в самом файле БД, достаточно включить один раз —
+    # без него параллельная запись (тик планировщика раз в минуту против
+    # обработчика нажатой кнопки) рискует получить "database is locked".
+    c.execute("PRAGMA journal_mode=WAL")
     c.execute("""CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         name TEXT DEFAULT '',
@@ -208,7 +231,7 @@ def init_db():
         notif_morning TEXT DEFAULT '09:00',
         notif_midday TEXT DEFAULT '13:00',
         notif_evening TEXT DEFAULT '21:00',
-        notif_enabled INTEGER DEFAULT 0
+        notif_enabled INTEGER DEFAULT 1
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS diary (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,13 +261,19 @@ def init_db():
         ("notif_morning", "'09:00'"),
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
-        ("notif_enabled", "0"),
+        ("notif_enabled", "1"),
         ("notif_morning_on", "1"),
         ("notif_midday_on",  "1"),
         ("notif_evening_on", "1"),
         ("beacon_enabled", "0"),
         ("beacon_interval", "2"),
         ("beacon_last_sent", "''"),
+        ("beacon_start", "'09:00'"),
+        ("beacon_end", "'21:00'"),
+        ("morning_sent_date", "''"),
+        ("midday_sent_date", "''"),
+        ("evening_sent_date", "''"),
+        ("morning_reminder_sent_date", "''"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
         ("focus_duration", "0"),
@@ -254,6 +283,8 @@ def init_db():
         ("created_at", f"'{date.today().isoformat()}'"),
         ("research_done", "''"),
         ("research_awaiting", "0"),
+        ("resume_check_due", "''"),
+        ("struggles", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -268,7 +299,18 @@ def get_user(uid):
     c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     row = c.fetchone()
     if not row:
-        c.execute("INSERT INTO users(user_id) VALUES(?)", (uid,))
+        # created_at НЕ оставляем на дефолт колонки — SQLite "запекает" DEFAULT
+        # в момент ALTER TABLE как фиксированный литерал, а не выражение,
+        # переоцениваемое на каждый INSERT. Раз колонка добавлена миграцией
+        # один раз, все новые пользователи получали бы одну и ту же
+        # "дату регистрации" — что ломает расчёт cadence исследовательских
+        # вопросов (день 3/7/14/30). date.today() тоже наивная — на момент
+        # первого /start таймзона пользователя ещё не известна (задаётся
+        # позже в онбординге), поэтому берём дефолтный пояс бота.
+        c.execute(
+            "INSERT INTO users(user_id, created_at) VALUES(?,?)",
+            (uid, datetime.now(pytz.timezone(USER_TIMEZONE)).date().isoformat())
+        )
         conn.commit()
         c.execute("SELECT * FROM users WHERE user_id=?", (uid,))
         row = c.fetchone()
@@ -293,11 +335,18 @@ def save_diary(uid, block, data, for_date=None):
     conn.commit(); conn.close()
 
 def get_all_notif_users():
-    """Все пользователи с включёнными уведомлениями."""
+    """Все зарегистрированные пользователи, сканируемые в check_notifications.
+
+    Раньше здесь стоял WHERE notif_enabled=1, и общий тумблер "выключить всё"
+    в Настройках заодно молча отключал фокус-таймер (никогда не приходило
+    "время вышло"), маячок и resume-check — хотя это отдельные, не завязанные
+    на этот тумблер функции. Теперь фильтр notif_enabled применяется точечно,
+    только к самим утро/день/вечер уведомлениям, внутри check_notifications.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE notif_enabled=1 AND name!=''")
+    c.execute("SELECT * FROM users WHERE name!=''")
     rows = [dict(r) for r in c.fetchall()]
     conn.close()
     return rows
@@ -389,36 +438,145 @@ def g(gender, male, female):
     if gender == 'N': return f"{male}(а)"
     return male
 
-def build_tasks_summary(morning_data):
-    """Формирует текстовый список задач из утреннего дневника."""
+def md_escape(text):
+    """Экранирует спецсимволы legacy Markdown (_ * ` [) в свободном
+    пользовательском тексте перед подстановкой в сообщение с
+    parse_mode="Markdown". Без этого непарный символ в тексте задачи/дневника
+    (например одиночное подчёркивание) роняет отправку с BadRequest —
+    а если это происходит в finish_morning/finish_evening ПОСЛЕ записи в БД,
+    но ДО return ConversationHandler.END, диалог зависает в последнем
+    состоянии и следующее обычное сообщение пользователя утекает в него."""
+    if not text:
+        return text
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
+
+def build_tasks_summary(morning_data, done_set=None):
+    """Формирует текстовый список задач из утреннего дневника.
+
+    done_set (опционально) — множество ключей из TASK_FIELDS, уже отмеченных
+    выполненными (через 📋 Задачи или дневной чекин) — такие задачи помечаются
+    ✅, чтобы не выглядело будто бот снова спрашивает про уже сделанное.
+    """
+    done_set = done_set or set()
+    def mark(key, icon, text):
+        text = md_escape(text)
+        return f"✅ {text}" if key in done_set else f"{icon} {text}"
     lines = []
-    if morning_data.get("focus"): lines.append(f"🅰️ {morning_data['focus']}")
-    if morning_data.get("b1"):    lines.append(f"🅱️ {morning_data['b1']}")
-    if morning_data.get("b2"):    lines.append(f"🅱️ {morning_data['b2']}")
-    if morning_data.get("c1"):    lines.append(f"🅲 {morning_data['c1']}")
-    if morning_data.get("c2"):    lines.append(f"🅲 {morning_data['c2']}")
-    if morning_data.get("c3"):    lines.append(f"🅲 {morning_data['c3']}")
+    if morning_data.get("focus"): lines.append(mark("focus", "🅰️", morning_data['focus']))
+    if morning_data.get("b1"):    lines.append(mark("b1", "🅱️", morning_data['b1']))
+    if morning_data.get("b2"):    lines.append(mark("b2", "🅱️", morning_data['b2']))
+    if morning_data.get("c1"):    lines.append(mark("c1", "🅲", morning_data['c1']))
+    if morning_data.get("c2"):    lines.append(mark("c2", "🅲", morning_data['c2']))
+    if morning_data.get("c3"):    lines.append(mark("c3", "🅲", morning_data['c3']))
     return "\n".join(lines) if lines else "_задачи не заданы_"
+
+def next_undone_task(morning_data, done_set=None):
+    """Первая ещё не отмеченная выполненной задача дня (A → B1 → B2 → C1 → C2 → C3)."""
+    done_set = done_set or set()
+    for key in ("focus", "b1", "b2", "c1", "c2", "c3"):
+        val = morning_data.get(key)
+        if val and key not in done_set:
+            return md_escape(val)
+    return None
+
+def get_today_context(user):
+    """(today_iso, morning_data, done_set) для user — эта тройка нужна почти
+    везде, где бот показывает "задачи на сегодня": маячок, коуч, фокус-таймер,
+    дневной чекин, меню задач. Централизует таймзону пользователя вместо
+    повторения naive date.today() в каждом месте."""
+    uid = user["user_id"]
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    return today, morning, done_set
+
+def mark_tasks_done(uid, keys, for_date):
+    """Отмечает задачи (ключи TASK_FIELDS) выполненными в общем tasks_done —
+    том же хранилище, что использует меню 📋 Задачи и вечерний чек-лист."""
+    done_data = get_diary(uid, "tasks_done", for_date)
+    done = set(done_data.get("done", []))
+    done.update(keys)
+    save_diary(uid, "tasks_done", {"done": list(done)}, for_date=for_date)
+
+def midday_kb(morning=None, done_set=None):
+    """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
+    и в маячке, и в повторной проверке после отдыха.
+
+    Показывает только ту кнопку прогресса (A / A и B / A, B и C), которая
+    ещё актуальна — если бот уже знает что A и B сделаны (через 📋 Задачи,
+    маячок или чекин), незачем снова предлагать прогресс по уже пройденным
+    этапам — это выглядит будто бот забыл.
+    """
+    morning = morning or {}
+    done_set = done_set or set()
+
+    def has(k): return bool(morning.get(k))
+    def is_done(k): return k in done_set
+
+    a_exists = has("focus")
+    a_done = (not a_exists) or is_done("focus")
+    b_keys = [k for k in ("b1", "b2") if has(k)]
+    b_done = all(is_done(k) for k in b_keys)
+    c_keys = [k for k in ("c1", "c2", "c3") if has(k)]
+    c_done = all(is_done(k) for k in c_keys)
+
+    rows = []
+    if not a_done:
+        # Не "Работаю над A" — бот не знает, что человек делает именно A
+        # (он мог отметить B/C сделанными раньше и сейчас быть на них),
+        # а не пометить это явной кнопкой "mid_a_done_b" ниже.
+        rows.append([InlineKeyboardButton("✅ Работаю над задачами", callback_data="mid_ok")])
+    elif not b_done:
+        label = "✅ Сделал A, работаю над B" if a_exists else "Работаю над B"
+        rows.append([InlineKeyboardButton(label, callback_data="mid_a_done_b")])
+    elif not c_done:
+        label = "✅✅ Сделал A и B, работаю над C" if (a_exists or b_keys) else "Работаю над C"
+        rows.append([InlineKeyboardButton(label, callback_data="mid_ab_done_c")])
+
+    if not (a_done and b_done and c_done):
+        rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
+    rows.append([InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")])
+    rows.append([InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")])
+    return InlineKeyboardMarkup(rows)
 
 
 def skip_kb(cb):
     return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить →", callback_data=cb)]])
 
 def main_menu():
+    """Верхний уровень меню — только то, к чему обращаются каждый день.
+    Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
+    убраны под «🧩 Ещё», см. menu_more_kb()."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus"),
-         InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
-        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide"),
-         InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")],
-        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill"),
+        [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
+         InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
+        [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach"),
          InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
-        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard"),
-         InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
-        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback"),
-         InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings"),
+         InlineKeyboardButton("🧩 Ещё", callback_data="go_menu_more")],
     ])
+
+def menu_more_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
+        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
+def menu_button_kb():
+    """Свёрнутое меню — одна кнопка «◀️ Меню», раскрывающая полный main_menu()
+    только по нажатию. Полное меню, подставленное под каждым ответом бота,
+    выглядело громоздко после любого рядового действия."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
 
 def morning_cta_kb():
     return InlineKeyboardMarkup([
@@ -436,15 +594,23 @@ def today_str(tz=None):
     return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
 def get_daily_skill(uid):
-    """Возвращает навык дня — меняется каждый день."""
-    today = date.today().isoformat()
-    idx = hash(today + str(uid)) % len(SKILLS)
+    """Возвращает навык дня — меняется каждый день (по таймзоне пользователя).
+
+    Используем hashlib, а не встроенный hash(): для строк он рандомизирован
+    per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
+    дня для той же даты мог бы внезапно смениться.
+    """
+    user = get_user(uid)
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
+    idx = int(digest, 16) % len(SKILLS)
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     init_db()
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
 
     # Если уже зарегистрирован — сразу предложить нужный блок по времени суток
@@ -458,7 +624,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif hour < 18:
             await update.message.reply_text(
                 f"С возвращением, {user['name']}! Сейчас день — работаем 👇",
-                reply_markup=main_menu()
+                reply_markup=menu_button_kb()
             )
         else:
             await update.message.reply_text(
@@ -468,15 +634,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "👋 Привет! Я твой личный помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
-        "🔄 *Три раза в день:*\n"
-        "☀️ *Утром* — настроиться, поставить задачи ABC\n"
-        "☕ *Днём* — напомнить о задачах, помочь если застрял(а)\n"
-        "🌙 *Вечером* — закрыть день, поставить планы на завтра\n\n"
-        "🍅 *Фокус-режим* — запускаешь таймер (25, 45 или 60 минут), бот пишет когда время вышло. "
-        "Считает сколько минут в фокусе за день.\n\n"
-        "🤖 *Коуч* — техники на случай прокрастинации, перегруза, отвлечения.\n"
-        "🧠 *Навыки СДВГ* — практики из DBT-тренинга.\n\n"
+        "👋 Привет! Я *ADHD Buddy* — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
+        "🧠 *Чем помогу:*\n"
+        "• Преодолевать фрустрацию и прокрастинацию\n"
+        "• Строить структуру дня без лишнего давления\n"
+        "• Замечать прогресс и не терять мотивацию\n\n"
         "Как тебя зовут?",
         parse_mode="Markdown"
     )
@@ -491,7 +653,7 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Сохраняем имя в БД сразу — чтобы оно не потерялось при перезапуске бота
     update_user(update.effective_user.id, name=name)
     await update.message.reply_text(
-        f"Отлично, {name}! Один вопрос для персонализации 👇",
+        f"Отлично, {name}! Чтобы мне правильно к тебе обращаться, мне нужно знать твой пол 👇",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Мужской", callback_data="gender_M"),
              InlineKeyboardButton("Женский", callback_data="gender_F")],
@@ -509,57 +671,21 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = "M" if q.data == "gender_M" else ("F" if q.data == "gender_F" else "N")
     update_user(uid, gender=gender)  # имя уже сохранено в got_name, не перезаписываем
 
+    await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
+    await asyncio.sleep(0.4)
     await q.message.reply_text(
-        f"Отлично, {name}! Давай я коротко расскажу как работает бот 👇",
+        "Рассказать коротко, как я устроен и чем буду полезен? Полминуты, не больше — "
+        "или можем сразу перейти к делу.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Расскажи", callback_data="onboard_explain_yes")],
+            [InlineKeyboardButton("Не надо, давай сразу", callback_data="onboard_explain_no")],
+        ])
     )
-    await asyncio.sleep(0.5)
+    return ConversationHandler.END
+
+async def _onboard_prompt_city(q, ctx, update):
     await q.message.reply_text(
-        "🧠 *Зачем этот бот?*\n\n"
-        f"У мозга с СДВГ есть одна особенность: он управляется *интересом и срочностью*, а не важностью. "
-        f"Поэтому важные дела откладываются, а день рассыпается.\n\n"
-        f"Этот бот даёт мозгу то, чего ему не хватает — *внешнюю структуру*.\n\n"
-        f"Структура дня при СДВГ — это не про дисциплину. "
-        f"Это про то, чтобы каждое утро знать *одно* главное дело, и каждый вечер видеть что ты {g(gender, 'сделал', 'сделала')}.\n\n"
-        f"📚 *Основа бота* — доказательные методы: DBT-тренинг навыков для взрослых с СДВГ и когнитивно-поведенческая терапия (программа Safren). "
-        f"Это не мотивашки — это конкретные техники, которые работают на уровне нейробиологии.",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "☀️☕🌙 *Как работает бот — три точки за день*\n\n"
-        "*Утром* — помогаю настроиться на день:\n"
-        "• Разминка (тело будит мозг)\n"
-        "• Свободное письмо — выгрузить всё из головы\n"
-        "• Благодарность — настрой на день\n"
-        "• Задачи A, B, C — одно главное, ничего лишнего\n\n"
-        "*Днём* — напоминаю о задачах и проверяю как ты:\n"
-        "• Показываю что запланировано на сегодня\n"
-        "• Спрашиваю как дела — застрял(а), не знаешь с чего начать, тревожно?\n"
-        "• Даю конкретную технику под ситуацию, а не общий совет «соберись»\n\n"
-        "*Вечером* — проверяю каким был день:\n"
-        "• Что получилось — даже маленькое\n"
-        "• Похвалить себя (это важно — об этом ниже)\n"
-        "• Записать A-задачу на завтра\n\n"
-        "Утро — это *разгон*, день — *опора*, вечер — *посадка*. "
-        "Всё что ты заполняешь за день сохраняется в 🗂 *карточку дня* — можно вернуться и посмотреть.",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "🏆 *Почему важно отмечать победы*\n\n"
-        "Мозг с СДВГ плохо вырабатывает дофамин от долгосрочных целей — "
-        "он живёт в настоящем.\n\n"
-        "Когда ты каждый вечер *замечаешь что сделал(а)* — даже маленькое — "
-        "мозг получает сигнал: «это работает, продолжай». "
-        "Это не самодовольство, это *топливо* для следующего дня.\n\n"
-        "Поэтому вечерний блок начинается не с планов, а с достижений и похвалы себе. "
-        "Стрик — это видимое доказательство прогресса.\n\n"
-        "_Маленькие победы замеченные каждый день — это и есть мотивация._",
-        parse_mode="Markdown",
-    )
-    await asyncio.sleep(0.5)
-    await q.message.reply_text(
-        "🌍 *Последнее — из какого ты города?*\n\n"
+        "🌍 *Из какого ты города?*\n\n"
         "Это нужно для правильного времени уведомлений — "
         "чтобы утреннее уведомление приходило в 9 утра *твоего* города, "
         "а не в 3 ночи 😅\n\n"
@@ -569,21 +695,52 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
     )
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_city"] = True
-    return ConversationHandler.END
+
+async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await _onboard_prompt_city(q, ctx, update)
+
+async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
+        "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
+        "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
+        "главное дело на день, а каждый вечер — заметить, что получилось. "
+        "Утро — разгон, день — опора, вечер — посадка.\n\n"
+        "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+        "и когнитивно-поведенческой терапии (протокол Safren).",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.8)
+    await q.message.reply_text(
+        "Как это выглядит на практике:\n\n"
+        "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
+        "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
+        "ситуацию — а не общее «соберись».\n\n"
+        "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
+        "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
+        "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.5)
+    await _onboard_prompt_city(q, ctx, update)
 
 async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    ctx.user_data["awaiting_city"] = False
     await q.message.reply_text(
         "🔔 *Последний шаг — уведомления*\n\n"
-        "Бот пишет три раза в день: утром, днём и вечером. "
-        "Без уведомлений польза от бота сильно меньше.\n\n"
-        "Включить уведомления?",
+        "Бот пишет три раза в день: утром, днём и вечером "
+        "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
+        "Если не хочешь их получать, можешь отключить.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
-            [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+            [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
+            [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
         ])
     )
 
@@ -597,14 +754,16 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Изменить время можно в ⚙️ Настройки.\n\n"
         "Всё готово — начнём! 🚀",
         parse_mode="Markdown",
-        reply_markup=main_menu()
+        reply_markup=menu_button_kb()
     )
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, notif_enabled=0)
     await q.message.reply_text(
-        "Окей! Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
-        reply_markup=main_menu()
+        "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
+        reply_markup=menu_button_kb()
     )
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
@@ -612,6 +771,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+    if _evening_conv is not None:
+        _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
     name = user["name"]
     gender = user["gender"]
@@ -630,6 +792,26 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
 
+    # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
+    # то, что человек сам решил перенести на сегодня вечером; здесь же —
+    # объективный remainder из вчерашних A/B/C, которые не отметили ✅).
+    yesterday_iso = (datetime.now(get_user_tz(user)).date() - timedelta(days=1)).isoformat()
+    y_morning = get_diary(uid, "morning", yesterday_iso)
+    y_done = set(get_diary(uid, "tasks_done", yesterday_iso).get("done", []))
+    undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
+    undone_text = ""
+    reply_markup = None
+    if undone_yesterday:
+        undone_list = "\n".join(f"• {t}" for t in undone_yesterday)
+        undone_text = (
+            f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
+            "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
+            "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
+        )
+        todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
+        if todolist_idx is not None:
+            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")]])
+
     skill = get_daily_skill(uid)
 
     # Адаптивное приветствие по уровню энергии вечера
@@ -644,10 +826,11 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str(get_user_tz(user))}_\n\n"
-        f"_{motiv}_{plans_text}{energy_note}\n\n"
+        f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
         f"_{skill['desc']}_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=reply_markup
     )
     await asyncio.sleep(0.5)
 
@@ -929,15 +1112,18 @@ async def finish_morning(message, uid, ctx):
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
     }, for_date=today)
+    # Если утро уже заполнялось сегодня и заполняется заново — старые отметки
+    # "выполнено" (по ключам focus/b1/b2/...) больше не про эти задачи,
+    # иначе новая, ещё не начатая задача может показаться уже сделанной.
+    save_diary(uid, "tasks_done", {"done": []}, for_date=today)
     add_streak(uid, for_date=today)
 
-    tasks_text = ""
-    if focus:                          tasks_text += f"\n🅰️ {focus}"
-    if ctx.user_data.get("m_b1"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b1']}"
-    if ctx.user_data.get("m_b2"):     tasks_text += f"\n🅱️ {ctx.user_data['m_b2']}"
-    if ctx.user_data.get("m_c1"):     tasks_text += f"\n🅲 {ctx.user_data['m_c1']}"
-    if ctx.user_data.get("m_c2"):     tasks_text += f"\n🅲 {ctx.user_data['m_c2']}"
-    if ctx.user_data.get("m_c3"):     tasks_text += f"\n🅲 {ctx.user_data['m_c3']}"
+    morning_for_summary = {
+        "focus": focus, "b1": ctx.user_data.get("m_b1", ""), "b2": ctx.user_data.get("m_b2", ""),
+        "c1": ctx.user_data.get("m_c1", ""), "c2": ctx.user_data.get("m_c2", ""), "c3": ctx.user_data.get("m_c3", ""),
+    }
+    tasks_text = build_tasks_summary(morning_for_summary)
+    tasks_text = "\n" + tasks_text if tasks_text != "_задачи не заданы_" else "_(задачи не заданы)_"
 
     # AI мотивация если есть ключ
     ai_msg = ""
@@ -945,17 +1131,26 @@ async def finish_morning(message, uid, ctx):
         ai_msg = await ai_morning_boost(user["name"], user["gender"], focus)
         if ai_msg: ai_msg = f"\n\n🤖 _{ai_msg}_"
 
-    await message.reply_text(
-        f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
-        f"{tasks_text if tasks_text else '_(задачи не заданы)_'}"
-        f"{ai_msg}\n\n"
-        f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    try:
+        await message.reply_text(
+            f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
+            f"{tasks_text}"
+            f"{ai_msg}\n\n"
+            f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            parse_mode="Markdown",
+            reply_markup=menu_button_kb()
+        )
+    except Exception as e:
+        # Даже если сборка Markdown-сообщения не удалась (например из-за
+        # спецсимвола, который md_escape не покрыл) — диалог уже должен
+        # завершиться штатно, а не зависнуть в последнем ConversationHandler-состоянии.
+        print(f"Ошибка отправки итога утра uid={uid}: {e}")
+        await message.reply_text(
+            f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            reply_markup=menu_button_kb()
+        )
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
-TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
 
 def tasks_done_kb(morning, done):
     rows = []
@@ -969,23 +1164,29 @@ def tasks_done_kb(morning, done):
     return InlineKeyboardMarkup(rows)
 
 async def ask_tasks_done(message, uid, ctx):
-    morning = get_diary(uid, "morning")
-    ctx.user_data["e_tasks_done"] = []
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    # Подхватываем отметки, уже сделанные днём в меню "📋 Задачи" —
+    # иначе вечерний блок затирает их пустым списком.
+    already_done = list(get_diary(uid, "tasks_done", today).get("done", []))
+    ctx.user_data["e_tasks_done"] = already_done
     await message.reply_text(
         "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
         parse_mode="Markdown",
-        reply_markup=tasks_done_kb(morning, [])
+        reply_markup=tasks_done_kb(morning, already_done)
     )
 
 async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    uid = q.from_user.id
     key = q.data.replace("td_", "")
     done = ctx.user_data.setdefault("e_tasks_done", [])
     if key in done:
         done.remove(key)
     else:
         done.append(key)
-    morning = get_diary(q.from_user.id, "morning")
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
 
@@ -1003,10 +1204,14 @@ async def ask_achievements(message):
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    if _morning_conv is not None:
+        _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
+    clear_awaiting_flags(ctx, update)
     user = get_user(uid)
     streak = calc_streak(uid)
 
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", today)
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
 
     await q.message.reply_text(
@@ -1207,17 +1412,20 @@ async def finish_evening(message, uid, ctx):
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
     data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
     save_diary(uid, "evening", data, for_date=today)
+    # Синхронизируем с "tasks_done" — источником для дневного меню "📋 Задачи",
+    # чтобы отметки, поставленные здесь вечером, тоже были видны там.
+    save_diary(uid, "tasks_done", {"done": data["e_tasks_done"]}, for_date=today)
     add_streak(uid, for_date=today)
     streak = calc_streak(uid)
 
     plans = ""
-    if data["e_a"]:  plans += f"\n🅰️ {data['e_a']}"
-    if data["e_b1"]: plans += f"\n🅱️ {data['e_b1']}"
-    if data["e_b2"]: plans += f"\n🅱️ {data['e_b2']}"
-    if data["e_c1"]: plans += f"\n🅲 {data['e_c1']}"
+    if data["e_a"]:  plans += f"\n🅰️ {md_escape(data['e_a'])}"
+    if data["e_b1"]: plans += f"\n🅱️ {md_escape(data['e_b1'])}"
+    if data["e_b2"]: plans += f"\n🅱️ {md_escape(data['e_b2'])}"
+    if data["e_c1"]: plans += f"\n🅲 {md_escape(data['e_c1'])}"
 
     tasks_summary = ""
-    morning_for_summary = get_diary(uid, "morning")
+    morning_for_summary = get_diary(uid, "morning", today)
     if any(morning_for_summary.get(k) for k, _ in TASK_FIELDS):
         done = set(data["e_tasks_done"])
         lines = []
@@ -1225,7 +1433,7 @@ async def finish_evening(message, uid, ctx):
             text = morning_for_summary.get(key)
             if not text: continue
             mark = "✅" if key in done else "▫️"
-            lines.append(f"{mark} {icon} {text}")
+            lines.append(f"{mark} {icon} {md_escape(text)}")
         if lines:
             tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
 
@@ -1239,21 +1447,30 @@ async def finish_evening(message, uid, ctx):
     # AI анализ дня
     ai_analysis = ""
     if ANTHROPIC_KEY:
-        morning = get_diary(uid, "morning")
+        morning = get_diary(uid, "morning", today)
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
-    await message.reply_text(
-        "✅ *День закрыт!*\n\n"
-        f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
-        f"{tasks_summary}"
-        f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
-        f"{selfcare_summary}"
-        f"{ai_analysis}\n\n"
-        f"_Молодец. До завтра, {user['name']}_ 👋",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+    try:
+        await message.reply_text(
+            "✅ *День закрыт!*\n\n"
+            f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
+            f"{tasks_summary}"
+            f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
+            f"{selfcare_summary}"
+            f"{ai_analysis}\n\n"
+            f"_Молодец. До завтра, {user['name']}_ 👋",
+            parse_mode="Markdown",
+            reply_markup=menu_button_kb()
+        )
+    except Exception as e:
+        # См. комментарий в finish_morning — не даём сбою отправки итога
+        # оставить ConversationHandler в подвисшем состоянии.
+        print(f"Ошибка отправки итога вечера uid={uid}: {e}")
+        await message.reply_text(
+            f"✅ День закрыт! 🔥 Стрик: {streak}. До завтра, {user['name']} 👋",
+            reply_markup=menu_button_kb()
+        )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
 async def ai_morning_boost(name, gender, focus):
@@ -1300,12 +1517,12 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
 async def send_coach(message, text, uid):
     """Отправить запрос AI-коучу."""
     if not ANTHROPIC_KEY:
-        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=main_menu())
+        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=menu_button_kb())
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
-    morning = get_diary(uid, "morning")
-    tasks = build_tasks_summary(morning)
+    today, morning, done_set = get_today_context(user)
+    tasks = build_tasks_summary(morning, done_set)
     tasks_hint = (
         f"\n\nЗадачи пользователя на сегодня:\n{tasks}\n"
         "Если из сообщения понятно, к какой задаче относится проблема — обращайся к ней прямо по названию. "
@@ -1420,7 +1637,7 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'Продолжай! Каждый день считается.' if s>0 else 'Заполни утро или вечер — и стрик пойдёт.'}\n\n"
         "_Стрик растёт когда ты закрываешь вечерний блок._",
         parse_mode="Markdown",
-        reply_markup=main_menu()
+        reply_markup=menu_button_kb()
     )
 
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
@@ -1435,9 +1652,11 @@ def _settings_text_and_kb(user):
     eo = int(user.get("notif_evening_on") or 1)
     be = int(user.get("beacon_enabled")   or 0)
     bi = int(user.get("beacon_interval")  or 2)
+    bs = user.get("beacon_start") or "09:00"
+    bfin = user.get("beacon_end") or "21:00"
 
     status = "✅ включены" if enabled else "❌ выключены"
-    beacon_label = f"каждые {bi} ч" if bi == 1 else f"каждые {bi} ч"
+    beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
     tz_name = user.get("timezone") or USER_TIMEZONE
     city_name = user.get("city") or ""
     tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
@@ -1449,13 +1668,18 @@ def _settings_text_and_kb(user):
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
         f"🌍 Таймзона: *{tz_display}*\n\n"
         f"{'✅' if be else '🔕'} Маячок внимания: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
-        f"_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
+        + (f"🕐 Рабочие часы маячка: *{bs}–{bfin}*\n" if be else "")
+        + "_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
         "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
     )
     beacon_interval_row = [
         InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
         InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
         InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
+    ]
+    beacon_hours_row = [
+        InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
+        InlineKeyboardButton(f"🌇 До {bfin}", callback_data="set_beacon_end"),
     ]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
@@ -1468,10 +1692,12 @@ def _settings_text_and_kb(user):
             f"{'✅' if be else '🔕'} Маячок", callback_data="toggle_beacon"),
          *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
         *([ beacon_interval_row ] if be else []),
+        *([ beacon_hours_row ] if be else []),
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
         )],
+        [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
@@ -1484,11 +1710,17 @@ async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    block = q.data.replace("set_", "")  # morning / midday / evening
+    block = q.data.replace("set_", "")  # morning / midday / evening / beacon_start / beacon_end
     labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
+    beacon_labels = {"beacon_start": "🌅 начало", "beacon_end": "🌇 конец"}
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["setting_notif"] = block
+    if block in beacon_labels:
+        prompt = f"Введи {beacon_labels[block]} рабочих часов маячка"
+    else:
+        prompt = f"Введи время для {labels.get(block,'')} уведомления"
     await q.message.reply_text(
-        f"Введи время для {labels.get(block,'')} уведомления\n\n"
+        f"{prompt}\n\n"
         "Формат: *ЧЧ:ММ* (например: `08:30` или `20:00`)",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -1496,6 +1728,22 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]])
     )
     ctx.user_data["awaiting_time"] = True
+
+async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "🌍 *Из какого ты города?*\n\n"
+        "По названию города бот определит твою таймзону, "
+        "чтобы уведомления приходили по местному времени.\n\n"
+        "Просто напиши название города:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Отмена", callback_data="go_settings")
+        ]])
+    )
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_city"] = True
+    ctx.user_data["city_from_settings"] = True
 
 async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1570,11 +1818,17 @@ async def send_beacon(app, user):
         now = datetime.now(tz)
         interval_h = int(user.get("beacon_interval") or 2)
 
-        morning_h, morning_m = map(int, user.get("notif_morning","09:00").split(":"))
-        evening_h, evening_m = map(int, user.get("notif_evening","21:00").split(":"))
+        # Рабочие часы маячка — отдельные от времени утро/вечер уведомлений,
+        # настраиваются в ⚙️ Настройки
+        start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
+        end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
         now_minutes = now.hour * 60 + now.minute
-        if now_minutes < morning_h * 60 + morning_m: return
-        if now_minutes > evening_h * 60 + evening_m: return
+        start_minutes, end_minutes = start_h * 60 + start_m, end_h * 60 + end_m
+        if start_minutes <= end_minutes:
+            if not (start_minutes <= now_minutes <= end_minutes): return
+        else:
+            # Окно через полночь (например 22:00–06:00) — вне [end, start) считается рабочим временем.
+            if end_minutes < now_minutes < start_minutes: return
 
         last_sent = user.get("beacon_last_sent") or ""
         if last_sent:
@@ -1584,8 +1838,12 @@ async def send_beacon(app, user):
             except Exception:
                 pass
 
-        morning = get_diary(uid, "morning")
-        tasks = build_tasks_summary(morning) if morning else "_задачи не заданы_"
+        # Маячок спрашивает "что сейчас делаешь?" по задачам дня — бессмысленно
+        # (и раздражает), пока эти задачи ещё не поставлены утром, даже если
+        # рабочие часы маячка уже наступили
+        today_iso, morning, done_set = get_today_context(user)
+        if not morning: return
+        tasks = build_tasks_summary(morning, done_set)
 
         BEACON_TEXTS = [
             "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
@@ -1597,42 +1855,37 @@ async def send_beacon(app, user):
         ]
         beacon_text = random.choice(BEACON_TEXTS).format(tasks=tasks)
 
-        update_user(uid, beacon_last_sent=now.isoformat())
         await app.bot.send_message(
             chat_id=uid,
             text=beacon_text,
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
-                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
-                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
-            ])
+            reply_markup=midday_kb(morning, done_set)
         )
+        # Отмечаем как отправленный только после успешной отправки — иначе
+        # временный сбой навсегда "съедает" этот тик маячка.
+        update_user(uid, beacon_last_sent=now.isoformat())
     except Exception as e:
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
 
 
 def _tasks_text_and_kb(morning, done_set):
-    """Строит текст и клавиатуру задач с отметками выполнения."""
-    task_defs = [
-        ("focus", "🅰️", "A"),
-        ("b1",    "🅱️", "B1"),
-        ("b2",    "🅱️", "B2"),
-        ("c1",    "🅲",  "C1"),
-        ("c2",    "🅲",  "C2"),
-        ("c3",    "🅲",  "C3"),
-    ]
+    """Строит текст и клавиатуру задач с отметками выполнения.
+
+    done_set — множество ключей TASK_FIELDS (focus/b1/b2/c1/c2/c3), а не
+    отдельных "A/B1/.." меток — тот же формат, что использует вечерний
+    блок и карточка дня, чтобы отметки, поставленные днём в этом меню,
+    не терялись при вечернем ревью и наоборот.
+    """
     lines = []
     buttons = []
-    for key, icon, label in task_defs:
+    for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
         if not val: continue
-        done = label in done_set
+        done = key in done_set
         prefix = "✅" if done else icon
-        lines.append(f"{prefix} {'~' if done else ''}{val}{'~' if done else ''}")
+        lines.append(f"{prefix} {val}")
         if not done:
-            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{label}")])
+            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{key}")])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи не заданы_")
     kb_rows = buttons + [
@@ -1645,16 +1898,17 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать все задачи на сегодня."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    morning = get_diary(uid, "morning")
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
 
     if not morning:
         await q.message.reply_text(
             "📋 *Задачи на сегодня*\n\n_Утренний дневник ещё не заполнен._\n\nЗаполни утро чтобы поставить задачи 👇",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         return
 
-    done_data = get_diary(uid, "tasks_done")
+    done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
     text, kb = _tasks_text_and_kb(morning, done_set)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1663,23 +1917,21 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Отметить задачу выполненной."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    label = q.data.replace("task_done_", "")  # A, B1, B2, C1, C2, C3
+    key = q.data.replace("task_done_", "")  # focus, b1, b2, c1, c2, c3
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
 
-    done_data = get_diary(uid, "tasks_done")
+    done_data = get_diary(uid, "tasks_done", today)
     done_list = done_data.get("done", [])
-    if label not in done_list:
-        done_list.append(label)
-    save_diary(uid, "tasks_done", {"done": done_list})
+    if key not in done_list:
+        done_list.append(key)
+    save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
 
-    morning = get_diary(uid, "morning")
+    morning = get_diary(uid, "morning", today)
     done_set = set(done_list)
     text, kb = _tasks_text_and_kb(morning, done_set)
 
-    all_keys = [k for k in ["focus","b1","b2","c1","c2","c3"] if morning.get(k)]
-    label_map = {"focus":"A","b1":"B1","b2":"B2","c1":"C1","c2":"C2","c3":"C3"}
-    all_labels = {label_map[k] for k in all_keys}
-
-    if all_labels and all_labels <= done_set:
+    all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
+    if all_keys and all_keys <= done_set:
         text += "\n\n🎉 *Все задачи выполнены! Отличный день!*"
 
     try:
@@ -1762,13 +2014,37 @@ async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = build_day_card_text(uid, for_date)
     await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date))
 
+def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
+    """Сбрасывает все "awaiting_*"-флаги, которые направляют следующее
+    свободное сообщение в конкретный обработчик. Без единой точки сброса
+    легко забыть погасить один из флагов при явном переключении на другое
+    действие — тогда следующее обычное сообщение (например имя бадди или
+    ответ коучу) по ошибке утекает в устаревший недоделанный сценарий
+    (уже было реальным багом несколько раз: фидбек проглатывал город,
+    имя бадди проглатывало ответ на research-вопрос и т.д.).
+    update (опционально) — если передан, дополнительно гасит research_awaiting
+    в БД (тот же класс флага, но не в ctx.user_data)."""
+    ctx.user_data["awaiting_time"] = False
+    ctx.user_data["awaiting_buddy"] = False
+    ctx.user_data["awaiting_city"] = False
+    ctx.user_data["awaiting_feedback"] = False
+    ctx.user_data["coach_mode"] = False
+    ctx.user_data.pop("admin_msg_target", None)
+    ctx.user_data.pop("admin_msg_name", None)
+    if update is not None and update.effective_user is not None:
+        uid = update.effective_user.id
+        user = get_user(uid)
+        if str(user.get("research_awaiting") or "0") != "0":
+            update_user(uid, research_awaiting=0)
+
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["coach_mode"] = False
-    ctx.user_data["awaiting_feedback"] = False
-    ctx.user_data["awaiting_buddy"] = False
-    ctx.user_data["awaiting_time"] = False
+    clear_awaiting_flags(ctx, update)
     await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
+
+async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text("🧩 Ещё 👇", reply_markup=menu_more_kb())
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1779,15 +2055,34 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Validate HH:MM format
         import re
         if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
-            field = f"notif_{block}"
-            update_user(uid, **{field: text})
-            update_user(uid, notif_enabled=1)
-            labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
-            await update.message.reply_text(
-                f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
-            )
+            if block in ("beacon_start", "beacon_end"):
+                update_user(uid, **{block: text})
+                beacon_labels = {"beacon_start": "🌅 Начало", "beacon_end": "🌇 Конец"}
+                await update.message.reply_text(
+                    f"{beacon_labels.get(block,'')} рабочих часов маячка установлен на *{text}* ✅",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
+                )
+            else:
+                field = f"notif_{block}"
+                update_user(uid, **{field: text})
+                update_user(uid, notif_enabled=1)
+                # check_notifications шлёт как только "now >= время И сегодня
+                # ещё не отправлено" (чтобы переживать пропущенные тики) — если
+                # новое время уже прошло сегодня, это без правки прислало бы
+                # уведомление немедленно, "задним числом". Помечаем сегодняшний
+                # день как уже отправленный, чтобы новое время подхватилось с завтра.
+                user_tz = get_user_tz(get_user(uid))
+                now_tz = datetime.now(user_tz)
+                new_h, new_m = map(int, text.split(":"))
+                if (new_h, new_m) <= (now_tz.hour, now_tz.minute):
+                    update_user(uid, **{f"{block}_sent_date": now_tz.date().isoformat()})
+                labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
+                await update.message.reply_text(
+                    f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")]])
+                )
         else:
             await update.message.reply_text(
                 "Неверный формат. Введи время в формате ЧЧ:ММ, например: `08:30`",
@@ -1800,10 +2095,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         update_user(uid, buddy_name=bname)
         await update.message.reply_text(
             f"👥 *Бадди добавлен: {bname}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("awaiting_city"):
         ctx.user_data["awaiting_city"] = False
+        from_settings = ctx.user_data.pop("city_from_settings", False)
         city = update.message.text.strip()
         update_user(uid, city=city)
         # Определяем таймзону по городу
@@ -1828,16 +2124,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
                 f"Можно изменить в ⚙️ Настройки позже."
             )
+        if from_settings:
+            text, kb = _settings_text_and_kb(get_user(uid))
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+            return
         # Показываем настройку уведомлений
         await update.message.reply_text(
             "🔔 *Последний шаг — уведомления*\n\n"
-            "Бот пишет три раза в день: утром, днём и вечером. "
-            "Без уведомлений польза от бота сильно меньше.\n\n"
-            "Включить уведомления?",
+            "Бот пишет три раза в день: утром, днём и вечером "
+            "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
+            "Если не хочешь их получать, можешь отключить.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Включить", callback_data="onboard_notif_on")],
-                [InlineKeyboardButton("Пропустить, настрою позже", callback_data="onboard_notif_skip")],
+                [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
+                [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
             ])
         )
         return
@@ -1862,7 +2162,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     print(f"Не удалось переслать ответ исследования: {e}")
             await update.message.reply_text(
                 "Спасибо! Твой ответ очень важен 🙏",
-                reply_markup=main_menu()
+                reply_markup=menu_button_kb()
             )
         return
     elif ctx.user_data.get("awaiting_feedback"):
@@ -1881,7 +2181,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 print(f"Не удалось переслать обратную связь: {e}")
         await update.message.reply_text(
             "Спасибо! Идею записал(а) 🙏",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("admin_msg_target"):
         target_id = ctx.user_data.pop("admin_msg_target")
@@ -1906,7 +2206,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 print(f"Не удалось переслать сообщение: {e}")
-        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=main_menu())
+        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=menu_button_kb())
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
@@ -1939,13 +2239,10 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     # Считаем сколько минут в фокусе сегодня
-    today = date.today().isoformat()
+    today, morning_data, done_set = get_today_context(user)
     mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
-
-    morning_data = get_diary(uid, "morning")
-    task_hint = ""
-    if morning_data.get("focus"):
-        task_hint = f"\n\n📌 Твоя задача дня: *{morning_data['focus']}*"
+    current_task = next_undone_task(morning_data, done_set)
+    task_hint = f"\n\n📌 Твоя задача: *{current_task}*" if current_task else ""
 
     stats_hint = f"\n\n⏱ Сегодня в фокусе: *{mins_today} мин*" if mins_today > 0 else ""
 
@@ -1973,8 +2270,25 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     minutes = int(q.data.split("_")[2])
 
-    tz = get_user_tz(get_user(uid))
+    user = get_user(uid)
+    tz = get_user_tz(user)
     now = datetime.now(tz)
+
+    # Кнопки запуска таймера не одноразовые — если уже идёт другой таймер
+    # (например нажали кнопку из старого, ещё не убранного сообщения
+    # /go_focus, пока свежий таймер уже тикает), не перезаписываем его молча.
+    if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+        try:
+            active_end = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+            if active_end > now:
+                await q.message.reply_text(
+                    f"🍅 Таймер уже идёт — до *{active_end.strftime('%H:%M')}*. Эта кнопка устарела.",
+                    parse_mode="Markdown"
+                )
+                return
+        except Exception:
+            pass
+
     end_dt = now + timedelta(minutes=minutes)
 
     # Обновляем DB
@@ -1986,10 +2300,9 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     end_str = end_dt.strftime("%H:%M")
 
-    morning_data = get_diary(uid, "morning")
-    task_hint = ""
-    if morning_data.get("focus"):
-        task_hint = f"\n📌 Задача: *{morning_data['focus']}*"
+    _, morning_data, done_set = get_today_context(user)
+    current_task = next_undone_task(morning_data, done_set)
+    task_hint = f"\n📌 Задача: *{current_task}*" if current_task else ""
 
     await q.message.reply_text(
         f"🍅 *Таймер запущен на {minutes} мин*\n\n"
@@ -2006,26 +2319,29 @@ async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     user = get_user(uid)
+    tz = get_user_tz(user)
+    now = datetime.now(tz)
 
-    # Считаем сколько успел(а) отработать
+    # Считаем сколько реально успел(а) отработать до досрочной остановки:
+    # start = end_time - запланированная длительность, worked = now - start
     worked_mins = 0
-    if user.get("focus_end_time") and str(user.get("focus_active","0")) == "1":
+    if user.get("focus_end_time") and str(user.get("focus_active", "0")) == "1":
         try:
-            tz = pytz.timezone(USER_TIMEZONE)
             end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
-            # Мы не знаем когда стартовали, но знаем end_time и оставшееся время
-            # Проще: просто не добавляем минуты при досрочной остановке
-            pass
+            duration = int(user.get("focus_duration") or 0)
+            start_dt = end_dt - timedelta(minutes=duration)
+            worked_mins = max(0, min(duration, int((now - start_dt).total_seconds() / 60)))
         except Exception:
-            pass
+            worked_mins = 0
 
-    update_user(uid, focus_active=0, focus_end_time="")
+    today = now.date().isoformat()
+    prev_mins = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
+    mins_today = prev_mins + worked_mins
+    update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=mins_today, focus_date=today)
 
-    today = date.today().isoformat()
-    mins_today = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
-
+    worked_note = f" — {worked_mins} мин в фокусе" if worked_mins else ""
     await q.message.reply_text(
-        f"⏹ *Таймер остановлен*\n\n"
+        f"⏹ *Таймер остановлен*{worked_note}\n\n"
         f"Сегодня в фокусе: *{mins_today} мин*\n\n"
         f"Хочешь начать новый раунд?",
         parse_mode="Markdown",
@@ -2206,7 +2522,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif day == 7:
         await q.message.reply_text(
             "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
         update_user(uid, research_awaiting="7_open")
         await q.message.reply_text(
@@ -2223,7 +2539,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif day == 30:
         await q.message.reply_text(
             "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
-            reply_markup=main_menu()
+            reply_markup=menu_button_kb()
         )
 
 
@@ -2231,7 +2547,9 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await q.message.reply_text(
         "ℹ️ *О боте*\n\n"
-        "Я — внешняя структура для мозга с СДВГ. Он живёт интересом и срочностью, а не важностью — "
+        "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
+        "и помогаю, если начинаешь фрустрироваться.\n\n"
+        "Мозг с СДВГ живёт интересом и срочностью, а не важностью — "
         "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
         "☀️ *Утром* — разминка, задачи по системе ABC, настрой на день.\n"
         "☕ *Днём* — напоминаю о задачах, если застрял — даю конкретную технику.\n"
@@ -2240,6 +2558,8 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Бот напишет когда время вышло и предложит перерыв. "
         "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
         "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
+        "📚 В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
+        "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
         "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
@@ -2295,8 +2615,8 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     buddy = user.get("buddy_name","бадди")
-    morning = get_diary(uid, "morning")
-    focus = morning.get("focus","моя главная задача")
+    _, morning, done_set = get_today_context(user)
+    focus = next_undone_task(morning, done_set) or "моя главная задача"
     await q.message.reply_text(
         f"👥 *Шаблон для {buddy}:*\n\n"
         f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Можно просто видеозвонок с тишиной.»_\n\n"
@@ -2305,12 +2625,41 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
 
+async def send_resume_check(bot, uid) -> bool:
+    """Повторная проверка через 10-15 мин после того как человек отметил «отдыхаю».
+    Возвращает True только если сообщение реально ушло — вызывающий код
+    сбрасывает resume_check_due лишь при успехе, чтобы временный сбой
+    отправки не терял напоминание навсегда, а просто повторялся на
+    следующем тике."""
+    try:
+        user = get_user(uid)
+        _, morning, done_set = get_today_context(user)
+        tasks = build_tasks_summary(morning, done_set)
+        await bot.send_message(
+            chat_id=uid,
+            text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\nВернулся(ась) к работе?",
+            parse_mode="Markdown",
+            reply_markup=midday_kb(morning, done_set)
+        )
+        return True
+    except Exception as e:
+        print(f"Ошибка resume-check uid={uid}: {e}")
+        return False
+
+def schedule_resume_check(uid, tz):
+    """Отмечает время следующей resume-check в БД (а не эфемерным job'ом
+    планировщика) — иначе рестарт процесса (в т.ч. от вотчдога) молча
+    отменяет обещанное напоминание. check_notifications() вычитывает
+    resume_check_due на каждом тике, как и все остальные уведомления."""
+    due = datetime.now(tz) + timedelta(minutes=15)
+    update_user(uid, resume_check_due=due.isoformat())
+
 # ── MIDDAY NOTIFICATION ─────────────────────────────────────────────────────
 async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
     try:
         user = get_user(uid)
-        morning = get_diary(uid, "morning")
+        today, morning, done_set = get_today_context(user)
 
         if not morning:
             await app.bot.send_message(uid,
@@ -2323,21 +2672,14 @@ async def midday_notification(app, uid):
             )
             return
 
-        tasks = build_tasks_summary(morning)
-        a_task = morning.get("focus", "")
-        has_b_or_c = any(morning.get(k) for k in ["b1","b2","c1","c2","c3"])
+        tasks = build_tasks_summary(morning, done_set)
         await app.bot.send_message(uid,
             f"☕ *Дневной чекин, {user['name']}!*\n\n"
             f"Твои задачи на сегодня:\n{tasks}\n\n"
             f"Над чем работаешь сейчас?\n\n"
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🅰️ Работаю над A", callback_data="mid_ok")],
-                [InlineKeyboardButton("✅ Сделал A, работаю над B", callback_data="mid_a_done_b")],
-                [InlineKeyboardButton("✅✅ Сделал A и B, работаю над C", callback_data="mid_ab_done_c")],
-                [InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")],
-            ])
+            reply_markup=midday_kb(morning, done_set)
         )
     except Exception as e: print(f"Ошибка дневного уведомления: {e}")
 
@@ -2347,12 +2689,12 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     name = user["name"]
-    morning = get_diary(uid, "morning")
-    focus = morning.get("focus", "твоя A-задача")
+    today, morning, done_set = get_today_context(user)
+    focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
     action = q.data
 
     if action in MIDDAY_LABELS:
-        save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]})
+        save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]}, for_date=today)
 
     back_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🤖 Коуч поможет", callback_data="mid_coach")],
@@ -2363,13 +2705,12 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "mid_ok":
         await q.message.reply_text(
             f"💪 *Отлично, {name}!*\n\nПродолжай. Помни про перерывы — 5-10 минут каждые 25-30 минут.\n_Гиперфокус истощает — не пропускай отдых._\n\nДо вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_procr":
-        a_task = morning.get("focus", "А-задача")
         await q.message.reply_text(
-            f"Окей, разберёмся. Что происходит?\n\n_{a_task}_",
+            f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
@@ -2384,19 +2725,37 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_a_done_b":
+        mark_tasks_done(uid, ["focus"], today)
         await q.message.reply_text(
             f"🎉 *А сделана — это главное!*\n\n"
             f"Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_ab_done_c":
+        mark_tasks_done(uid, ["focus", "b1", "b2"], today)
         await q.message.reply_text(
             f"🏆 *А и Б сделаны — отличный день!*\n\n"
             f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
             f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
-            parse_mode="Markdown", reply_markup=main_menu()
+            parse_mode="Markdown", reply_markup=menu_button_kb()
+        )
+
+    elif action == "mid_all_done":
+        all_keys = [k for k, _ in TASK_FIELDS if morning.get(k)]
+        mark_tasks_done(uid, all_keys, today)
+        await q.message.reply_text(
+            f"🎉 *Все задачи дня выполнены — отличная работа, {name}!*\n\n"
+            f"Можно отдыхать спокойно. Не забудь закрыть день вечером 🌙",
+            parse_mode="Markdown", reply_markup=menu_button_kb()
+        )
+
+    elif action == "mid_resting":
+        schedule_resume_check(uid, get_user_tz(user))
+        await q.message.reply_text(
+            "☕ *Окей, отдыхай!*\n\nНапишу снова через 10-15 минут — вернёшься со свежей головой 💪",
+            parse_mode="Markdown"
         )
 
     elif action == "mid_a_skipped":
@@ -2487,11 +2846,11 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_time":
-        tasks = build_tasks_summary(morning)
+        tasks = build_tasks_summary(morning, done_set)
         await q.message.reply_text(
             "⚡ *Мало времени — расставляем приоритеты*\n\n"
             f"Твои задачи:\n{tasks}\n\n"
-            f"*Только A-задача:* _{focus}_\n\n"
+            f"*Сфокусируйся только на этом:* _{focus}_\n\n"
             "🐘 *Разделить слона* — какой самый маленький шаг прямо сейчас?\n\n"
             "🌸 *Начать с приятной части* — войди через то, что не пугает\n\n"
             "⏱ *Работа по таймеру* — короткие спринты, не марафон\n\n"
@@ -2509,7 +2868,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "👣 *Т* — Шаг назад. Глубокий вдох.\n"
             "👀 *О* — Осмотрись. 5 предметов вокруг.\n"
             "✅ *П* — Попытайся. Возвращайся к задаче.\n\n"
-            f"Твоя A-задача: *{focus}*\n\n"
+            f"Возвращайся к: *{focus}*\n\n"
             "_Поставь таймер на 10 минут и просто открой нужный файл._",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -2519,6 +2878,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_coach":
+        clear_awaiting_flags(ctx, update)
         ctx.user_data["coach_mode"] = True
         await q.message.reply_text(
             f"🤖 *Коуч на связи, {name}.* Что происходит?",
@@ -2543,7 +2903,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
             )
         else:
-            await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=main_menu())
+            await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
 async def morning_notification(app, uid):
@@ -2946,54 +3306,74 @@ async def check_notifications(app):
             is_sunday = now_dt.weekday() == 6
             try:
                 day_key = now_dt.strftime("%Y-%m-%d")
-                def already_sent(kind):
-                    key = (uid, kind, day_key)
-                    if key in _notif_sent: return True
-                    _notif_sent[key] = True
-                    # Чистим записи старше сегодня (по дате пользователя)
-                    stale = [k for k in _notif_sent if k[2] < day_key]
-                    for k in stale: del _notif_sent[k]
-                    return False
 
-                if now == user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1):
-                    if not already_sent("morning"):
-                        await morning_notification(app, uid)
-                        if is_sunday:
-                            await weekly_report(app, uid)
+                # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
+                # в БД, и триггер — "время уже наступило и сегодня ещё не
+                # отправлено", а не "ровно эта минута". Иначе один пропущенный
+                # тик (рестарт от вотчдога, деплой ровно в нужную минуту)
+                # молча хоронит уведомление на весь день — это реально
+                # случалось.
+                # notif_enabled — общий тумблер конкретно для этих 3x/день
+                # уведомлений; маячок/фокус-таймер/resume-check ниже от него
+                # не зависят — у них своё собственное включение.
+                notif_master_on = int(user.get("notif_enabled") or 0)
+                if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
+                        and user.get("morning_sent_date") != day_key):
+                    update_user(uid, morning_sent_date=day_key)
+                    await morning_notification(app, uid)
+                    if is_sunday:
+                        await weekly_report(app, uid)
 
-                elif now == user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1):
-                    if not already_sent("midday"):
-                        await midday_notification(app, uid)
+                if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
+                        and user.get("midday_sent_date") != day_key):
+                    update_user(uid, midday_sent_date=day_key)
+                    await midday_notification(app, uid)
 
-                elif now == user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1):
-                    if not already_sent("evening"):
-                        await evening_notification(app, uid)
+                if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
+                        and user.get("evening_sent_date") != day_key):
+                    update_user(uid, evening_sent_date=day_key)
+                    await evening_notification(app, uid)
 
-                else:
-                    # Напоминание если пропустил утро (+2 часа)
-                    try:
-                        mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
-                        reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
-                        if now == reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1):
-                            if not already_sent("morning_reminder") and not get_diary(uid, "morning").get("focus"):
-                                await app.bot.send_message(
-                                    chat_id=uid,
-                                    text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
-                                    parse_mode="Markdown",
-                                    reply_markup=InlineKeyboardMarkup([[
-                                        InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
-                                    ]])
-                                )
-                    except Exception:
-                        pass
+                # Напоминание если пропустил утро (+2 часа) — та же логика
+                # "время прошло и сегодня ещё не отправлено", что и для
+                # утро/день/вечер выше, а не точное совпадение минуты.
+                try:
+                    mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
+                    reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                    if (notif_master_on and now >= reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1)
+                            and user.get("morning_reminder_sent_date") != day_key
+                            and not get_diary(uid, "morning", day_key)):
+                        update_user(uid, morning_reminder_sent_date=day_key)
+                        await app.bot.send_message(
+                            chat_id=uid,
+                            text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                            parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                            ]])
+                        )
+                except Exception:
+                    pass
 
                 # Маячок
                 await send_beacon(app, user)
 
+                # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
+                # (не в памяти планировщика), чтобы рестарт процесса её не терял
+                due_raw = user.get("resume_check_due") or ""
+                if due_raw:
+                    try:
+                        due_dt = datetime.fromisoformat(due_raw)
+                        if now_dt >= due_dt:
+                            if await send_resume_check(app.bot, uid):
+                                update_user(uid, resume_check_due="")
+                    except Exception as e:
+                        print(f"Ошибка resume_check_due uid={uid}: {e}")
+
                 # Исследовательские вопросы
                 try:
-                    created_at = user.get("created_at") or date.today().isoformat()
-                    days_since = (date.today() - date.fromisoformat(str(created_at)[:10])).days
+                    created_at = user.get("created_at") or now_dt.date().isoformat()
+                    days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
                     done_days = [x for x in (user.get("research_done") or "").split(",") if x]
                     for milestone in [3, 7, 14, 30]:
                         if days_since >= milestone and str(milestone) not in done_days:
@@ -3030,10 +3410,6 @@ async def check_notifications(app):
 # ON_FAILURE) поднимет контейнер заново.
 _last_heartbeat = time.monotonic()
 HEARTBEAT_TIMEOUT_SEC = 5 * 60
-
-# In-memory guard против дублирования уведомлений в одну минуту.
-# Ключ: (uid, тип, "YYYY-MM-DD HH:MM") → True. Сбрасывается при перезапуске — ок.
-_notif_sent: dict = {}
 
 def _watchdog_loop():
     while True:
@@ -3269,7 +3645,7 @@ async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     init_db()
-    persistence = PicklePersistence(filepath=os.path.join(os.path.dirname(DB_PATH), "ptb_persistence"))
+    persistence = PicklePersistence(filepath=PERSISTENCE_PATH)
     app = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -3296,6 +3672,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_SHORT,
+        persistent=True, name="onboard_conv",
     )
 
     # Утренний flow (порядок: разминка → ритуал → задачи)
@@ -3323,6 +3700,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_LONG,
+        persistent=True, name="morning_conv",
     )
 
     # Вечерний flow
@@ -3345,6 +3723,7 @@ def main():
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
         conversation_timeout=CONV_TIMEOUT_LONG,
+        persistent=True, name="evening_conv",
     )
 
     app.add_handler(CommandHandler("admin", admin_stats), group=-1)
@@ -3354,9 +3733,14 @@ def main():
     app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(onboard_conv)
+    global _morning_conv, _evening_conv
+    _morning_conv = morning_conv
+    _evening_conv = evening_conv
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_yes, pattern="^onboard_explain_yes$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
@@ -3367,10 +3751,12 @@ def main():
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
+    app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
-    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening)$"))
+    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
+    app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
