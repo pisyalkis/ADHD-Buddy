@@ -183,6 +183,135 @@ SKILLS = [
     },
 ]
 
+# ── ONBOARDING: ГЛАВНЫЕ ТРУДНОСТИ ──────────────────────────────────────────
+# Выбранные при онбординге пункты (user.struggles, через запятую) используются
+# в двух местах: ротация навыка дня (get_daily_skill) чаще берёт навык из
+# релевантной группы, а ветка "Прокрастинирую" в дневном чекине поднимает
+# соответствующие варианты наверх списка — вместо того чтобы каждый раз
+# показывать все 7 причин в одном и том же порядке всем подряд.
+PROBLEM_ITEMS = [
+    ("resist",      "🚀 Знаю, что делать, но не могу начать"),
+    ("scary",       "😰 Откладываю сложные или неприятные задачи"),
+    ("decompose",   "🧩 Не знаю, как подступиться к задаче"),
+    ("unfinished",  "🏁 Начинаю много всего, но не заканчиваю"),
+    ("notasks",     "🗂️ Не понимаю, что делать в первую очередь"),
+    ("overload",    "🌀 Слишком много всего в голове"),
+    ("nostructure", "🧭 Не умею нормально планировать день"),
+    ("phone",       "📱 Отвлекаюсь и залипаю"),
+    ("time",        "⏰ Теряю ощущение времени"),
+    ("hyperfocus",  "🌀 Ухожу в гиперфокус и не могу остановиться"),
+    ("memory",      "🧠 Забываю дела, идеи и договорённости"),
+    ("bedstuck",    "🛏 Трудно начать день"),
+    ("emotions",    "🎢 Сильные эмоции мешают делать дела"),
+]
+PROBLEM_LABELS = dict(PROBLEM_ITEMS)
+
+# Группы для отображения чек-листа — 13 плоских пунктов читаются тяжело,
+# заголовки дают ориентир, к какой части execution loop относится пункт.
+PROBLEM_GROUPS = [
+    ("🚀 Начать и сделать", ["resist", "scary", "decompose", "unfinished"]),
+    ("🗂️ Разобраться",      ["notasks", "overload", "nostructure"]),
+    ("👀 Удержаться",        ["phone", "time", "hyperfocus"]),
+    ("🧠 Не забыть",         ["memory"]),
+    ("🎢 Состояние",         ["bedstuck", "emotions"]),
+]
+
+PROBLEM_TO_MID = {
+    "resist":    ["mid_resist"],
+    "scary":     ["mid_scary", "mid_perfect"],
+    "decompose": ["mid_nostart"],
+    "phone":     ["mid_phone"],
+    "time":      ["mid_time"],
+    "emotions":  ["mid_scary", "mid_resist"],
+}
+
+PROBLEM_TO_SKILLS = {
+    "resist":      ["Готовность и полуулыбка", "Активация", "За и против"],
+    "scary":       ["Первый неподавляющий шаг", "Готовность и полуулыбка", "Бросить якорь", "Холодная вода", "Дыхание"],
+    "decompose":   ["Первый неподавляющий шаг", "Активация"],
+    "unfinished":  ["Приоритеты", "Подкрепление"],
+    "notasks":     ["Список дел", "Приоритеты", "Выбор из множества решений"],
+    "overload":    ["Список дел", "Выбор из множества решений"],
+    "nostructure": ["Приоритеты", "Работа по таймеру", "Список дел"],
+    "phone":       ["Навык СТОП", "Изменение среды", "Маячки внимания"],
+    "time":        ["Работа по таймеру", "Маячки внимания"],
+    "hyperfocus":  ["Работа по таймеру", "Планирование отдыха", "Маячки внимания"],
+    "memory":      ["Список дел", "Бумажка гениальных мыслей"],
+    "bedstuck":    ["Активация", "Холодная вода", "Готовность и полуулыбка"],
+    "emotions":    ["Бросить якорь", "Аптечка самоуспокоения", "заземления", "Дыхание", "Холодная вода"],
+}
+
+PROBLEM_HELP_TEXT = {
+    "resist":      "🚀 *Знаю, что делать, но не могу начать* — подскажу, как запустить тело раньше, чем появится мотивация — вместо того чтобы её ждать.",
+    "scary":       "😰 *Откладываю сложные задачи* — подскажу, как снять напряжение перед тем как начинать: расслабленная поза и техника заземления через тело.",
+    "decompose":   "🧩 *Не знаю, как подступиться* — подскажу конкретную технику: искать не весь план, а только один маленький первый шаг.",
+    "unfinished":  "🏁 *Начинаю, но не довожу до конца* — каждое утро напомню, что осталось незавершённым со вчера, а вечером свожу итог того, что реально сделано — так недоделанное не потеряется незаметно.",
+    "notasks":     "🗂️ *Не понимаю, что делать в первую очередь* — утром помогу выбрать всего одну главную задачу и до двух важных — не весь список дел, а только то, что реально нужно сегодня.",
+    "overload":    "🌀 *Слишком много в голове* — заходи в 🤖 Коуч и просто вывали всё текстом, помогу разложить по приоритету.",
+    "nostructure": "🧭 *Не умею планировать день* — задаю простую структуру: одна главная задача, пара важных, остальное по желанию — и напоминаю в течение дня, что сейчас актуально.",
+    "phone":       "📱 *Отвлекаюсь и залипаю* — подскажу технику «остановись и осмотрись», а ещё можно включить периодические напоминания в течение дня, которые мягко возвращают к задаче.",
+    "time":        "⏰ *Теряю ощущение времени* — есть встроенный таймер — задаёт время снаружи, когда изнутри мозг его не чувствует.",
+    "hyperfocus":  "🌀 *Гиперфокус* — таймер и периодические напоминания работают как внешний будильник, который напомнит остановиться, когда сам не заметишь.",
+    "memory":      "🧠 *Забываю дела и договорённости* — всё, что вводишь за день, сохраняется и не теряется — можно вернуться и посмотреть в любой момент.",
+    "bedstuck":    "🛏 *Трудно начать день* — есть двухминутная разминка, которая будит тело перед тем как садиться за дела — не нужно ждать, пока появится желание встать.",
+    "emotions":    "🎢 *Сильные эмоции мешают* — есть быстрые техники снижения напряжения: дыхание, холодная вода, заземление через тело — подскажу их именно в моменте, когда трудно.",
+}
+
+# Короткие фразы для итогового «а чему в итоге научимся» — не тактика на
+# сегодня, а то, что тренируется со временем. Собираются в одно предложение
+# в конце персонализированного объяснения, а не повторяются под каждым пунктом,
+# иначе сообщение раздувается пропорционально числу отмеченных трудностей.
+PROBLEM_GOAL = {
+    "resist":      "запускать себя без мотивации",
+    "scary":       "начинать несмотря на страх",
+    "decompose":   "находить первый шаг даже в непонятной задаче",
+    "unfinished":  "доводить начатое до конца, а не только начинать",
+    "notasks":     "быстро выбирать, что действительно важно сегодня",
+    "overload":    "выгружать всё из головы вместо того чтобы носить в себе",
+    "nostructure": "видеть день не как один сплошной ком, а как понятную последовательность",
+    "phone":       "самому замечать момент, когда залип, и возвращаться",
+    "time":        "лучше чувствовать, сколько времени занимают дела",
+    "hyperfocus":  "замечать усталость раньше, чем понадобится внешний будильник",
+    "memory":      "не держать всё в голове и не терять важное",
+    "bedstuck":    "вставать и запускать тело без ожидания мотивации",
+    "emotions":    "быстрее возвращаться в равновесие, когда накрыло",
+}
+
+def problems_kb(selected):
+    rows = []
+    for title, keys in PROBLEM_GROUPS:
+        rows.append([InlineKeyboardButton(f"── {title} ──", callback_data="noop")])
+        for key in keys:
+            mark = "✅ " if key in selected else "▫️ "
+            rows.append([InlineKeyboardButton(mark + PROBLEM_LABELS[key], callback_data=f"prob_{key}")])
+    rows.append([InlineKeyboardButton("Готово ✅", callback_data="prob_done")])
+    return InlineKeyboardMarkup(rows)
+
+MID_PROCR_OPTIONS = [
+    ("mid_nostart", "❓ Непонятно с чего начать"),
+    ("mid_scary",   "😰 Задача подавляет/пугает"),
+    ("mid_waiting", "⏳ Жду подходящего момента"),
+    ("mid_perfect", "🎯 Боюсь сделать плохо"),
+    ("mid_resist",  "🧱 Внутреннее сопротивление"),
+    ("mid_time",    "⚡ Мало времени"),
+    ("mid_phone",   "📱 Залип(ла) в телефоне"),
+]
+
+def mid_procr_kb(struggles):
+    """Варианты ветки «Прокрастинирую» — если при онбординге отмечены
+    релевантные трудности (PROBLEM_TO_MID), они поднимаются наверх списка,
+    остальные идут следом в исходном порядке. Без выбранных трудностей —
+    порядок как раньше."""
+    priority = []
+    for s in struggles:
+        priority.extend(PROBLEM_TO_MID.get(s, []))
+    priority_set = dict.fromkeys(priority)
+    ordered = [opt for opt in MID_PROCR_OPTIONS if opt[0] in priority_set] + \
+              [opt for opt in MID_PROCR_OPTIONS if opt[0] not in priority_set]
+    rows = [[InlineKeyboardButton(label, callback_data=cb)] for cb, label in ordered]
+    rows.append([InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")])
+    return InlineKeyboardMarkup(rows)
+
 MOTIVATIONS_M = [
     "Сегодня хороший день чтобы сделать то, что важно.",
     "Один шаг — и ты уже в движении.",
@@ -599,11 +728,25 @@ def get_daily_skill(uid):
     Используем hashlib, а не встроенный hash(): для строк он рандомизирован
     per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
     дня для той же даты мог бы внезапно смениться.
+
+    Если при онбординге отмечены главные трудности (user.struggles) — ротация
+    идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
+    а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
     """
     user = get_user(uid)
     today = datetime.now(get_user_tz(user)).date().isoformat()
     digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
-    idx = int(digest, 16) % len(SKILLS)
+
+    struggles = [s for s in (user.get("struggles") or "").split(",") if s]
+    pool = []
+    if struggles:
+        keywords = set()
+        for s in struggles:
+            keywords.update(PROBLEM_TO_SKILLS.get(s, []))
+        pool = [i for i, sk in enumerate(SKILLS) if any(kw in sk["name"] for kw in keywords)]
+
+    indices = pool or list(range(len(SKILLS)))
+    idx = indices[int(digest, 16) % len(indices)]
     return SKILLS[idx]
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
@@ -673,15 +816,40 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
     await asyncio.sleep(0.4)
+    ctx.user_data["onboard_problems"] = []
     await q.message.reply_text(
-        "Рассказать коротко, как я устроен и чем буду полезен? Полминуты, не больше — "
-        "или можем сразу перейти к делу.",
+        "С чем тебе труднее всего? Отметь, что откликается — по этому я подскажу конкретные вещи под тебя, "
+        "а не буду грузить всем подряд. Можно пропустить.",
+        reply_markup=problems_kb([])
+    )
+    return ConversationHandler.END
+
+async def toggle_problem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("prob_", "")
+    selected = ctx.user_data.setdefault("onboard_problems", [])
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    await q.message.edit_reply_markup(reply_markup=problems_kb(selected))
+
+async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    selected = ctx.user_data.get("onboard_problems", [])
+    update_user(uid, struggles=",".join(selected))
+    if not selected:
+        await _onboard_prompt_city(q, ctx, update)
+        return
+    name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
+    await q.message.reply_text(
+        f"{name}, рассказать, как именно я помогу с этим?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Расскажи", callback_data="onboard_explain_yes")],
             [InlineKeyboardButton("Не надо, давай сразу", callback_data="onboard_explain_no")],
         ])
     )
-    return ConversationHandler.END
 
 async def _onboard_prompt_city(q, ctx, update):
     await q.message.reply_text(
@@ -704,27 +872,65 @@ async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await q.message.reply_text(
-        "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
-        "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
-        "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
-        "главное дело на день, а каждый вечер — заметить, что получилось. "
-        "Утро — разгон, день — опора, вечер — посадка.\n\n"
-        "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
-        "и когнитивно-поведенческой терапии (протокол Safren).",
-        parse_mode="Markdown"
-    )
-    await asyncio.sleep(0.8)
-    await q.message.reply_text(
-        "Как это выглядит на практике:\n\n"
-        "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
-        "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
-        "ситуацию — а не общее «соберись».\n\n"
-        "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
-        "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
-        "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
-        parse_mode="Markdown"
-    )
+    uid = q.from_user.id
+    name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
+    selected = ctx.user_data.get("onboard_problems") or [
+        s for s in (get_user(uid).get("struggles") or "").split(",") if s
+    ]
+    lines = [PROBLEM_HELP_TEXT[k] for k in selected if k in PROBLEM_HELP_TEXT]
+
+    if lines:
+        await q.message.reply_text(
+            f"{name}, вот как мы будем работать вместе: утром ставим 1-2 главные задачи на день, "
+            "в течение дня я слежу как идут дела и подсказываю если что-то забуксовало, "
+            "а вечером подводим итоги — и обязательно засчитываем победы, даже маленькие. "
+            "Это не разовый совет, а привычка, которая тренируется каждый день.",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.6)
+        await q.message.reply_text(
+            "Вот что конкретно предложу с твоими сложностями:\n\n" + "\n\n".join(lines),
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.6)
+        goals = [PROBLEM_GOAL[k] for k in selected if k in PROBLEM_GOAL]
+        goals_text = ", ".join(goals)
+        # "Слишком много в голове" решается через коуча, а не отдельной фичей —
+        # даём прямую кнопку туда, а не только упоминание в тексте.
+        goal_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Открыть коуча", callback_data="go_coach")]]) if "overload" in selected else None
+        await q.message.reply_text(
+            f"Цель — не просто пережить сегодня, а натренировать навык: {goals_text}. "
+            "Со временем это начинает получаться само, без подсказок.\n\n"
+            "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+            "и когнитивно-поведенческой терапии (протокол Safren).",
+            parse_mode="Markdown",
+            reply_markup=goal_kb
+        )
+    else:
+        # Резервный сценарий, если explain_yes вызван без выбранных трудностей
+        # (например ConversationHandler перезапустился между шагами).
+        await q.message.reply_text(
+            "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
+            "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
+            "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
+            "главное дело на день, а каждый вечер — заметить, что получилось. "
+            "Утро — разгон, день — опора, вечер — посадка.\n\n"
+            "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
+            "и когнитивно-поведенческой терапии (протокол Safren).",
+            parse_mode="Markdown"
+        )
+        await asyncio.sleep(0.8)
+        await q.message.reply_text(
+            "Как это выглядит на практике:\n\n"
+            "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
+            "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
+            "ситуацию — а не общее «соберись».\n\n"
+            "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
+            "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
+            "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
+            parse_mode="Markdown"
+        )
+
     await asyncio.sleep(0.5)
     await _onboard_prompt_city(q, ctx, update)
 
@@ -788,9 +994,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["y_plan"] = y_plan
     plans_text = ""
     if y_plan["a"]:
-        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {y_plan['a']}"
-        if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
-        if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
+        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {md_escape(y_plan['a'])}"
+        if y_plan["b1"]: plans_text += f"\n🅱️ {md_escape(y_plan['b1'])}"
+        if y_plan["b2"]: plans_text += f"\n🅱️ {md_escape(y_plan['b2'])}"
 
     # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
     # то, что человек сам решил перенести на сегодня вечером; здесь же —
@@ -802,7 +1008,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     undone_text = ""
     reply_markup = None
     if undone_yesterday:
-        undone_list = "\n".join(f"• {t}" for t in undone_yesterday)
+        undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
             f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
             "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
@@ -823,15 +1029,23 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
         )
 
-    await q.message.reply_text(
+    morning_greeting = (
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str(get_user_tz(user))}_\n\n"
         f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
-        f"_{skill['desc']}_",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
+        f"_{skill['desc']}_"
     )
+    try:
+        await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        # Тот же класс сбоя, что в finish_morning/finish_evening — непарный
+        # спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
+        print(f"Ошибка отправки утреннего приветствия uid={uid}: {e}")
+        await q.message.reply_text(
+            f"☀️ Доброе утро, {name}! 💡 Навык дня: {skill['name']}",
+            reply_markup=reply_markup
+        )
     await asyncio.sleep(0.5)
 
     # Если энергия была низкой — сразу предложить быстрый режим первой кнопкой
@@ -2670,7 +2884,7 @@ async def midday_notification(app, uid):
                     [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
                 ])
             )
-            return
+            return True
 
         tasks = build_tasks_summary(morning, done_set)
         await app.bot.send_message(uid,
@@ -2681,7 +2895,10 @@ async def midday_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
-    except Exception as e: print(f"Ошибка дневного уведомления: {e}")
+        return True
+    except Exception as e:
+        print(f"Ошибка дневного уведомления: {e}")
+        return False
 
 async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ответы на дневной чекин — ситуации и инструменты из реального тренинга."""
@@ -2709,19 +2926,11 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_procr":
+        struggles = [s for s in (user.get("struggles") or "").split(",") if s]
         await q.message.reply_text(
             f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("❓ Непонятно с чего начать", callback_data="mid_nostart")],
-                [InlineKeyboardButton("😰 Задача подавляет/пугает", callback_data="mid_scary")],
-                [InlineKeyboardButton("⏳ Жду подходящего момента", callback_data="mid_waiting")],
-                [InlineKeyboardButton("🎯 Боюсь сделать плохо", callback_data="mid_perfect")],
-                [InlineKeyboardButton("🧱 Внутреннее сопротивление", callback_data="mid_resist")],
-                [InlineKeyboardButton("⚡ Мало времени", callback_data="mid_time")],
-                [InlineKeyboardButton("📱 Залип(ла) в телефоне", callback_data="mid_phone")],
-                [InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")],
-            ])
+            reply_markup=mid_procr_kb(struggles)
         )
 
     elif action == "mid_a_done_b":
@@ -2915,9 +3124,9 @@ async def morning_notification(app, uid):
         ev = get_latest_evening_plan(uid)
         plan_text = ""
         if ev.get("e_a"):
-            plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {ev['e_a']}"
-            if ev.get("e_b1"): plan_text += f"\n🅱️ {ev['e_b1']}"
-            if ev.get("e_b2"): plan_text += f"\n🅱️ {ev['e_b2']}"
+            plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {md_escape(ev['e_a'])}"
+            if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
+            if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
 
         skill = get_daily_skill(uid)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
@@ -2937,8 +3146,10 @@ async def morning_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=morning_cta_kb()
         )
+        return True
     except Exception as e:
         print(f"Ошибка утреннего уведомления: {e}")
+        return False
 
 async def evening_notification(app, uid):
     try:
@@ -2952,8 +3163,10 @@ async def evening_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=evening_cta_kb()
         )
+        return True
     except Exception as e:
         print(f"Ошибка вечернего уведомления: {e}")
+        return False
 
 async def weekly_report(app, uid):
     """Воскресный личный отчёт пользователю."""
@@ -3319,20 +3532,23 @@ async def check_notifications(app):
                 notif_master_on = int(user.get("notif_enabled") or 0)
                 if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                         and user.get("morning_sent_date") != day_key):
-                    update_user(uid, morning_sent_date=day_key)
-                    await morning_notification(app, uid)
+                    # Помечаем "отправлено" только после реального успеха — иначе
+                    # временный сбой (таймаут телеграма, юзер заблокировал бота)
+                    # навсегда съедает уведомление на весь день без единой попытки.
+                    if await morning_notification(app, uid):
+                        update_user(uid, morning_sent_date=day_key)
                     if is_sunday:
                         await weekly_report(app, uid)
 
                 if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
                         and user.get("midday_sent_date") != day_key):
-                    update_user(uid, midday_sent_date=day_key)
-                    await midday_notification(app, uid)
+                    if await midday_notification(app, uid):
+                        update_user(uid, midday_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
                         and user.get("evening_sent_date") != day_key):
-                    update_user(uid, evening_sent_date=day_key)
-                    await evening_notification(app, uid)
+                    if await evening_notification(app, uid):
+                        update_user(uid, evening_sent_date=day_key)
 
                 # Напоминание если пропустил утро (+2 часа) — та же логика
                 # "время прошло и сегодня ещё не отправлено", что и для
@@ -3370,18 +3586,20 @@ async def check_notifications(app):
                     except Exception as e:
                         print(f"Ошибка resume_check_due uid={uid}: {e}")
 
-                # Исследовательские вопросы
-                try:
-                    created_at = user.get("created_at") or now_dt.date().isoformat()
-                    days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
-                    done_days = [x for x in (user.get("research_done") or "").split(",") if x]
-                    for milestone in [3, 7, 14, 30]:
-                        if days_since >= milestone and str(milestone) not in done_days:
-                            if 10 <= now_dt.hour <= 12:
-                                await send_research_question(app, uid, milestone)
-                            break
-                except Exception as e:
-                    print(f"Ошибка research uid={uid}: {e}")
+                # Исследовательские вопросы — тот же общий тумблер notif_enabled,
+                # что и утро/день/вечер: "выключить всё" должно выключать и их.
+                if notif_master_on:
+                    try:
+                        created_at = user.get("created_at") or now_dt.date().isoformat()
+                        days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
+                        done_days = [x for x in (user.get("research_done") or "").split(",") if x]
+                        for milestone in [3, 7, 14, 30]:
+                            if days_since >= milestone and str(milestone) not in done_days:
+                                if 10 <= now_dt.hour <= 12:
+                                    await send_research_question(app, uid, milestone)
+                                break
+                    except Exception as e:
+                        print(f"Ошибка research uid={uid}: {e}")
 
                 # Фокус-таймер
                 if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
@@ -3743,6 +3961,8 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
+    app.add_handler(CallbackQueryHandler(problems_done,  pattern="^prob_done$"))
+    app.add_handler(CallbackQueryHandler(toggle_problem, pattern="^prob_"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
