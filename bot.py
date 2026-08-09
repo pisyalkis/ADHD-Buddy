@@ -994,9 +994,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["y_plan"] = y_plan
     plans_text = ""
     if y_plan["a"]:
-        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {y_plan['a']}"
-        if y_plan["b1"]: plans_text += f"\n🅱️ {y_plan['b1']}"
-        if y_plan["b2"]: plans_text += f"\n🅱️ {y_plan['b2']}"
+        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {md_escape(y_plan['a'])}"
+        if y_plan["b1"]: plans_text += f"\n🅱️ {md_escape(y_plan['b1'])}"
+        if y_plan["b2"]: plans_text += f"\n🅱️ {md_escape(y_plan['b2'])}"
 
     # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
     # то, что человек сам решил перенести на сегодня вечером; здесь же —
@@ -1008,7 +1008,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     undone_text = ""
     reply_markup = None
     if undone_yesterday:
-        undone_list = "\n".join(f"• {t}" for t in undone_yesterday)
+        undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
             f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
             "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
@@ -1029,15 +1029,23 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
         )
 
-    await q.message.reply_text(
+    morning_greeting = (
         f"☀️ *Доброе утро, {name}!*\n"
         f"_{today_str(get_user_tz(user))}_\n\n"
         f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
-        f"_{skill['desc']}_",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
+        f"_{skill['desc']}_"
     )
+    try:
+        await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        # Тот же класс сбоя, что в finish_morning/finish_evening — непарный
+        # спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
+        print(f"Ошибка отправки утреннего приветствия uid={uid}: {e}")
+        await q.message.reply_text(
+            f"☀️ Доброе утро, {name}! 💡 Навык дня: {skill['name']}",
+            reply_markup=reply_markup
+        )
     await asyncio.sleep(0.5)
 
     # Если энергия была низкой — сразу предложить быстрый режим первой кнопкой
@@ -2876,7 +2884,7 @@ async def midday_notification(app, uid):
                     [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
                 ])
             )
-            return
+            return True
 
         tasks = build_tasks_summary(morning, done_set)
         await app.bot.send_message(uid,
@@ -2887,7 +2895,10 @@ async def midday_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
-    except Exception as e: print(f"Ошибка дневного уведомления: {e}")
+        return True
+    except Exception as e:
+        print(f"Ошибка дневного уведомления: {e}")
+        return False
 
 async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ответы на дневной чекин — ситуации и инструменты из реального тренинга."""
@@ -3113,9 +3124,9 @@ async def morning_notification(app, uid):
         ev = get_latest_evening_plan(uid)
         plan_text = ""
         if ev.get("e_a"):
-            plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {ev['e_a']}"
-            if ev.get("e_b1"): plan_text += f"\n🅱️ {ev['e_b1']}"
-            if ev.get("e_b2"): plan_text += f"\n🅱️ {ev['e_b2']}"
+            plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {md_escape(ev['e_a'])}"
+            if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
+            if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
 
         skill = get_daily_skill(uid)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
@@ -3135,8 +3146,10 @@ async def morning_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=morning_cta_kb()
         )
+        return True
     except Exception as e:
         print(f"Ошибка утреннего уведомления: {e}")
+        return False
 
 async def evening_notification(app, uid):
     try:
@@ -3150,8 +3163,10 @@ async def evening_notification(app, uid):
             parse_mode="Markdown",
             reply_markup=evening_cta_kb()
         )
+        return True
     except Exception as e:
         print(f"Ошибка вечернего уведомления: {e}")
+        return False
 
 async def weekly_report(app, uid):
     """Воскресный личный отчёт пользователю."""
@@ -3517,20 +3532,23 @@ async def check_notifications(app):
                 notif_master_on = int(user.get("notif_enabled") or 0)
                 if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                         and user.get("morning_sent_date") != day_key):
-                    update_user(uid, morning_sent_date=day_key)
-                    await morning_notification(app, uid)
+                    # Помечаем "отправлено" только после реального успеха — иначе
+                    # временный сбой (таймаут телеграма, юзер заблокировал бота)
+                    # навсегда съедает уведомление на весь день без единой попытки.
+                    if await morning_notification(app, uid):
+                        update_user(uid, morning_sent_date=day_key)
                     if is_sunday:
                         await weekly_report(app, uid)
 
                 if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
                         and user.get("midday_sent_date") != day_key):
-                    update_user(uid, midday_sent_date=day_key)
-                    await midday_notification(app, uid)
+                    if await midday_notification(app, uid):
+                        update_user(uid, midday_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
                         and user.get("evening_sent_date") != day_key):
-                    update_user(uid, evening_sent_date=day_key)
-                    await evening_notification(app, uid)
+                    if await evening_notification(app, uid):
+                        update_user(uid, evening_sent_date=day_key)
 
                 # Напоминание если пропустил утро (+2 часа) — та же логика
                 # "время прошло и сегодня ещё не отправлено", что и для
@@ -3568,18 +3586,20 @@ async def check_notifications(app):
                     except Exception as e:
                         print(f"Ошибка resume_check_due uid={uid}: {e}")
 
-                # Исследовательские вопросы
-                try:
-                    created_at = user.get("created_at") or now_dt.date().isoformat()
-                    days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
-                    done_days = [x for x in (user.get("research_done") or "").split(",") if x]
-                    for milestone in [3, 7, 14, 30]:
-                        if days_since >= milestone and str(milestone) not in done_days:
-                            if 10 <= now_dt.hour <= 12:
-                                await send_research_question(app, uid, milestone)
-                            break
-                except Exception as e:
-                    print(f"Ошибка research uid={uid}: {e}")
+                # Исследовательские вопросы — тот же общий тумблер notif_enabled,
+                # что и утро/день/вечер: "выключить всё" должно выключать и их.
+                if notif_master_on:
+                    try:
+                        created_at = user.get("created_at") or now_dt.date().isoformat()
+                        days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
+                        done_days = [x for x in (user.get("research_done") or "").split(",") if x]
+                        for milestone in [3, 7, 14, 30]:
+                            if days_since >= milestone and str(milestone) not in done_days:
+                                if 10 <= now_dt.hour <= 12:
+                                    await send_research_question(app, uid, milestone)
+                                break
+                    except Exception as e:
+                        print(f"Ошибка research uid={uid}: {e}")
 
                 # Фокус-таймер
                 if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
