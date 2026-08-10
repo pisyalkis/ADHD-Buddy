@@ -1158,14 +1158,11 @@ CARRYOVER_HINT = "\n\n_Или просто напиши новый вариан�
 async def ask_morning_focus(message, ctx):
     y = ctx.user_data.get("y_plan", {})
     intro = (
-        "💪 *Теперь — задачи на день.*\n\n"
-        "Система ABC: одно главное, не больше.\n\n"
-        "🅰️ *A — одна задача, обязательно*\n"
-        "_Если сделаешь только её — день прожит не зря._\n\n"
-        "🅱️ *B — важные* (до 2)\n"
-        "_Желательно сегодня, максимум завтра._\n\n"
-        "🅲 *C — по возможности* (до 3)\n"
-        "_Только после A и B._\n\n"
+        "🎯 *Сейчас — приоритет.*\n\n"
+        "Посмотри в календарь: сколько у тебя сегодня реально свободного времени?\n\n"
+        "Выбери из своего списка дел одну приоритетную задачу — ту, которую сделать сегодня обязательно. "
+        "Не сделать её нельзя.\n\n"
+        "Это и есть *Задача A*.\n\n"
         "━━━━━━━━━━━━━━━\n"
     )
     if y.get("a"):
@@ -1200,15 +1197,20 @@ async def use_m_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_m_b1(message, ctx):
     y = ctx.user_data.get("y_plan", {})
+    intro = (
+        "🅱️ *Теперь — задачи B.*\n\n"
+        "Их две, и они не такие важные, как A. Делай их только после того, как A уже сделана.\n\n"
+        "━━━━━━━━━━━━━━━\n"
+    )
     if y.get("b1"):
         await message.reply_text(
-            f"🅱️ *Задача B1* — вчера была:\n_{y['b1']}_\n\nОставить как есть?{CARRYOVER_HINT}",
+            intro + f"🅱️ *Задача B1* — вчера была:\n_{y['b1']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_b1", "skip_m_b1")
         )
     else:
         await message.reply_text(
-            "🅱️ *Задача B1* — важно, желательно сегодня:",
+            intro + "🅱️ *Задача B1:*",
             parse_mode="Markdown",
             reply_markup=skip_kb("skip_m_b1")
         )
@@ -1254,16 +1256,21 @@ async def use_m_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask_m_c1(message, ctx):
     y = ctx.user_data.get("y_plan", {})
     y_c = [y.get(k) for k in ("c1", "c2", "c3") if y.get(k)]
+    intro = (
+        "🅲 *И наконец — задачи C.*\n\n"
+        "Это по возможности, не обязательно. Делай их только если осталось время после A и B.\n\n"
+        "━━━━━━━━━━━━━━━\n"
+    )
     if y_c:
         listed = "\n".join(f"— {p}" for p in y_c)
         await message.reply_text(
-            f"🅲 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
+            intro + f"🅲 *Задачи C* — вчера были:\n{listed}\n\nОставить как есть?{CARRYOVER_HINT.replace('вариант', 'C1')}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_c_all", "skip_m_c_all")
         )
     else:
         await message.reply_text(
-            "🅲 *Задачи C* — если останется время:\n\nC1:",
+            intro + "🅲 *C1:*",
             parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all")
         )
 
