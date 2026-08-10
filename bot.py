@@ -191,6 +191,7 @@ SKILLS = [
 # сгенерены заранее и лежат в assets/animations/. Ключ — точное название навыка.
 SKILL_ANIMATIONS = {
     "🌬 Дыхание": os.path.join(ANIMATIONS_DIR, "breathing.gif"),
+    "👁 Техника заземления 5-4-3-2-1": os.path.join(ANIMATIONS_DIR, "grounding.gif"),
 }
 _skill_animation_file_ids = {}
 
