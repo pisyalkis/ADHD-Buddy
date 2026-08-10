@@ -3556,9 +3556,15 @@ async def check_notifications(app):
                 try:
                     mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                     reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                    # Если пользователь уже внутри утреннего диалога (просто ещё не
+                    # дошёл до задач) — не шлём это напоминание. Его кнопка "Заполнить
+                    # утро" ведёт на entry point с allow_reentry=True и перезапускает
+                    # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
+                    morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
                     if (notif_master_on and now >= reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1)
                             and user.get("morning_reminder_sent_date") != day_key
-                            and not get_diary(uid, "morning", day_key)):
+                            and not get_diary(uid, "morning", day_key)
+                            and not morning_conv_active):
                         update_user(uid, morning_reminder_sent_date=day_key)
                         await app.bot.send_message(
                             chat_id=uid,
