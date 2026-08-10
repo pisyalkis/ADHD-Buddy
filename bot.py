@@ -211,6 +211,7 @@ PROBLEM_ITEMS = [
     ("phone",       "📱 Отвлекаюсь и залипаю"),
     ("time",        "⏰ Теряю ощущение времени"),
     ("hyperfocus",  "🌀 Ухожу в гиперфокус и не могу остановиться"),
+    ("taskswitch",  "🔀 Перескакиваю с одной задачи на другую"),
     ("memory",      "🧠 Забываю дела, идеи и договорённости"),
     ("bedstuck",    "🛏 Трудно начать день"),
     ("emotions",    "🎢 Сильные эмоции мешают делать дела"),
@@ -222,7 +223,7 @@ PROBLEM_LABELS = dict(PROBLEM_ITEMS)
 PROBLEM_GROUPS = [
     ("🚀 Начать и сделать", ["resist", "scary", "decompose", "unfinished"]),
     ("🗂️ Разобраться",      ["notasks", "overload", "nostructure"]),
-    ("👀 Удержаться",        ["phone", "time", "hyperfocus"]),
+    ("👀 Удержаться",        ["phone", "time", "hyperfocus", "taskswitch"]),
     ("🧠 Не забыть",         ["memory"]),
     ("🎢 Состояние",         ["bedstuck", "emotions"]),
 ]
@@ -247,6 +248,7 @@ PROBLEM_TO_SKILLS = {
     "phone":       ["Навык СТОП", "Изменение среды", "Маячки внимания"],
     "time":        ["Работа по таймеру", "Маячки внимания"],
     "hyperfocus":  ["Работа по таймеру", "Планирование отдыха", "Маячки внимания"],
+    "taskswitch":  ["Работа по таймеру", "Приоритеты", "Бумажка гениальных мыслей"],
     "memory":      ["Список дел", "Бумажка гениальных мыслей"],
     "bedstuck":    ["Активация", "Холодная вода", "Готовность и полуулыбка"],
     "emotions":    ["Бросить якорь", "Аптечка самоуспокоения", "заземления", "Дыхание", "Холодная вода"],
@@ -263,6 +265,7 @@ PROBLEM_HELP_TEXT = {
     "phone":       "📱 *Отвлекаюсь и залипаю* — подскажу технику «остановись и осмотрись», а ещё можно включить периодические напоминания в течение дня, которые мягко возвращают к задаче.",
     "time":        "⏰ *Теряю ощущение времени* — есть встроенный таймер — задаёт время снаружи, когда изнутри мозг его не чувствует.",
     "hyperfocus":  "🌀 *Гиперфокус* — таймер и периодические напоминания работают как внешний будильник, который напомнит остановиться, когда сам не заметишь.",
+    "taskswitch":  "🔀 *Перескакиваю между задачами* — таймер держит на одной задаче до сигнала, а система ABC ограничивает список, чтобы не за что было хвататься параллельно.",
     "memory":      "🧠 *Забываю дела и договорённости* — всё, что вводишь за день, сохраняется и не теряется — можно вернуться и посмотреть в любой момент.",
     "bedstuck":    "🛏 *Трудно начать день* — есть двухминутная разминка, которая будит тело перед тем как садиться за дела — не нужно ждать, пока появится желание встать.",
     "emotions":    "🎢 *Сильные эмоции мешают* — есть быстрые техники снижения напряжения: дыхание, холодная вода, заземление через тело — подскажу их именно в моменте, когда трудно.",
@@ -283,20 +286,46 @@ PROBLEM_GOAL = {
     "phone":       "самому замечать момент, когда залип, и возвращаться",
     "time":        "лучше чувствовать, сколько времени занимают дела",
     "hyperfocus":  "замечать усталость раньше, чем понадобится внешний будильник",
+    "taskswitch":  "доводить одну задачу до конца блока, а не хвататься за следующую",
     "memory":      "не держать всё в голове и не терять важное",
     "bedstuck":    "вставать и запускать тело без ожидания мотивации",
     "emotions":    "быстрее возвращаться в равновесие, когда накрыло",
 }
 
-def problems_kb(selected):
+# Вопрос-рамка для каждой группы — задаётся отдельным сообщением на группу,
+# вместо одного сообщения с 13 пунктами и 5 заголовками сразу (было тяжело
+# читать и выбирать). Каждая группа — свой шаг, с "Дальше" вместо мгновенного
+# показа всего списка целиком.
+PROBLEM_GROUP_INTRO = {
+    0: "Бывают у тебя такие ситуации?",
+    1: "А с этим бывает трудно?",
+    2: "Как насчёт этого?",
+    3: "И ещё один момент.",
+    4: "Последнее — как у тебя с этим?",
+}
+
+def problem_group_kb(group_idx, selected):
+    _, keys = PROBLEM_GROUPS[group_idx]
+    is_last = group_idx == len(PROBLEM_GROUPS) - 1
     rows = []
-    for title, keys in PROBLEM_GROUPS:
-        rows.append([InlineKeyboardButton(f"── {title} ──", callback_data="noop")])
-        for key in keys:
-            mark = "✅ " if key in selected else "▫️ "
-            rows.append([InlineKeyboardButton(mark + PROBLEM_LABELS[key], callback_data=f"prob_{key}")])
-    rows.append([InlineKeyboardButton("Готово ✅", callback_data="prob_done")])
+    for key in keys:
+        mark = "✅ " if key in selected else "▫️ "
+        rows.append([InlineKeyboardButton(mark + PROBLEM_LABELS[key], callback_data=f"pt_{group_idx}_{key}")])
+    if is_last:
+        rows.append([InlineKeyboardButton("Готово ✅", callback_data="prob_done")])
+    else:
+        rows.append([InlineKeyboardButton("Дальше →", callback_data=f"pn_{group_idx}")])
     return InlineKeyboardMarkup(rows)
+
+async def send_problem_group(message, ctx, group_idx):
+    title, _ = PROBLEM_GROUPS[group_idx]
+    selected = ctx.user_data.get("onboard_problems", [])
+    intro = PROBLEM_GROUP_INTRO.get(group_idx, "Бывают у тебя такие ситуации?")
+    await message.reply_text(
+        f"*{title}*\n\n{intro}",
+        parse_mode="Markdown",
+        reply_markup=problem_group_kb(group_idx, selected)
+    )
 
 MID_PROCR_OPTIONS = [
     ("mid_nostart", "❓ Непонятно с чего начать"),
@@ -830,21 +859,28 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(0.4)
     ctx.user_data["onboard_problems"] = []
     await q.message.reply_text(
-        "С чем тебе труднее всего? Отметь, что откликается — по этому я подскажу конкретные вещи под тебя, "
-        "а не буду грузить всем подряд. Можно пропустить.",
-        reply_markup=problems_kb([])
+        "С чем тебе труднее всего? Пройдёмся по нескольким темам, отметь то, что откликается — "
+        "по этому я подскажу конкретные вещи под тебя, а не буду грузить всем подряд.",
     )
+    await asyncio.sleep(0.3)
+    await send_problem_group(q.message, ctx, 0)
     return ConversationHandler.END
 
 async def toggle_problem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    key = q.data.replace("prob_", "")
+    _, group_idx_str, key = q.data.split("_", 2)
+    group_idx = int(group_idx_str)
     selected = ctx.user_data.setdefault("onboard_problems", [])
     if key in selected:
         selected.remove(key)
     else:
         selected.append(key)
-    await q.message.edit_reply_markup(reply_markup=problems_kb(selected))
+    await q.message.edit_reply_markup(reply_markup=problem_group_kb(group_idx, selected))
+
+async def problem_group_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    next_idx = int(q.data.replace("pn_", "")) + 1
+    await send_problem_group(q.message, ctx, next_idx)
 
 async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4078,8 +4114,9 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
-    app.add_handler(CallbackQueryHandler(problems_done,  pattern="^prob_done$"))
-    app.add_handler(CallbackQueryHandler(toggle_problem, pattern="^prob_"))
+    app.add_handler(CallbackQueryHandler(problems_done,       pattern="^prob_done$"))
+    app.add_handler(CallbackQueryHandler(toggle_problem,      pattern="^pt_"))
+    app.add_handler(CallbackQueryHandler(problem_group_next,  pattern="^pn_"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
