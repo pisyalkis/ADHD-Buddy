@@ -981,6 +981,30 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
     user = get_user(uid)
+    today_iso = datetime.now(get_user_tz(user)).date().isoformat()
+
+    # Если сегодняшнее утро уже начато (пройден хотя бы один шаг), но не
+    # закончено — продолжаем с первого непройденного шага, а не заново с
+    # разминки. Раньше повторный заход (например по кнопке в напоминании)
+    # всегда перезапускал morning_start с нуля и стирал прогресс.
+    resuming = (
+        ctx.user_data.get("m_progress_date") == today_iso
+        and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS)
+    )
+    if resuming:
+        for key, state, ask_fn in RESUME_FIELDS:
+            if key not in ctx.user_data:
+                await q.message.reply_text("↩️ Продолжаем с того места, где остановился(ась) сегодня утром:")
+                await ask_fn(q.message, ctx)
+                return state
+        # Все шаги уже пройдены (крайний случай — finish_morning не успел
+        # отработать) — начинаем заново, ниже.
+
+    ctx.user_data["m_progress_date"] = today_iso
+    for key, _, _ in RESUME_FIELDS:
+        ctx.user_data.pop(key, None)
+    ctx.user_data.pop("quick_morning", None)
+
     name = user["name"]
     gender = user["gender"]
     motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
@@ -1231,14 +1255,20 @@ async def ask_m_c1(message, ctx):
             parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all")
         )
 
+async def ask_m_c2(message, ctx):
+    await message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+
+async def ask_m_c3(message, ctx):
+    await message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+
 async def got_m_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c1"] = update.message.text
-    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await ask_m_c2(update.message, ctx)
     return M_C2
 
 async def got_m_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_c2"] = update.message.text
-    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_m_c_all"))
+    await ask_m_c3(update.message, ctx)
     return M_C3
 
 async def got_m_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1307,6 +1337,23 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = ""
     await ask_morning_focus(q.message, ctx)
     return M_FOCUS
+
+# Шаги утреннего диалога по порядку, вместе с ключом ctx.user_data, который
+# появляется как только шаг пройден (даже если ответ пустой — см. skip_m_*),
+# и функцией, которая заново присылает вопрос этого шага. Используется в
+# morning_start, чтобы при повторном заходе (после таймаута/случайного
+# закрытия) продолжить с первого непройденного шага, а не с начала.
+RESUME_FIELDS = [
+    ("m_writing",   M_WRITING,   lambda msg, ctx: ask_writing(msg)),
+    ("m_gratitude", M_GRATITUDE, lambda msg, ctx: ask_gratitude(msg)),
+    ("m_child",     M_CHILD,     lambda msg, ctx: ask_child(msg)),
+    ("m_focus",     M_FOCUS,     ask_morning_focus),
+    ("m_b1",        M_B1,        ask_m_b1),
+    ("m_b2",        M_B2,        ask_m_b2),
+    ("m_c1",        M_C1,        ask_m_c1),
+    ("m_c2",        M_C2,        ask_m_c2),
+    ("m_c3",        M_C3,        ask_m_c3),
+]
 
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
@@ -3556,9 +3603,15 @@ async def check_notifications(app):
                 try:
                     mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
                     reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+                    # Если пользователь уже внутри утреннего диалога (просто ещё не
+                    # дошёл до задач) — не шлём это напоминание. Его кнопка "Заполнить
+                    # утро" ведёт на entry point с allow_reentry=True и перезапускает
+                    # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
+                    morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
                     if (notif_master_on and now >= reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1)
                             and user.get("morning_reminder_sent_date") != day_key
-                            and not get_diary(uid, "morning", day_key)):
+                            and not get_diary(uid, "morning", day_key)
+                            and not morning_conv_active):
                         update_user(uid, morning_reminder_sent_date=day_key)
                         await app.bot.send_message(
                             chat_id=uid,
