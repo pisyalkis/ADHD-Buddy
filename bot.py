@@ -31,6 +31,10 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
+# Статичные анимации-инструменты (не данные пользователя, один и тот же файл
+# для всех) — путь считаем от расположения самого файла, а не от cwd, чтобы
+# не зависеть от того, откуда запущен процесс.
+ANIMATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "animations")
 # ctx.user_data и состояния диалогов (онбординг/утро/вечер) раньше жили только
 # в памяти процесса — рестарт (в т.ч. от вотчдога при зависании) стирал любой
 # незаконченный диалог или введённый-но-не-отправленный ответ. Файл кладём
@@ -182,6 +186,13 @@ SKILLS = [
         "instructions": "Подкреплять важно за применение навыка — не только за результат.\n\nЧто работает:\n• Сказать себе вслух «Молодец, [имя]!»\n• Сделать победный жест\n• Поставить галочку в трекере или завести банку с монетками\n• Записать в список сделанного\n• Рассказать кому-то\n• Сделать намеренную паузу: вдох-выдох, «я сделал(а) это»\n\nЗаметить сделанное — это уже результат. Главное взять паузу и отметить."
     },
 ]
+
+# Анимации-инструменты для отдельных навыков — статичные gif (не под пользователя),
+# сгенерены заранее и лежат в assets/animations/. Ключ — точное название навыка.
+SKILL_ANIMATIONS = {
+    "🌬 Дыхание": os.path.join(ANIMATIONS_DIR, "breathing.gif"),
+}
+_skill_animation_file_ids = {}
 
 # ── ONBOARDING: ГЛАВНЫЕ ТРУДНОСТИ ──────────────────────────────────────────
 # Выбранные при онбординге пункты (user.struggles, через запятую) используются
@@ -1910,6 +1921,17 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     idx = int(q.data.replace("skill_", ""))
     skill = SKILLS[idx]
+
+    animation_path = SKILL_ANIMATIONS.get(skill["name"])
+    if animation_path:
+        try:
+            cached_id = _skill_animation_file_ids.get(skill["name"])
+            sent_anim = await q.message.reply_animation(animation=cached_id or open(animation_path, "rb"))
+            if not cached_id and sent_anim.animation:
+                _skill_animation_file_ids[skill["name"]] = sent_anim.animation.file_id
+        except Exception as e:
+            print(f"Ошибка отправки анимации навыка {skill['name']}: {e}")
+
     buttons = [[InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")]]
     if "Работа по таймеру" in skill["name"]:
         buttons.insert(0, [InlineKeyboardButton("🍅 Запустить таймер", callback_data="go_focus")])
