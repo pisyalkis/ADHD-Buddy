@@ -31,6 +31,9 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
+# Статичные объясняющие схемы (не данные пользователя, один и тот же файл для всех) —
+# лежат рядом с bot.py, путь считаем от расположения самого файла, а не от cwd.
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "diagrams")
 # ctx.user_data и состояния диалогов (онбординг/утро/вечер) раньше жили только
 # в памяти процесса — рестарт (в т.ч. от вотчдога при зависании) стирал любой
 # незаконченный диалог или введённый-но-не-отправленный ответ. Файл кладём
@@ -3547,6 +3550,13 @@ GUIDE_SECTIONS = {
     },
 }
 
+# Объясняющие схемы к отдельным разделам гайда — статичные картинки (не под
+# пользователя), сгенерены один раз заранее и лежат в assets/diagrams/.
+GUIDE_DIAGRAMS = {
+    "why": os.path.join(ASSETS_DIR, "brain_action_gap.png"),
+}
+_diagram_file_ids = {}
+
 async def guide_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await send_guide_section(q.message, "what")
@@ -3559,6 +3569,18 @@ async def guide_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def send_guide_section(message, section_id):
     section = GUIDE_SECTIONS.get(section_id)
     if not section: return
+
+    diagram_path = GUIDE_DIAGRAMS.get(section_id)
+    if diagram_path:
+        try:
+            cached_id = _diagram_file_ids.get(section_id)
+            sent_photo = await message.reply_photo(photo=cached_id or open(diagram_path, "rb"))
+            if not cached_id and sent_photo.photo:
+                # Кэшируем file_id — Telegram переиспользует уже загруженный файл
+                # по id вместо повторной загрузки байтов на каждый показ раздела.
+                _diagram_file_ids[section_id] = sent_photo.photo[-1].file_id
+        except Exception as e:
+            print(f"Ошибка отправки схемы {section_id}: {e}")
 
     # Build navigation buttons
     buttons = []
