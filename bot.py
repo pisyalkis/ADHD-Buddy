@@ -414,6 +414,7 @@ def init_db():
         ("research_awaiting", "0"),
         ("resume_check_due", "''"),
         ("struggles", "''"),
+        ("pinned_msg_id", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1355,6 +1356,34 @@ RESUME_FIELDS = [
     ("m_c3",        M_C3,        ask_m_c3),
 ]
 
+async def pin_today_tasks(ctx, uid, sent_message):
+    """Пинит сообщение с задачами дня, сняв старый пин (если остался, например
+    если вчера не закрыли вечер и unpin не случился). В приватном чате с ботом
+    пин доступен всегда, без прав администратора."""
+    user = get_user(uid)
+    old_id = user.get("pinned_msg_id") or ""
+    if old_id:
+        try:
+            await ctx.bot.unpin_chat_message(chat_id=uid, message_id=int(old_id))
+        except Exception:
+            pass
+    try:
+        await ctx.bot.pin_chat_message(chat_id=uid, message_id=sent_message.message_id, disable_notification=True)
+        update_user(uid, pinned_msg_id=str(sent_message.message_id))
+    except Exception as e:
+        print(f"Ошибка пина задач дня uid={uid}: {e}")
+
+async def unpin_today_tasks(ctx, uid):
+    user = get_user(uid)
+    old_id = user.get("pinned_msg_id") or ""
+    if not old_id:
+        return
+    try:
+        await ctx.bot.unpin_chat_message(chat_id=uid, message_id=int(old_id))
+    except Exception:
+        pass
+    update_user(uid, pinned_msg_id="")
+
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
@@ -1392,8 +1421,9 @@ async def finish_morning(message, uid, ctx):
         ai_msg = await ai_morning_boost(user["name"], user["gender"], focus)
         if ai_msg: ai_msg = f"\n\n🤖 _{ai_msg}_"
 
+    sent = None
     try:
-        await message.reply_text(
+        sent = await message.reply_text(
             f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
             f"{tasks_text}"
             f"{ai_msg}\n\n"
@@ -1410,6 +1440,10 @@ async def finish_morning(message, uid, ctx):
             f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
             reply_markup=menu_button_kb()
         )
+
+    # Пиним, только если реально есть что закреплять — не пустое "задачи не заданы".
+    if sent is not None and any(morning_for_summary.values()):
+        await pin_today_tasks(ctx, uid, sent)
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
 
@@ -1677,6 +1711,7 @@ async def finish_evening(message, uid, ctx):
     # чтобы отметки, поставленные здесь вечером, тоже были видны там.
     save_diary(uid, "tasks_done", {"done": data["e_tasks_done"]}, for_date=today)
     add_streak(uid, for_date=today)
+    await unpin_today_tasks(ctx, uid)
     streak = calc_streak(uid)
 
     plans = ""
