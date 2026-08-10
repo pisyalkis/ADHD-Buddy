@@ -1978,6 +1978,10 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     buttons = [[InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")]]
     if "Работа по таймеру" in skill["name"]:
         buttons.insert(0, [InlineKeyboardButton("🍅 Запустить таймер", callback_data="go_focus")])
+    if skill["name"] == "🌬 Дыхание":
+        # Два разных ритма дыхания в одном навыке — 4-8 присылается автоматически
+        # выше, квадратное 4-4-4-4 по кнопке, чтобы не грузить два gif сразу.
+        buttons.insert(0, [InlineKeyboardButton("🔲 Квадратное дыхание (4-4-4-4)", callback_data="skill_box_breathing")])
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     await q.message.reply_text(
         f"🧠 *{skill['name']}*\n\n"
@@ -1987,6 +1991,21 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    animation_path = os.path.join(ANIMATIONS_DIR, "box_breathing.gif")
+    try:
+        cached_id = _skill_animation_file_ids.get("box_breathing")
+        sent_anim = await q.message.reply_animation(
+            animation=cached_id or open(animation_path, "rb"),
+            caption="🔲 *Квадратное дыхание*\n\nВдох 4 — задержка 4 — выдох 4 — задержка 4. Точка идёт по сторонам квадрата.",
+            parse_mode="Markdown"
+        )
+        if not cached_id and sent_anim.animation:
+            _skill_animation_file_ids["box_breathing"] = sent_anim.animation.file_id
+    except Exception as e:
+        print(f"Ошибка отправки анимации квадратного дыхания: {e}")
 
 # ── STREAK ─────────────────────────────────────────────────────────────────
 async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4123,6 +4142,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
+    app.add_handler(CallbackQueryHandler(show_box_breathing, pattern="^skill_box_breathing$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
     app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
