@@ -1098,7 +1098,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     energy_note = ""
     if last_energy in (1, 2):
         energy_note = (
-            f"\n\n🔋 *Вчера был тяжёлый день* — ты отметил(а) низкий уровень энергии.\n"
+            "\n\n🔋 *Вчера был тяжёлый день* — ты отметил(а) низкий уровень энергии.\n"
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
         )
 
@@ -2812,7 +2812,7 @@ async def send_research_question(app, uid, day):
                  InlineKeyboardButton("5 🤩", callback_data="research_3_5")],
             ])
         )
-        update_user(uid, research_awaiting=f"3_open:что было самым полезным за эти дни?")
+        update_user(uid, research_awaiting="3_open:что было самым полезным за эти дни?")
 
     elif day == 7:
         await app.bot.send_message(
@@ -2900,7 +2900,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(uid, research_done=",".join(done_list))
 
     if day == 3:
-        update_user(uid, research_awaiting=f"3_open")
+        update_user(uid, research_awaiting="3_open")
         if low_rating:
             followup = (
                 f"Записал. Оценка {value}/5 — буду разбираться.\n\n"
@@ -3117,18 +3117,18 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_a_done_b":
         mark_tasks_done(uid, ["focus"], today)
         await q.message.reply_text(
-            f"🎉 *А сделана — это главное!*\n\n"
-            f"Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
-            f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
+            "🎉 *А сделана — это главное!*\n\n"
+            "Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
+            "Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_ab_done_c":
         mark_tasks_done(uid, ["focus", "b1", "b2"], today)
         await q.message.reply_text(
-            f"🏆 *А и Б сделаны — отличный день!*\n\n"
-            f"Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
-            f"Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
+            "🏆 *А и Б сделаны — отличный день!*\n\n"
+            "Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
+            "Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
@@ -4028,7 +4028,7 @@ async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
-        await update.message.reply_text(f"⛔ Нет доступа.", parse_mode="Markdown")
+        await update.message.reply_text("⛔ Нет доступа.", parse_mode="Markdown")
         return
     args = ctx.args
     if not args or len(args) < 2:
