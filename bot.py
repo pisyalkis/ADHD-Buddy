@@ -2011,8 +2011,8 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.insert(0, [InlineKeyboardButton("🍅 Запустить таймер", callback_data="go_focus")])
     if skill["name"] == "🌬 Дыхание":
         # Два разных ритма дыхания в одном навыке — 4-8 присылается автоматически
-        # выше, квадратное 4-4-4-4 по кнопке, чтобы не грузить два gif сразу.
-        buttons.insert(0, [InlineKeyboardButton("🔲 Квадратное дыхание (4-4-4-4)", callback_data="skill_box_breathing")])
+        # выше, дыхание квадратом 4-4-4-4 по кнопке, чтобы не грузить два gif сразу.
+        buttons.insert(0, [InlineKeyboardButton("🔲 Дыхание квадратом (4-4-4-4)", callback_data="skill_box_breathing")])
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     await q.message.reply_text(
         f"🧠 *{skill['name']}*\n\n"
@@ -2030,13 +2030,24 @@ async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cached_id = _skill_animation_file_ids.get("box_breathing")
         sent_anim = await q.message.reply_animation(
             animation=cached_id or open(animation_path, "rb"),
-            caption="🔲 *Квадратное дыхание*\n\nВдох 4 — задержка 4 — выдох 4 — задержка 4. Точка идёт по сторонам квадрата.",
+            caption=(
+                "🔲 *Дыхание квадратом*\n\n"
+                "Вдох 4 — задержка 4 — выдох 4 — задержка 4. Точка идёт по сторонам квадрата.\n\n"
+                "📖 *Почему это работает*\n"
+                "Задержки дыхания — не пауза ради паузы, а дополнительный тормоз: они замедляют дыхание "
+                "сильнее, чем обычный вдох-выдох, и продлевают сигнал безопасности блуждающему нерву, "
+                "который переключает нервную систему в спокойный режим. Ровный счёт на 4 стороны легко "
+                "удерживать в голове — не нужно решать самому, когда вдыхать, а когда выдыхать, мозг просто "
+                "следует за квадратом. Этой техникой пользуются спецназ и врачи перед стрессовыми "
+                "ситуациями — она работает быстро и не требует опыта медитации.\n\n"
+                "✅ Используй перед сложным разговором, во время тревоги или чтобы быстро успокоиться."
+            ),
             parse_mode="Markdown"
         )
         if not cached_id and sent_anim.animation:
             _skill_animation_file_ids["box_breathing"] = sent_anim.animation.file_id
     except Exception as e:
-        print(f"Ошибка отправки анимации квадратного дыхания: {e}")
+        print(f"Ошибка отправки анимации дыхания квадратом: {e}")
 
 # ── STREAK ─────────────────────────────────────────────────────────────────
 async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
