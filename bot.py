@@ -568,10 +568,21 @@ def save_feedback(uid, text):
               (uid, text, datetime.now().isoformat()))
     conn.commit(); conn.close()
 
+def evening_day(tz) -> date:
+    """"Логический" день для вечернего отчёта и стрика — до 4 утра ещё
+    считается вчерашним днём, чтобы у тех, кто закрывает день за полночь
+    (частый случай при СДВГ), отчёт и стрик не съезжали на новый день
+    и не показывали 0 сразу после полуночи."""
+    now = datetime.now(tz)
+    d = now.date()
+    if now.hour < 4:
+        d -= timedelta(days=1)
+    return d
+
 def add_streak(uid, for_date=None):
     user = get_user(uid)
     streak = json.loads(user["streak"])
-    today = for_date or date.today().isoformat()
+    today = for_date or evening_day(get_user_tz(user)).isoformat()
     if today not in streak:
         streak.append(today)
         update_user(uid, streak=json.dumps(streak))
@@ -579,7 +590,7 @@ def add_streak(uid, for_date=None):
 def calc_streak(uid):
     user = get_user(uid)
     tz = get_user_tz(user)
-    today = datetime.now(tz).date()
+    today = evening_day(tz)
     streak = sorted(set(json.loads(user["streak"])), reverse=True)
     if not streak: return 0
     count = 0
@@ -1544,7 +1555,7 @@ def tasks_done_kb(morning, done):
     return InlineKeyboardMarkup(rows)
 
 async def ask_tasks_done(message, uid, ctx):
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    today = evening_day(get_user_tz(get_user(uid))).isoformat()
     morning = get_diary(uid, "morning", today)
     # Подхватываем отметки, уже сделанные днём в меню "📋 Задачи" —
     # иначе вечерний блок затирает их пустым списком.
@@ -1565,7 +1576,7 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         done.remove(key)
     else:
         done.append(key)
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    today = evening_day(get_user_tz(get_user(uid))).isoformat()
     morning = get_diary(uid, "morning", today)
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
@@ -1590,7 +1601,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     streak = calc_streak(uid)
 
-    today = datetime.now(get_user_tz(user)).date().isoformat()
+    today = evening_day(get_user_tz(user)).isoformat()
     morning = get_diary(uid, "morning", today)
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
 
@@ -1785,7 +1796,7 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def finish_evening(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
-    today = datetime.now(tz).date().isoformat()
+    today = evening_day(tz).isoformat()
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
