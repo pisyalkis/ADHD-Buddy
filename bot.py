@@ -1094,6 +1094,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
     undone_text = ""
     kb_rows = []
+    skill = get_daily_skill(uid)
+    skill_idx = SKILLS.index(skill)
     if undone_yesterday:
         undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
@@ -1102,11 +1104,10 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
         )
         todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
-        if todolist_idx is not None:
+        # Не дублируем кнопку, если навык дня и есть тот самый "Список дел"
+        if todolist_idx is not None and todolist_idx != skill_idx:
             kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
-    skill = get_daily_skill(uid)
-    skill_idx = SKILLS.index(skill)
     kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
     reply_markup = InlineKeyboardMarkup(kb_rows)
 
