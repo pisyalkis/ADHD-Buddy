@@ -1093,7 +1093,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     y_done = set(get_diary(uid, "tasks_done", yesterday_iso).get("done", []))
     undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
     undone_text = ""
-    reply_markup = None
+    kb_rows = []
     if undone_yesterday:
         undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
@@ -1103,9 +1103,12 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
         if todolist_idx is not None:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")]])
+            kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
     skill = get_daily_skill(uid)
+    skill_idx = SKILLS.index(skill)
+    kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
+    reply_markup = InlineKeyboardMarkup(kb_rows)
 
     # Адаптивное приветствие по уровню энергии вечера
     last_energy = int(ev.get("e_energy", 0) or 0)
@@ -1121,8 +1124,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"_{today_str(get_user_tz(user))}_\n\n"
         f"_{motiv}_{undone_text}{plans_text}{energy_note}\n\n"
         f"💡 *Навык дня:* {skill['name']}\n"
-        f"_{skill['desc']}_\n"
-        f"_Подробная инструкция — в разделе 🧠 Навыки_"
+        f"_{skill['desc']}_"
     )
     try:
         await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
@@ -3345,6 +3347,7 @@ async def morning_notification(app, uid):
             if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
 
         skill = get_daily_skill(uid)
+        skill_idx = SKILLS.index(skill)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
 
         last_energy = int(ev.get("e_energy", 0) or 0)
@@ -3352,16 +3355,20 @@ async def morning_notification(app, uid):
         if last_energy in (1, 2):
             energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
 
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
+            [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")],
+            [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
+        ])
         await app.bot.send_message(
             uid,
             f"☀️ *Доброе утро, {name}!*\n\n"
             f"_{motiv}_{plan_text}{energy_note}\n\n"
             f"💡 *Навык дня:* {skill['name']}\n"
-            f"_{skill['desc']}_\n"
-            f"_Подробная инструкция — в разделе 🧠 Навыки_\n\n"
+            f"_{skill['desc']}_\n\n"
             f"{g(gender, 'Готов', 'Готова')} начать? 👇",
             parse_mode="Markdown",
-            reply_markup=morning_cta_kb()
+            reply_markup=kb
         )
         return True
     except Exception as e:
