@@ -778,6 +778,10 @@ def evening_cta_kb():
 def today_str(tz=None):
     return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
+# Не "навыки на день", а сама механика бота — их место в онбординге и
+# в разделе 🧠 Навыки, а не в случайной ротации наравне с ситуативными техниками.
+DAILY_SKILL_EXCLUDE = {"Список дел", "Приоритеты"}
+
 def get_daily_skill(uid):
     """Возвращает навык дня — меняется каждый день (по таймзоне пользователя).
 
@@ -788,6 +792,8 @@ def get_daily_skill(uid):
     Если при онбординге отмечены главные трудности (user.struggles) — ротация
     идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
     а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
+
+    DAILY_SKILL_EXCLUDE вырезается из пула в обоих случаях.
     """
     user = get_user(uid)
     today = datetime.now(get_user_tz(user)).date().isoformat()
@@ -802,6 +808,7 @@ def get_daily_skill(uid):
         pool = [i for i, sk in enumerate(SKILLS) if any(kw in sk["name"] for kw in keywords)]
 
     indices = pool or list(range(len(SKILLS)))
+    indices = [i for i in indices if not any(ex in SKILLS[i]["name"] for ex in DAILY_SKILL_EXCLUDE)] or indices
     idx = indices[int(digest, 16) % len(indices)]
     return SKILLS[idx]
 
