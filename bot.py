@@ -1895,8 +1895,15 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
         return resp.content[0].text.strip()
     except: return ""
 
-async def send_coach(message, text, uid):
-    """Отправить запрос AI-коучу."""
+COACH_HISTORY_LIMIT = 10  # последние 5 обменов (user+assistant) — коуч помнит контекст диалога, но токены не раздуваются
+
+async def send_coach(message, text, uid, ctx=None):
+    """Отправить запрос AI-коучу.
+
+    ctx (если передан) хранит историю диалога в user_data["coach_history"],
+    чтобы коуч помнил, о чём уже говорили в этой сессии, а не отвечал на
+    каждое сообщение с нуля, теряя нить (жалоба: "сильно тупил" — ответы
+    не учитывали предыдущие реплики)."""
     if not ANTHROPIC_KEY:
         await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=menu_button_kb())
         return
@@ -1910,6 +1917,11 @@ async def send_coach(message, text, uid):
         "Если неясно и задач больше одной — сначала кратко переспроси, к какой из них вопрос."
         if tasks != "_задачи не заданы_" else ""
     )
+    skill = get_daily_skill(uid)
+    skill_hint = f"\n\nНавык дня у пользователя сегодня: {skill['name']} — {skill['desc']}. Если он в тему ситуации — предложи именно его."
+    skill_names = ", ".join(s["name"] for s in SKILLS)
+
+    history = ctx.user_data.get("coach_history", []) if ctx is not None else []
     thinking = await message.reply_text("🤖 думаю...")
     try:
         from anthropic import Anthropic
@@ -1917,11 +1929,24 @@ async def send_coach(message, text, uid):
         resp = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=300,
-            system=f"Ты прямой коуч для {user['name']} ({gender_hint}), СДВГ. Кратко, по делу, одно действие. Максимум 2-3 предложения. Используй техники CBT для СДВГ: ABC-приоритеты, первый неподавляющий шаг, активация, СТОП. Пиши по-русски.{tasks_hint}",
-            messages=[{"role":"user","content":text}]
+            system=(
+                f"Ты коуч для {user['name']} ({gender_hint}) с СДВГ. Начни с одной короткой фразы, "
+                "которая показывает, что ты понимаешь ситуацию человека — по-человечески, не как диагноз "
+                "(не используй клинические ярлыки вроде «паттерн», «избегание», «прокрастинация» как "
+                "оценку его поведения — это звучит как разбор, а не поддержка). Дальше — одно ясное "
+                "действие. Всего 2-4 предложения, без воды и без повторения того, что уже советовал(а) "
+                "в этом диалоге. Никогда не морализируй и не стыди, даже мягко. "
+                f"Техники, которые можно предлагать: {skill_names}."
+                f"{tasks_hint}{skill_hint}\n\nПиши по-русски."
+            ),
+            messages=history + [{"role": "user", "content": text}]
         )
+        reply_text = resp.content[0].text
+        if ctx is not None:
+            history = history + [{"role": "user", "content": text}, {"role": "assistant", "content": reply_text}]
+            ctx.user_data["coach_history"] = history[-COACH_HISTORY_LIMIT:]
         await thinking.edit_text(
-            f"🤖 {resp.content[0].text}",
+            f"🤖 {reply_text}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
         )
     except Exception as e:
@@ -1969,7 +1994,7 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     prompt = COACH_PROMPTS.get(q.data, "")
-    await send_coach(q.message, prompt, q.from_user.id)
+    await send_coach(q.message, prompt, q.from_user.id, ctx)
 
 # ── SKILL OF THE DAY ───────────────────────────────────────────────────────
 def skills_list_kb():
@@ -2475,6 +2500,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_city"] = False
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["coach_mode"] = False
+    ctx.user_data.pop("coach_history", None)
     ctx.user_data.pop("admin_msg_target", None)
     ctx.user_data.pop("admin_msg_name", None)
     if update is not None and update.effective_user is not None:
@@ -2639,7 +2665,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Не удалось: `{e}`", parse_mode="Markdown")
     elif ctx.user_data.get("coach_mode"):
-        await send_coach(update.message, update.message.text, uid)
+        await send_coach(update.message, update.message.text, uid, ctx)
     else:
         # Пересылаем свободное сообщение администратору
         if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
