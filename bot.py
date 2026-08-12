@@ -456,6 +456,7 @@ def init_db():
         ("resume_check_due", "''"),
         ("struggles", "''"),
         ("pinned_msg_id", "''"),
+        ("morning_filled_at", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1442,9 +1443,13 @@ async def unpin_today_tasks(ctx, uid):
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
-    today = datetime.now(tz).date().isoformat()
+    now_dt = datetime.now(tz)
+    today = now_dt.date().isoformat()
     focus = ctx.user_data.get("m_focus", "")
     if focus: update_user(uid, focus=focus)
+    # Момент заполнения утра — нужен маячку, чтобы не стрелять сразу вслед,
+    # если утро заполнено поздно (см. send_beacon).
+    update_user(uid, morning_filled_at=now_dt.isoformat())
 
     save_diary(uid, "morning", {
         "focus":    focus,
@@ -2211,20 +2216,28 @@ async def send_beacon(app, user):
             # Окно через полночь (например 22:00–06:00) — вне [end, start) считается рабочим временем.
             if end_minutes < now_minutes < start_minutes: return
 
-        last_sent = user.get("beacon_last_sent") or ""
-        if last_sent:
+        # beacon_last_sent почти всегда вчерашний в начале дня (маячок ещё не
+        # стрелял сегодня) — интервал "с последней отправки" формально
+        # огромный и проходит мгновенно. Раньше это значило "стреляй, как
+        # только утро появится", даже если утро заполнено буквально минуту
+        # назад. Берём более позднюю точку отсчёта из двух: последняя
+        # отправка маячка ИЛИ момент, когда сегодня заполнили утро — и ждём
+        # полный интервал именно от неё.
+        baseline_dt = None
+        for ts in (user.get("beacon_last_sent") or "", user.get("morning_filled_at") or ""):
+            if not ts: continue
             try:
-                last_dt = datetime.fromisoformat(last_sent).astimezone(tz)
-                if (now - last_dt).total_seconds() < interval_h * 3600 - 30: return
+                dt = datetime.fromisoformat(ts).astimezone(tz)
+                if baseline_dt is None or dt > baseline_dt:
+                    baseline_dt = dt
             except Exception:
                 pass
+        if baseline_dt and (now - baseline_dt).total_seconds() < interval_h * 3600 - 30: return
 
-        # Если утро заполняется поздно (близко ко времени дневного чекина),
-        # beacon_last_sent ещё вчерашний — интервал "с последнего маячка"
-        # формально проходит, и маячок стреляет через пару минут после
-        # дневного чекина, который только что спросил ровно то же самое.
-        # Даём получасовую паузу после дневного чекина, а не только после
-        # своей собственной последней отправки.
+        # Тот же случай, но со стороны дневного чекина: если утро заполнено
+        # задолго до дневного чекина, а маячок пока не стрелял, дневной чекин
+        # сам по себе только что закрыл ровно тот же вопрос "что сейчас
+        # делаешь" — не дублируем его в ближайшие полчаса.
         if user.get("midday_sent_date") == now.date().isoformat():
             try:
                 mh, mm = map(int, (user.get("notif_midday") or "13:00").split(":"))
