@@ -2664,11 +2664,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid, ctx)
     else:
-        # Свободное сообщение без явного контекста — раньше просто просили
-        # выбрать пункт меню, теперь сразу отвечает ИИ-коуч (не нужно сначала
-        # открывать 🤖 Коуч, чтобы бот понял по смыслу что происходит).
-        # Пересылку администратору оставляем — так видно, что реально пишут
-        # пользователи, даже когда коуч уже ответил.
+        # Пересылаем свободное сообщение администратору
         if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
             user = get_user(uid)
             try:
@@ -2679,7 +2675,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 print(f"Не удалось переслать сообщение: {e}")
-        await send_coach(update.message, update.message.text, uid, ctx)
+        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=menu_button_kb())
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
