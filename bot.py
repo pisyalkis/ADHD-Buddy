@@ -92,7 +92,7 @@ SKILLS = [
     {
         "name": "👣 Первый неподавляющий шаг",
         "desc": "Не планируй все шаги заранее — найди только самый первый, маленький.",
-        "explanation": "Начало — самое сложное. После старта обычно легче.",
+        "explanation": "При СДВГ старт задачи требует непропорционально много «энергии запуска» — мозгу сложно перейти от намерения к действию, даже когда мотивация есть. Огромный первый шаг ощущается подавляюще и почти гарантированно откладывается. Маленький, конкретный первый шаг снижает порог входа настолько, что начать становится реально просто.",
         "instructions": "Первый шаг должен: завершаться за один день и не вызывать желания отложить. Если хочется отложить — шаг слишком большой, уменьши его.\n\n⚠️ *Не разбивай всю задачу на шаги сразу* — это само по себе подавляет. Выбери только 1-2 следующих шага, не больше. Следующие шаги часто зависят от результата первого.\n\nПример: хочу попасть к врачу → первый шаг «позвонить в регистратуру», а не «найти врача, записаться, выяснить что взять с собой...»\n\n_Бот предлагает эту технику в дневном чекине при «Непонятно с чего начать» и «Задача пугает». Вечером есть отдельный пункт в чек-листе._"
     },
     {
@@ -117,7 +117,7 @@ SKILLS = [
         "name": "⏱ Работа по таймеру",
         "desc": "Чередуй работу и отдых по таймеру.",
         "explanation": "У СДВГ-мозга слабое чувство времени изнутри — работа незаметно растягивается на часы или, наоборот, кажется невыносимо долгой уже через 5 минут. Таймер задаёт время снаружи, когда мозг не может сделать это сам, и профилактирует гиперфокус и истощение.",
-        "instructions": "Выясни сколько минут ты можешь работать над скучной задачей без остановки. Поставь таймер на это время. Работай только до сигнала. Потом отдых.\n\n_Бот упоминает таймер почти в каждой дневной ситуации — от «Задача пугает» до «Мало времени». Вечером есть отдельный пункт в чек-листе._"
+        "instructions": "Если не знаешь свой предел — начни с классических 25 минут работы + 5 минут отдыха (Pomodoro) и подстрой под себя: если 25 минут кажутся вечностью, сократи до 10-15; если легко идёт — попробуй увеличить. Ставь таймер на видном месте (телефон, кухонный таймер — не то же устройство, на котором работаешь) и работай строго до сигнала, не «ещё чуть-чуть». Потом обязательный перерыв — не пропускай его, даже если кажется что можно продолжить.\n\n_Бот упоминает таймер почти в каждой дневной ситуации — от «Задача пугает» до «Мало времени». Вечером есть отдельный пункт в чек-листе._"
     },
     {
         "name": "📝 Бумажка гениальных мыслей",
@@ -128,13 +128,13 @@ SKILLS = [
     {
         "name": "💧 Холодная вода",
         "desc": "Быстрое снижение перевозбуждения через температуру.",
-        "explanation": "Это активирует рефлекс ныряльщика и замедляет сердечный ритм.",
-        "instructions": "Умойся холодной водой или плесни на лицо. Помогает при сильных эмоциях, перевозбуждении и когда нужно быстро успокоиться.\n\n_Бот предлагает это в дневном чекине при «Задача пугает» и «Жду подходящего момента». Вечером есть отдельный пункт в чек-листе._"
+        "explanation": "Холодная вода на лице запускает «рефлекс ныряльщика» — древний физиологический механизм, который резко замедляет сердечный ритм и переключает нервную систему в спокойный режим за секунды. Это не психология, а физиология — работает даже когда убедить себя словами не получается.",
+        "instructions": "Умойся холодной водой или плесни на лицо (особенно область вокруг глаз и висков — там рефлекс срабатывает сильнее всего). Если под рукой лёд — приложи к лицу или подержи в руках 10-15 секунд. Помогает при сильных эмоциях, перевозбуждении и когда нужно быстро успокоиться перед началом задачи.\n\n_Бот предлагает это в дневном чекине при «Задача пугает» и «Жду подходящего момента». Вечером есть отдельный пункт в чек-листе._"
     },
     {
         "name": "🌬 Дыхание",
         "desc": "Выдох длиннее вдоха успокаивает нервную систему.",
-        "explanation": "Замедленное дыхание активирует парасимпатическую систему.",
+        "explanation": "Выдох длиннее вдоха посылает мозгу сигнал безопасности через блуждающий нерв — включается парасимпатическая («тормозная») нервная система, которая физически замедляет сердцебиение и снижает тревогу. Это единственная часть автономной нервной системы, которую можно сознательно контролировать через дыхание.",
         "instructions": "Вдох 4 счёта — выдох 8 счётов. Или квадрат: вдох 4, задержка 4, выдох 4, задержка 4. Используй перед сном, при тревоге, для переключения.\n\n_Бот упоминает дыхание в дневном чекине при «Задача пугает». Вечером есть отдельный пункт в чек-листе._"
     },
     {
@@ -236,6 +236,20 @@ PROBLEM_TO_MID = {
     "phone":     ["mid_phone"],
     "time":      ["mid_time"],
     "emotions":  ["mid_scary", "mid_resist"],
+}
+
+# Ситуация дневного чекина → название навыка (подстрока из SKILLS[i]["name"]),
+# к которому у этой ситуации есть однозначно ближайшее соответствие — берётся
+# техника, на которую сам текст ситуации и так ссылается как на главную.
+# mid_perfect сюда намеренно не входит — под перфекционизм нет отдельного
+# навыка в списке, а натягивать чужой навык не стоит.
+MID_TO_SKILL = {
+    "mid_nostart": "Активация",
+    "mid_scary":   "Первый неподавляющий шаг",
+    "mid_waiting": "Активация",
+    "mid_resist":  "Готовность и полуулыбка",
+    "mid_time":    "Работа по таймеру",
+    "mid_phone":   "Навык СТОП",
 }
 
 PROBLEM_TO_SKILLS = {
@@ -765,6 +779,10 @@ def evening_cta_kb():
 def today_str(tz=None):
     return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
 
+# Не "навыки на день", а сама механика бота — их место в онбординге и
+# в разделе 🧠 Навыки, а не в случайной ротации наравне с ситуативными техниками.
+DAILY_SKILL_EXCLUDE = {"Список дел", "Приоритеты"}
+
 def get_daily_skill(uid):
     """Возвращает навык дня — меняется каждый день (по таймзоне пользователя).
 
@@ -775,6 +793,8 @@ def get_daily_skill(uid):
     Если при онбординге отмечены главные трудности (user.struggles) — ротация
     идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
     а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
+
+    DAILY_SKILL_EXCLUDE вырезается из пула в обоих случаях.
     """
     user = get_user(uid)
     today = datetime.now(get_user_tz(user)).date().isoformat()
@@ -789,6 +809,7 @@ def get_daily_skill(uid):
         pool = [i for i, sk in enumerate(SKILLS) if any(kw in sk["name"] for kw in keywords)]
 
     indices = pool or list(range(len(SKILLS)))
+    indices = [i for i in indices if not any(ex in SKILLS[i]["name"] for ex in DAILY_SKILL_EXCLUDE)] or indices
     idx = indices[int(digest, 16) % len(indices)]
     return SKILLS[idx]
 
@@ -1080,7 +1101,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     y_done = set(get_diary(uid, "tasks_done", yesterday_iso).get("done", []))
     undone_yesterday = [y_morning[k] for k, _ in TASK_FIELDS if y_morning.get(k) and k not in y_done]
     undone_text = ""
-    reply_markup = None
+    kb_rows = []
+    skill = get_daily_skill(uid)
+    skill_idx = SKILLS.index(skill)
     if undone_yesterday:
         undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
@@ -1089,10 +1112,12 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
         )
         todolist_idx = next((i for i, s in enumerate(SKILLS) if "Список дел" in s["name"]), None)
-        if todolist_idx is not None:
-            reply_markup = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")]])
+        # Не дублируем кнопку, если навык дня и есть тот самый "Список дел"
+        if todolist_idx is not None and todolist_idx != skill_idx:
+            kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
-    skill = get_daily_skill(uid)
+    kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
+    reply_markup = InlineKeyboardMarkup(kb_rows)
 
     # Адаптивное приветствие по уровню энергии вечера
     last_energy = int(ev.get("e_energy", 0) or 0)
@@ -3107,6 +3132,21 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action in MIDDAY_LABELS:
         save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]}, for_date=today)
 
+    def back_kb_with_skill(mid_action):
+        """Тот же back_kb, плюс кнопка на полную карточку навыка (объяснение
+        + инструкция), если для этой ситуации есть однозначно подходящий
+        навык — короткие блёрбы техник выше не заменяют полную инструкцию."""
+        rows = []
+        skill_hint = MID_TO_SKILL.get(mid_action)
+        if skill_hint:
+            idx = next((i for i, s in enumerate(SKILLS) if skill_hint in s["name"]), None)
+            if idx is not None:
+                rows.append([InlineKeyboardButton(f"🧠 Подробнее: {SKILLS[idx]['name']}", callback_data=f"skill_{idx}")])
+        rows.append([InlineKeyboardButton("🤖 Коуч поможет", callback_data="mid_coach")])
+        rows.append([InlineKeyboardButton("👥 Нужен бадди", callback_data="mid_buddy")])
+        rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+        return InlineKeyboardMarkup(rows)
+
     back_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🤖 Коуч поможет", callback_data="mid_coach")],
         [InlineKeyboardButton("👥 Нужен бадди", callback_data="mid_buddy")],
@@ -3191,7 +3231,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "👥 *Помощь бадди* — иногда нужно просто сказать кому-то «я начинаю».\n\n"
             "🤖 *Обратиться к ИИ* — опиши задачу и попроси разбить на шаги.\n\n"
             "_Начни с активации тела — это самый быстрый способ запуститься._",
-            parse_mode="Markdown", reply_markup=back_kb
+            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_nostart")
         )
 
     elif action == "mid_scary":
@@ -3204,7 +3244,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "💧 *Успокой себя* — холодная вода, дыхание, аптечка самоуспокоения\n\n"
             "👥 *Поговори с бадди* — совместная работа рядом работает даже без слов\n\n"
             "⏱ *Таймер на 2 минуты* — только начать. После старта обычно легче.",
-            parse_mode="Markdown", reply_markup=back_kb
+            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_scary")
         )
 
     elif action == "mid_waiting":
@@ -3217,7 +3257,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🎵 *Активная музыка* — 3-5 минут энергичной музыки перед стартом\n\n"
             "🔤 *За и против* — напомни себе ЗАЧЕМ это важно\n\n"
             "_Подходящее состояние появляется ПОСЛЕ начала, а не до._",
-            parse_mode="Markdown", reply_markup=back_kb
+            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_waiting")
         )
 
     elif action == "mid_perfect":
@@ -3245,7 +3285,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "⏱ *Таймер + маячок внимания* — 25 мин работы + стикер на видном месте\n\n"
             "🛑 *СТОП* — остановись и замети что именно сопротивляется\n\n"
             "👏 *Похвали себя* — за любую попытку, не только за результат",
-            parse_mode="Markdown", reply_markup=back_kb
+            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_resist")
         )
 
     elif action == "mid_time":
@@ -3260,10 +3300,18 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🌍 *Изменить условия* — можно совместить? Слушать тренинг во время рутины\n\n"
             "⚓ *Якорь* — верни внимание в тело, потом к задаче\n\n"
             "_Незавершённые задачи не переносятся — завтра выбираешь заново._",
-            parse_mode="Markdown", reply_markup=back_kb
+            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_time")
         )
 
     elif action == "mid_phone":
+        stop_skill_idx = next((i for i, s in enumerate(SKILLS) if MID_TO_SKILL["mid_phone"] in s["name"]), None)
+        phone_buttons = []
+        if stop_skill_idx is not None:
+            phone_buttons.append([InlineKeyboardButton(f"🧠 Подробнее: {SKILLS[stop_skill_idx]['name']}", callback_data=f"skill_{stop_skill_idx}")])
+        phone_buttons += [
+            [InlineKeyboardButton("✅ Иду работать", callback_data="mid_ok")],
+            [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
+        ]
         await q.message.reply_text(
             "📱 *Поймал(а) себя — это уже победа!*\n\n"
             "Навык *СТОП*:\n"
@@ -3274,10 +3322,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Возвращайся к: *{focus}*\n\n"
             "_Поставь таймер на 10 минут и просто открой нужный файл._",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Иду работать", callback_data="mid_ok")],
-                [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
-            ])
+            reply_markup=InlineKeyboardMarkup(phone_buttons)
         )
 
     elif action == "mid_coach":
@@ -3323,6 +3368,7 @@ async def morning_notification(app, uid):
             if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
 
         skill = get_daily_skill(uid)
+        skill_idx = SKILLS.index(skill)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
 
         last_energy = int(ev.get("e_energy", 0) or 0)
@@ -3330,6 +3376,11 @@ async def morning_notification(app, uid):
         if last_energy in (1, 2):
             energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
 
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
+            [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")],
+            [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
+        ])
         await app.bot.send_message(
             uid,
             f"☀️ *Доброе утро, {name}!*\n\n"
@@ -3338,7 +3389,7 @@ async def morning_notification(app, uid):
             f"_{skill['desc']}_\n\n"
             f"{g(gender, 'Готов', 'Готова')} начать? 👇",
             parse_mode="Markdown",
-            reply_markup=morning_cta_kb()
+            reply_markup=kb
         )
         return True
     except Exception as e:
