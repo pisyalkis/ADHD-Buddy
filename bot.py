@@ -2761,17 +2761,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = ru
         awaiting = str(user.get("research_awaiting", ""))
         text = update.message.text.strip()
-        # format: "DAY_open" e.g. "3_open"
-        day = int(awaiting.split("_")[0]) if "_" in awaiting else 0
+        # format: "DAY_open" или "DAY_open:вопрос", напр. "3_open:Что было полезным?"
+        day_part, _, embedded_q = awaiting.partition(":")
+        day = int(day_part.split("_")[0]) if "_" in day_part else 0
         if day:
             save_research(uid, day, f"day{day}_text", text)
             update_user(uid, research_awaiting=0)
             user = get_user(uid)
             if NOTIFY_USER_ID:
+                q_text = embedded_q or RESEARCH_QUESTION_LABELS.get(f"day{day}_text", "")
                 try:
                     await ctx.bot.send_message(
                         NOTIFY_USER_ID,
-                        f"🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n{text}",
+                        f"🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n"
+                        f"_{q_text}_\n{text}",
                         parse_mode="Markdown"
                     )
                 except Exception as e:
@@ -2994,6 +2997,23 @@ async def send_focus_end(app, uid: int, minutes: int):
 
 
 # ── RESEARCH QUESTIONS ─────────────────────────────────────────────────────
+# Человекочитаемый текст вопроса по ключу question из таблицы research —
+# без этого админу приходил только день и ответ, без понимания на что он.
+RESEARCH_OPEN_Q_DAY3_LOW = "Что не получилось или что было неудобно?"
+RESEARCH_OPEN_Q_DAY3_OK  = "Что было самым полезным за эти 3 дня?"
+RESEARCH_OPEN_Q_DAY7     = "Что мешало использовать бота на этой неделе?"
+RESEARCH_OPEN_Q_DAY14    = "Что стоит упростить или убрать в боте?"
+
+RESEARCH_QUESTION_LABELS = {
+    "day3_rating":  "Насколько полезен бот через 3 дня? (оценка 1-5)",
+    "day3_text":    f"{RESEARCH_OPEN_Q_DAY3_OK} / {RESEARCH_OPEN_Q_DAY3_LOW}",
+    "day7_rating":  "Был ли момент когда подумал(а) «о, это работает»?",
+    "day7_text":    RESEARCH_OPEN_Q_DAY7,
+    "day14_rating": "Насколько вероятно порекомендуешь бота другу с СДВГ? (0-10)",
+    "day14_text":   RESEARCH_OPEN_Q_DAY14,
+    "day30_rating": "Если бот перестанет работать — как ты к этому отнесёшься?",
+}
+
 def save_research(uid, day, question, answer):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -3033,7 +3053,7 @@ async def send_research_question(app, uid, day):
                  InlineKeyboardButton("5 🤩", callback_data="research_3_5")],
             ])
         )
-        update_user(uid, research_awaiting="3_open:что было самым полезным за эти дни?")
+        update_user(uid, research_awaiting=f"3_open:{RESEARCH_OPEN_Q_DAY3_OK}")
 
     elif day == 7:
         await app.bot.send_message(
@@ -3064,7 +3084,7 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(6, 11)],
             ])
         )
-        update_user(uid, research_awaiting="14_open:что стоит упростить или убрать?")
+        update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
 
     elif day == 30:
         await app.bot.send_message(
@@ -3104,9 +3124,11 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             alert = "⚠️ *НИЗКАЯ ОЦЕНКА — нужна связь!*\n\n" if low_rating else ""
             contact = f"\n🔗 Telegram ID: `{uid}`" if low_rating else ""
+            q_text = RESEARCH_QUESTION_LABELS.get(f"day{day}_rating", "")
             await q.message.bot.send_message(
                 NOTIFY_USER_ID,
-                f"{alert}🔬 *Исследование день {day} от {user['name'] or uid}:*\n\nОценка: {answer}{contact}",
+                f"{alert}🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n"
+                f"_{q_text}_\nОценка: {answer}{contact}",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -3121,35 +3143,37 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(uid, research_done=",".join(done_list))
 
     if day == 3:
-        update_user(uid, research_awaiting="3_open")
         if low_rating:
+            open_q = RESEARCH_OPEN_Q_DAY3_LOW
             followup = (
                 f"Записал. Оценка {value}/5 — буду разбираться.\n\n"
                 f"Расскажи подробнее текстом:\n\n"
-                f"*Что не получилось или что было неудобно?* Любая деталь поможет."
+                f"*{open_q}* Любая деталь поможет."
             )
         else:
+            open_q = RESEARCH_OPEN_Q_DAY3_OK
             followup = (
                 f"Спасибо! Оценка {value}/5 записана.\n\n"
                 f"И ещё один вопрос — ответь текстом:\n\n"
-                f"*Что было самым полезным за эти 3 дня?*"
+                f"*{open_q}*"
             )
+        update_user(uid, research_awaiting=f"3_open:{open_q}")
         await q.message.reply_text(followup, parse_mode="Markdown")
     elif day == 7:
         await q.message.reply_text(
             "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
             reply_markup=menu_button_kb()
         )
-        update_user(uid, research_awaiting="7_open")
+        update_user(uid, research_awaiting=f"7_open:{RESEARCH_OPEN_Q_DAY7}")
         await q.message.reply_text(
-            "*И ещё — что мешало использовать бота на этой неделе?*\n\nОтветь текстом.",
+            f"*И ещё:* {RESEARCH_OPEN_Q_DAY7}\n\nОтветь текстом.",
             parse_mode="Markdown"
         )
     elif day == 14:
-        update_user(uid, research_awaiting="14_open")
+        update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
         await q.message.reply_text(
             f"NPS {value} — записал!\n\n"
-            f"*И последнее — ответь текстом:*\n\nЧто стоит упростить или убрать в боте?",
+            f"*И последнее — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY14}",
             parse_mode="Markdown"
         )
     elif day == 30:
@@ -4114,7 +4138,8 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = get_user(user_id)
         name = user["name"] if user and user["name"] else str(user_id)
         date_str = created[:10] if created else "?"
-        lines.append(f"*{name}* · день {day} ({date_str}):\n{answer}")
+        q_text = RESEARCH_QUESTION_LABELS.get(question, question)
+        lines.append(f"*{name}* · день {day} ({date_str}):\n_{q_text}_\n{answer}")
     msg = "\n\n─────\n\n".join(lines)
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
