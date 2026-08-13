@@ -4122,6 +4122,9 @@ async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
 
 
+RESEARCH_MILESTONES = [3, 7, 14, 30]
+RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14}  # у дня 30 нет открытого текстового вопроса
+
 async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
@@ -4129,10 +4132,12 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT user_id, day, question, answer, created FROM research ORDER BY created DESC LIMIT 100").fetchall()
+    answered = conn.execute("SELECT DISTINCT user_id, question FROM research").fetchall()
+    users_with_research = conn.execute(
+        "SELECT user_id, name, research_done FROM users WHERE research_done IS NOT NULL AND research_done != ''"
+    ).fetchall()
     conn.close()
-    if not rows:
-        await update.message.reply_text("Ответов на исследования пока нет.")
-        return
+
     lines = []
     for user_id, day, question, answer, created in rows:
         user = get_user(user_id)
@@ -4140,7 +4145,30 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         date_str = created[:10] if created else "?"
         q_text = RESEARCH_QUESTION_LABELS.get(question, question)
         lines.append(f"*{name}* · день {day} ({date_str}):\n_{q_text}_\n{answer}")
-    msg = "\n\n─────\n\n".join(lines)
+
+    # Какие вопросы отправили, но человек так и не ответил — иначе это молча
+    # теряется: research_done проставляется в момент ОТПРАВКИ, а не ответа.
+    answered_set = set(answered)
+    skipped_lines = []
+    for user_id, name, research_done in users_with_research:
+        label = name or str(user_id)
+        for day in (int(d) for d in research_done.split(",") if d):
+            rating_key = f"day{day}_rating"
+            if (user_id, rating_key) not in answered_set:
+                skipped_lines.append(f"*{label}* · день {day}: {RESEARCH_QUESTION_LABELS.get(rating_key, rating_key)}")
+                continue  # без ответа на рейтинг открытый вопрос ещё не задавался
+            if day in RESEARCH_TEXT_FOLLOWUP_DAYS:
+                text_key = f"day{day}_text"
+                if (user_id, text_key) not in answered_set:
+                    skipped_lines.append(f"*{label}* · день {day}: {RESEARCH_QUESTION_LABELS.get(text_key, text_key)}")
+
+    if not lines and not skipped_lines:
+        await update.message.reply_text("Ответов на исследования пока нет.")
+        return
+
+    msg = "\n\n─────\n\n".join(lines) if lines else "_Ответов пока нет._"
+    if skipped_lines:
+        msg += "\n\n─────\n\n⏳ *Спросили, но не ответили:*\n" + "\n".join(skipped_lines)
     for i in range(0, len(msg), 4000):
         await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
 
