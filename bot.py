@@ -471,6 +471,7 @@ def init_db():
         ("struggles", "''"),
         ("pinned_msg_id", "''"),
         ("morning_filled_at", "''"),
+        ("onboard_explained", "'0'"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -519,6 +520,17 @@ def save_diary(uid, block, data, for_date=None):
     c.execute("INSERT INTO diary(user_id,date,block,data) VALUES(?,?,?,?)",
               (uid, d, block, json.dumps(data, ensure_ascii=False)))
     conn.commit(); conn.close()
+
+def has_any_diary_ever(uid):
+    """Заполнял(а) ли пользователь дневник хоть раз — используется, чтобы не
+    показывать в самый первый вечерний прогон чек-лист техник (SELFCARE_ITEMS),
+    которые новичок ещё не видел и не понимает."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM diary WHERE user_id=? LIMIT 1", (uid,))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
 
 def get_all_notif_users():
     """Все зарегистрированные пользователи, сканируемые в check_notifications.
@@ -744,6 +756,42 @@ def midday_kb(morning=None, done_set=None):
 def skip_kb(cb):
     return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить →", callback_data=cb)]])
 
+# Объяснения "зачем это нужно" для полей, где польза не самоочевидна (в
+# отличие от, скажем, задач A/B/C) — пользователи спрашивали, зачем вообще
+# писать благодарность или обращаться к внутреннему ребёнку.
+WHY_EXPLANATIONS = {
+    "m_gratitude": (
+        "Мозг с СДВГ цепляется за то, что не получилось, и не замечает то, что получилось. "
+        "Благодарность — сознательный сдвиг фокуса на то, что работает — это снижает тревогу "
+        "и помогает не скатываться в «всё плохо»."
+    ),
+    "m_child": (
+        "При СДВГ годами копится критика («ленивый», «не старался») — и это не мотивирует, "
+        "а только усиливает избегание через стыд. Доброе слово себе разрывает этот цикл: "
+        "стыд → избегание → новая неудача → больше стыда."
+    ),
+    "e_praise": (
+        "Мозг с СДВГ хуже получает дофамин от рутинных усилий и долгосрочных целей. Явная "
+        "похвала за маленькую победу — искусственный, но рабочий сигнал «получилось», без "
+        "которого мотивация быстро гаснет."
+    ),
+}
+
+def skip_why_kb(skip_cb, why_key):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("❓ Зачем это?", callback_data=f"why_{why_key}"),
+        InlineKeyboardButton("Пропустить →", callback_data=skip_cb),
+    ]])
+
+async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Показывает объяснение пользы поля, не сбрасывая вопрос — можно
+    ответить или пропустить и после этого, ничего не теряется."""
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("why_", "")
+    explanation = WHY_EXPLANATIONS.get(key, "")
+    if explanation:
+        await q.message.reply_text(f"{explanation}\n\nНу что, заполняем? 🙂")
+
 def main_menu():
     """Верхний уровень меню — только то, к чему обращаются каждый день.
     Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
@@ -786,6 +834,41 @@ def evening_cta_kb():
         [InlineKeyboardButton("🌙 Закрыть день", callback_data="go_evening")],
         [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
     ])
+
+# Финал онбординга — что предложить прямо сейчас. Не 3 бакета (утро/день/
+# вечер), как для вернувшихся пользователей в start(): только что
+# зарегистрировавшийся ещё ничего сегодня не заполнял, так что "поставить
+# цели" одинаково уместно и в 10:00, и в 15:00 — до вечера один бакет.
+def onboard_cta_text_and_kb(hour):
+    if hour < 18:
+        return (
+            "Прямо сейчас — самое время начать: жми ☀️ Утро, чтобы поставить цели на сегодня.",
+            morning_cta_kb()
+        )
+    return (
+        "Вечер — хорошее время подвести итог и настроиться на завтра.",
+        evening_cta_kb()
+    )
+
+def onboard_final_offer_text(hour):
+    if hour < 18:
+        return "Я ещё не рассказал, что вообще происходит дальше. Хочешь коротко объясню, или сразу начнём?"
+    return "Я ещё не рассказал, что вообще происходит дальше. Хочешь коротко объясню, или сразу спланируем завтра?"
+
+def onboard_final_offer_kb(hour):
+    _, action_kb = onboard_cta_text_and_kb(hour)
+    rows = [[InlineKeyboardButton("📖 Расскажи, как это работает", callback_data="onboard_explain_late")]]
+    rows += action_kb.inline_keyboard
+    return InlineKeyboardMarkup(rows)
+
+async def send_onboarding_final(message, uid):
+    user = get_user(uid)
+    hour = datetime.now(get_user_tz(user)).hour
+    if str(user.get("onboard_explained") or "0") == "1":
+        text, kb = onboard_cta_text_and_kb(hour)
+        await message.reply_text(text, reply_markup=kb)
+    else:
+        await message.reply_text(onboard_final_offer_text(hour), reply_markup=onboard_final_offer_kb(hour))
 
 def today_str(tz=None):
     return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
@@ -952,8 +1035,15 @@ async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await _onboard_prompt_city(q, ctx, update)
 
-async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+# Текст объяснения "как я работаю" собран отдельными шагами (а не одним
+# asyncio.sleep-каскадом), чтобы можно было пейсить его кнопками "Логично"/
+# "Ясно" — следующее сообщение приходит только по нажатию, не заливая
+# пользователя текстом сразу. Используется в двух точках входа: во время
+# онбординга (onboard_explain_yes, then="city" — ведёт дальше к вопросу о
+# городе) и после онбординга по кнопке "Расскажи" (onboard_explain_late,
+# then="cta" — ведёт к предложению начать прямо сейчас).
+async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step: int, then: str):
+    q = update.callback_query
     uid = q.from_user.id
     name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
     selected = ctx.user_data.get("onboard_problems") or [
@@ -961,20 +1051,53 @@ async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
     lines = [PROBLEM_HELP_TEXT[k] for k in selected if k in PROBLEM_HELP_TEXT]
 
+    if step == 1:
+        if lines:
+            text = (
+                f"{name}, вот как мы будем работать вместе: утром ставим 1-2 главные задачи на день, "
+                "в течение дня я слежу как идут дела и подсказываю если что-то забуксовало, "
+                "а вечером подводим итоги — и обязательно засчитываем победы, даже маленькие. "
+                "Это не разовый совет, а привычка, которая тренируется каждый день."
+            )
+        else:
+            text = (
+                "У мозга с СДВГ мотивация работает иначе, чем у большинства людей: она загорается от "
+                "интереса и срочности, а не от важности самой задачи. Поэтому важное, но неинтересное "
+                "и несрочное — откладывается, и дело не в лени и не в силе воли.\n\n"
+                "Ждать, пока «само появится» желание, можно бесконечно. Есть ещё гиперфокус — он иногда "
+                "помогает залпом сделать много, но потом изматывает и накрывает отходняк, так что "
+                "опираться только на него не получится. Помогает третье — внешняя структура, которая "
+                "толкает начать, даже без прилива энергии или гиперфокуса. Это и есть моя работа "
+                "каждый день:"
+            )
+        await q.message.reply_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Логично", callback_data=f"expl_2_{then}")]])
+        )
+        return
+
+    if step == 2:
+        if lines:
+            text = "Вот что конкретно предложу с твоими сложностями:\n\n" + "\n\n".join(lines)
+        else:
+            text = (
+                "☀️ *Утром* — помогаю настроиться на день: разминка для тела, выгрузка из головы всех "
+                "мыслей — полезных и тревожных, — и задачи на день.\n\n"
+                "☕ *Днём* — проверяю, как дела: не начал(а) ли прокрастинировать, плюс "
+                "маячки-напоминания в течение дня, а если что-то не идёт — подсказываю конкретную "
+                "технику из DBT-протокола для взрослых с СДВГ.\n\n"
+                "🌙 *Вечером* — вспоминаем день, присваиваем себе свои победы (даже маленькие — это "
+                "важно), и ставим план на завтра."
+            )
+        await q.message.reply_text(
+            text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ясно", callback_data=f"expl_3_{then}")]])
+        )
+        return
+
+    # step == 3 — финал, дальше ведём к реальному следующему шагу (город/CTA),
+    # без дополнительной кнопки-подтверждения: кнопка следующего шага и есть продолжение.
     if lines:
-        await q.message.reply_text(
-            f"{name}, вот как мы будем работать вместе: утром ставим 1-2 главные задачи на день, "
-            "в течение дня я слежу как идут дела и подсказываю если что-то забуксовало, "
-            "а вечером подводим итоги — и обязательно засчитываем победы, даже маленькие. "
-            "Это не разовый совет, а привычка, которая тренируется каждый день.",
-            parse_mode="Markdown"
-        )
-        await asyncio.sleep(0.6)
-        await q.message.reply_text(
-            "Вот что конкретно предложу с твоими сложностями:\n\n" + "\n\n".join(lines),
-            parse_mode="Markdown"
-        )
-        await asyncio.sleep(0.6)
         goals = [PROBLEM_GOAL[k] for k in selected if k in PROBLEM_GOAL]
         goals_text = ", ".join(goals)
         # "Слишком много в голове" решается через коуча, а не отдельной фичей —
@@ -989,32 +1112,36 @@ async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=goal_kb
         )
     else:
-        # Резервный сценарий, если explain_yes вызван без выбранных трудностей
-        # (например ConversationHandler перезапустился между шагами).
         await q.message.reply_text(
-            "У мозга с СДВГ мотивация работает иначе: он загорается от интереса и срочности, а не от важности. "
-            "Поэтому важное откладывается — и дело тут не в лени и не в силе воли.\n\n"
-            "Я — та самая внешняя структура, которой обычно не хватает: каждое утро помогаю выбрать одно "
-            "главное дело на день, а каждый вечер — заметить, что получилось. "
-            "Утро — разгон, день — опора, вечер — посадка.\n\n"
-            "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
-            "и когнитивно-поведенческой терапии (протокол Safren).",
-            parse_mode="Markdown"
-        )
-        await asyncio.sleep(0.8)
-        await q.message.reply_text(
-            "Как это выглядит на практике:\n\n"
-            "☀️ *Утром* — разминка для тела, немного свободного письма, и ты выбираешь A/B/C задачи на день.\n\n"
-            "☕ *Днём* — напоминаю что запланировано и, если застрял(а), предлагаю конкретную технику под "
-            "ситуацию — а не общее «соберись».\n\n"
-            "🌙 *Вечером* — смотрим что получилось, ты хвалишь себя за это (мозгу с СДВГ это правда нужно — "
-            "без маленьких побед мотивация быстро гаснет) и намечаешь главное дело на завтра.\n\n"
-            "Всё, что заполняешь за день, сохраняется в 🗂 карточке дня — можно вернуться и посмотреть.",
+            "Общая задача — сформировать привычку: строить структуру дня, мягко входить в него, "
+            "держать фокус на приоритетах и замечать всё хорошее, что было. И по кругу, день за днём.\n\n"
+            "Постепенно привыкаешь замечать, что сам(а) ставишь задачи и выполняешь их — и "
+            "самооценка становится устойчивее.",
             parse_mode="Markdown"
         )
 
-    await asyncio.sleep(0.5)
-    await _onboard_prompt_city(q, ctx, update)
+    await asyncio.sleep(0.4)
+    if then == "city":
+        await _onboard_prompt_city(q, ctx, update)
+    else:
+        user = get_user(uid)
+        text, kb = onboard_cta_text_and_kb(datetime.now(get_user_tz(user)).hour)
+        await q.message.reply_text(text, reply_markup=kb)
+
+async def onboard_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    _, step_str, then = q.data.split("_", 2)
+    await send_explain_step(update, ctx, step=int(step_str), then=then)
+
+async def onboard_explain_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    update_user(q.from_user.id, onboard_explained="1")
+    await send_explain_step(update, ctx, step=1, then="city")
+
+async def onboard_explain_late(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    update_user(q.from_user.id, onboard_explained="1")
+    await send_explain_step(update, ctx, step=1, then="cta")
 
 async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1039,20 +1166,19 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         "✅ *Уведомления включены!*\n\n"
         "По умолчанию: ☀️ 09:00 · ☕ 13:00 · 🌙 21:00\n"
-        "Изменить время можно в ⚙️ Настройки.\n\n"
-        "Всё готово — начнём! 🚀",
-        parse_mode="Markdown",
-        reply_markup=menu_button_kb()
+        "Изменить время можно в ⚙️ Настройки.",
+        parse_mode="Markdown"
     )
+    await send_onboarding_final(q.message, uid)
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, notif_enabled=0)
     await q.message.reply_text(
-        "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки.\n\nНачнём! 🚀",
-        reply_markup=menu_button_kb()
+        "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки."
     )
+    await send_onboarding_final(q.message, uid)
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
 async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1403,7 +1529,7 @@ async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask_gratitude(message):
     await message.reply_text(
         "🙏 *Благодарность*\n\nЗа что благодарен(а) сегодня? Большое или маленькое — всё считается.",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_m_gratitude")
+        parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_gratitude", "m_gratitude")
     )
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1416,8 +1542,8 @@ async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_child(message):
     await message.reply_text(
-        "💛 *Inner child*\n\nСкажи себе что-то доброе. Как бы ты поговорил(а) с лучшим другом?",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_m_child")
+        "💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты поговорил(а) с лучшим другом?",
+        parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_child", "m_child")
     )
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1634,7 +1760,7 @@ async def ask_praise(message):
         "🎉 *Похвали себя*\n\n"
         "Скажи себе 'молодец'. Что сегодня сделал(а) хорошо?\n"
         "_Даже маленькая победа заслуживает признания._",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_praise")
+        parse_mode="Markdown", reply_markup=skip_why_kb("skip_e_praise", "e_praise")
     )
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1653,11 +1779,18 @@ async def ask_highlights(message):
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
-    await ask_selfcare(update.message, ctx); return E_SELFCARE
+    uid = update.effective_user.id
+    if has_any_diary_ever(uid):
+        await ask_selfcare(update.message, ctx); return E_SELFCARE
+    await ask_energy(update.message); return E_ENERGY
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["e_highlights"] = ""; await ask_selfcare(q.message, ctx); return E_SELFCARE
+    ctx.user_data["e_highlights"] = ""
+    uid = q.from_user.id
+    if has_any_diary_ever(uid):
+        await ask_selfcare(q.message, ctx); return E_SELFCARE
+    await ask_energy(q.message); return E_ENERGY
 
 SELFCARE_ITEMS = [
     ("warmup",      "🏃 Зарядка / физическая активность"),
@@ -4260,6 +4393,8 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
     app.add_handler(CallbackQueryHandler(onboard_explain_yes, pattern="^onboard_explain_yes$"))
     app.add_handler(CallbackQueryHandler(onboard_explain_no,  pattern="^onboard_explain_no$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_late, pattern="^onboard_explain_late$"))
+    app.add_handler(CallbackQueryHandler(onboard_explain_step, pattern=r"^expl_\d+_\w+$"))
     # Fallback для кнопок пола — на случай если ConversationHandler потерял состояние при перезапуске
     app.add_handler(CallbackQueryHandler(got_gender, pattern="^gender_[MFN]$"))
     app.add_handler(CallbackQueryHandler(problems_done,       pattern="^prob_done$"))
@@ -4273,6 +4408,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(show_box_breathing, pattern="^skill_box_breathing$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
+    app.add_handler(CallbackQueryHandler(why_callback, pattern=r"^why_"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
     app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
