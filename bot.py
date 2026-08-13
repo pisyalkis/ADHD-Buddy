@@ -9,7 +9,7 @@ ADHD Focus Bot v5
 - Уведомления: 9:00 и 21:00 по Тбилиси (UTC+4)
 """
 
-import os, json, sqlite3, asyncio, random, threading, time, hashlib
+import os, json, sqlite3, asyncio, random, threading, time, hashlib, re
 from datetime import datetime, date, timedelta
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -352,7 +352,7 @@ MID_PROCR_OPTIONS = [
     ("mid_phone",   "📱 Залип(ла) в телефоне"),
 ]
 
-def mid_procr_kb(struggles):
+def mid_procr_kb(struggles, gender):
     """Варианты ветки «Прокрастинирую» — если при онбординге отмечены
     релевантные трудности (PROBLEM_TO_MID), они поднимаются наверх списка,
     остальные идут следом в исходном порядке. Без выбранных трудностей —
@@ -363,7 +363,7 @@ def mid_procr_kb(struggles):
     priority_set = dict.fromkeys(priority)
     ordered = [opt for opt in MID_PROCR_OPTIONS if opt[0] in priority_set] + \
               [opt for opt in MID_PROCR_OPTIONS if opt[0] not in priority_set]
-    rows = [[InlineKeyboardButton(label, callback_data=cb)] for cb, label in ordered]
+    rows = [[InlineKeyboardButton(personalize(label, gender), callback_data=cb)] for cb, label in ordered]
     rows.append([InlineKeyboardButton("🤖 Коуч", callback_data="mid_coach")])
     return InlineKeyboardMarkup(rows)
 
@@ -646,6 +646,36 @@ def g(gender, male, female):
     if gender == 'F': return female
     if gender == 'N': return f"{male}(а)"
     return male
+
+# Пары "неправильных" форм, которые не подчиняются простому правилу
+# склеивания суффикса (беглая гласная, чередование ё/е) — заменяются
+# явно, до общей regex-замены в personalize().
+_PERSONALIZE_IRREGULAR = {
+    "должен(а)":            ("должен", "должна"),
+    "отвлёкся(ась)":        ("отвлёкся", "отвлеклась"),
+    "вернулся(ась)":        ("вернулся", "вернулась"),
+    "провёл(а)":            ("провёл", "провела"),
+    "благодарен(а)":        ("благодарен", "благодарна"),
+    "несовершенным(ой)":    ("несовершенным", "несовершенной"),
+}
+
+def personalize(text, gender):
+    """Заменяет гендерные плейсхолдеры вида «сделал(а)» / «застрял(а)» /
+    «залип(ла)» в статическом тексте (каталог техник, подписи чекина и т.п.)
+    на форму нужного рода. Пол 'N' (не указан) оставляет текст как есть —
+    исходную нейтральную запись с обоими вариантами."""
+    if gender not in ('F', 'M'):
+        return text
+    male = gender == 'M'
+    for placeholder, (m, f) in _PERSONALIZE_IRREGULAR.items():
+        text = text.replace(placeholder, m if male else f)
+    if male:
+        text = re.sub(r'(\w+)\(ла\)', r'\1', text)
+        text = re.sub(r'(\w+)\(а\)', r'\1', text)
+    else:
+        text = re.sub(r'(\w+)\(ла\)', r'\1ла', text)
+        text = re.sub(r'(\w+)\(а\)', r'\1а', text)
+    return text
 
 def md_escape(text):
     """Экранирует спецсимволы legacy Markdown (_ * ` [) в свободном
@@ -1045,6 +1075,7 @@ async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step: int, then: str):
     q = update.callback_query
     uid = q.from_user.id
+    gender = get_user(uid)["gender"]
     name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
     selected = ctx.user_data.get("onboard_problems") or [
         s for s in (get_user(uid).get("struggles") or "").split(",") if s
@@ -1090,7 +1121,7 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
                 "важно), и ставим план на завтра."
             )
         await q.message.reply_text(
-            text, parse_mode="Markdown",
+            personalize(text, gender), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ясно", callback_data=f"expl_3_{then}")]])
         )
         return
@@ -1113,10 +1144,13 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
         )
     else:
         await q.message.reply_text(
-            "Общая задача — сформировать привычку: строить структуру дня, мягко входить в него, "
-            "держать фокус на приоритетах и замечать всё хорошее, что было. И по кругу, день за днём.\n\n"
-            "Постепенно привыкаешь замечать, что сам(а) ставишь задачи и выполняешь их — и "
-            "самооценка становится устойчивее.",
+            personalize(
+                "Общая задача — сформировать привычку: строить структуру дня, мягко входить в него, "
+                "держать фокус на приоритетах и замечать всё хорошее, что было. И по кругу, день за днём.\n\n"
+                "Постепенно привыкаешь замечать, что сам(а) ставишь задачи и выполняешь их — и "
+                "самооценка становится устойчивее.",
+                gender
+            ),
             parse_mode="Markdown"
         )
 
@@ -1202,8 +1236,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if resuming:
         for key, state, ask_fn in RESUME_FIELDS:
             if key not in ctx.user_data:
-                await q.message.reply_text("↩️ Продолжаем с того места, где остановился(ась) сегодня утром:")
-                await ask_fn(q.message, ctx)
+                stopped = g(user["gender"], "остановился", "остановилась")
+                await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
+                await ask_fn(q.message, ctx, user["gender"])
                 return state
         # Все шаги уже пройдены (крайний случай — finish_morning не успел
         # отработать) — начинаем заново, ниже.
@@ -1244,7 +1279,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if undone_yesterday:
         undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
-            f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
+            f"\n\n📌 *Вчера не {g(gender, 'успел', 'успела')}:*\n{undone_list}\n\n"
             "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
             "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
         )
@@ -1261,7 +1296,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     energy_note = ""
     if last_energy in (1, 2):
         energy_note = (
-            "\n\n🔋 *Вчера был тяжёлый день* — ты отметил(а) низкий уровень энергии.\n"
+            f"\n\n🔋 *Вчера был тяжёлый день* — ты {g(gender, 'отметил', 'отметила')} низкий уровень энергии.\n"
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
         )
 
@@ -1289,7 +1324,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         warmup_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Только задачи (5 мин)", callback_data="morning_quick")],
             [InlineKeyboardButton("▶️ Полное утро с разминкой", callback_data="warmup_go")],
-            [InlineKeyboardButton("✅ Разминку уже сделал(а)", callback_data="warmup_done")],
+            [InlineKeyboardButton(f"✅ Разминку уже {g(gender, 'сделал', 'сделала')}", callback_data="warmup_done")],
         ])
         warmup_text = (
             "🏃 *Разминка или сразу к делу?*\n\n"
@@ -1299,7 +1334,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         warmup_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Начать разминку", callback_data="warmup_go")],
-            [InlineKeyboardButton("✅ Уже сделал(а)", callback_data="warmup_done")],
+            [InlineKeyboardButton(f"✅ Уже {g(gender, 'сделал', 'сделала')}", callback_data="warmup_done")],
             [InlineKeyboardButton("Пропустить →", callback_data="skip_warmup")],
             [InlineKeyboardButton("⚡ Быстро — только задачи", callback_data="morning_quick")],
         ])
@@ -1344,7 +1379,7 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = ""
     ctx.user_data["m_gratitude"] = ""
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message, ctx)
+    await ask_morning_focus(q.message, ctx, get_user(q.from_user.id)["gender"])
     return M_FOCUS
 
 def keep_or_skip_kb(keep_cb, skip_cb):
@@ -1355,7 +1390,7 @@ def keep_or_skip_kb(keep_cb, skip_cb):
 
 CARRYOVER_HINT = "\n\n_Или просто напиши новый вариант текстом — он заменит этот._"
 
-async def ask_morning_focus(message, ctx):
+async def ask_morning_focus(message, ctx, gender):
     y = ctx.user_data.get("y_plan", {})
     intro = (
         "🎯 *Сейчас — приоритет.*\n\n"
@@ -1366,8 +1401,9 @@ async def ask_morning_focus(message, ctx):
         "━━━━━━━━━━━━━━━\n"
     )
     if y.get("a"):
+        planned = g(gender, "запланировал", "запланировала")
         await message.reply_text(
-            intro + f"🎯 *Задача A* — вчера ты запланировал(а):\n_{y['a']}_\n\nОставить как есть?{CARRYOVER_HINT}",
+            intro + f"🎯 *Задача A* — вчера ты {planned}:\n_{y['a']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_focus", "skip_m_focus")
         )
@@ -1520,41 +1556,43 @@ async def ask_writing(message):
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = update.message.text
-    await ask_gratitude(update.message); return M_GRATITUDE
+    await ask_gratitude(update.message, get_user(update.effective_user.id)["gender"]); return M_GRATITUDE
 
 async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_writing"] = ""; await ask_gratitude(q.message); return M_GRATITUDE
+    ctx.user_data["m_writing"] = ""; await ask_gratitude(q.message, get_user(q.from_user.id)["gender"]); return M_GRATITUDE
 
-async def ask_gratitude(message):
+async def ask_gratitude(message, gender):
+    thankful = g(gender, "благодарен", "благодарна")
     await message.reply_text(
-        "🙏 *Благодарность*\n\nЗа что благодарен(а) сегодня? Большое или маленькое — всё считается.",
+        f"🙏 *Благодарность*\n\nЗа что {thankful} сегодня? Большое или маленькое — всё считается.",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_gratitude", "m_gratitude")
     )
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = update.message.text
-    await ask_child(update.message); return M_CHILD
+    await ask_child(update.message, get_user(update.effective_user.id)["gender"]); return M_CHILD
 
 async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_gratitude"] = ""; await ask_child(q.message); return M_CHILD
+    ctx.user_data["m_gratitude"] = ""; await ask_child(q.message, get_user(q.from_user.id)["gender"]); return M_CHILD
 
-async def ask_child(message):
+async def ask_child(message, gender):
+    talked = g(gender, "поговорил", "поговорила")
     await message.reply_text(
-        "💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты поговорил(а) с лучшим другом?",
+        f"💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты {talked} с лучшим другом?",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_child", "m_child")
     )
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
-    await ask_morning_focus(update.message, ctx)
+    await ask_morning_focus(update.message, ctx, get_user(update.effective_user.id)["gender"])
     return M_FOCUS
 
 async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message, ctx)
+    await ask_morning_focus(q.message, ctx, get_user(q.from_user.id)["gender"])
     return M_FOCUS
 
 # Шаги утреннего диалога по порядку, вместе с ключом ctx.user_data, который
@@ -1563,15 +1601,15 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # morning_start, чтобы при повторном заходе (после таймаута/случайного
 # закрытия) продолжить с первого непройденного шага, а не с начала.
 RESUME_FIELDS = [
-    ("m_writing",   M_WRITING,   lambda msg, ctx: ask_writing(msg)),
-    ("m_gratitude", M_GRATITUDE, lambda msg, ctx: ask_gratitude(msg)),
-    ("m_child",     M_CHILD,     lambda msg, ctx: ask_child(msg)),
-    ("m_focus",     M_FOCUS,     ask_morning_focus),
-    ("m_b1",        M_B1,        ask_m_b1),
-    ("m_b2",        M_B2,        ask_m_b2),
-    ("m_c1",        M_C1,        ask_m_c1),
-    ("m_c2",        M_C2,        ask_m_c2),
-    ("m_c3",        M_C3,        ask_m_c3),
+    ("m_writing",   M_WRITING,   lambda msg, ctx, gender: ask_writing(msg)),
+    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender: ask_gratitude(msg, gender)),
+    ("m_child",     M_CHILD,     lambda msg, ctx, gender: ask_child(msg, gender)),
+    ("m_focus",     M_FOCUS,     lambda msg, ctx, gender: ask_morning_focus(msg, ctx, gender)),
+    ("m_b1",        M_B1,        lambda msg, ctx, gender: ask_m_b1(msg, ctx)),
+    ("m_b2",        M_B2,        lambda msg, ctx, gender: ask_m_b2(msg, ctx)),
+    ("m_c1",        M_C1,        lambda msg, ctx, gender: ask_m_c1(msg, ctx)),
+    ("m_c2",        M_C2,        lambda msg, ctx, gender: ask_m_c2(msg, ctx)),
+    ("m_c3",        M_C3,        lambda msg, ctx, gender: ask_m_c3(msg, ctx)),
 ]
 
 async def pin_today_tasks(ctx, uid, sent_message):
@@ -1709,14 +1747,20 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await ask_achievements(q.message)
+    gender = get_user(q.from_user.id)["gender"]
+    await ask_achievements(q.message, gender, had_checklist=True)
     return E_ACH
 
-async def ask_achievements(message):
-    await message.reply_text(
-        "⭐ *Достижения дня*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
-    )
+async def ask_achievements(message, gender, had_checklist=False):
+    if had_checklist:
+        text = (
+            "⭐ *Достижения дня*\n\n"
+            "Помимо запланированного — что ещё сегодня получилось? "
+            "Большое или маленькое — всё считается."
+        )
+    else:
+        text = f"⭐ *Достижения дня*\n\n{g(gender, 'Чего достиг', 'Чего достигла')} сегодня? Большое или маленькое — всё считается."
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach"))
 
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1744,7 +1788,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ask_tasks_done(q.message, uid, ctx)
         return E_TASKS_DONE
     else:
-        await ask_achievements(q.message)
+        await ask_achievements(q.message, user["gender"])
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1758,7 +1802,7 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask_praise(message):
     await message.reply_text(
         "🎉 *Похвали себя*\n\n"
-        "Скажи себе 'молодец'. Что сегодня сделал(а) хорошо?\n"
+        "Просто скажи себе 'молодец' — своими словами, без 'но' и оговорок.\n"
         "_Даже маленькая победа заслуживает признания._",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_e_praise", "e_praise")
     )
@@ -1780,17 +1824,19 @@ async def ask_highlights(message):
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
     uid = update.effective_user.id
+    gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
-        await ask_selfcare(update.message, ctx); return E_SELFCARE
-    await ask_energy(update.message); return E_ENERGY
+        await ask_selfcare(update.message, ctx, gender); return E_SELFCARE
+    await ask_energy(update.message, gender); return E_ENERGY
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_highlights"] = ""
     uid = q.from_user.id
+    gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
-        await ask_selfcare(q.message, ctx); return E_SELFCARE
-    await ask_energy(q.message); return E_ENERGY
+        await ask_selfcare(q.message, ctx, gender); return E_SELFCARE
+    await ask_energy(q.message, gender); return E_ENERGY
 
 SELFCARE_ITEMS = [
     ("warmup",      "🏃 Зарядка / физическая активность"),
@@ -1816,11 +1862,13 @@ def selfcare_kb(selected):
     rows.append([InlineKeyboardButton("Готово ✅", callback_data="sc_done")])
     return InlineKeyboardMarkup(rows)
 
-async def ask_selfcare(message, ctx):
+async def ask_selfcare(message, ctx, gender):
     ctx.user_data.setdefault("e_selfcare", [])
+    did = g(gender, "делал", "делала")
+    used = g(gender, "применял", "применяла")
     await message.reply_text(
-        "🧩 *Что из этого делал(а) сегодня?*\n\n"
-        "Отметь всё, что применял(а) — это помогает быть в себе.",
+        f"🧩 *Что из этого {did} сегодня?*\n\n"
+        f"Отметь всё, что {used} — это помогает быть в себе.",
         parse_mode="Markdown",
         reply_markup=selfcare_kb(ctx.user_data["e_selfcare"])
     )
@@ -1838,20 +1886,23 @@ async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await ask_energy(q.message)
+    await ask_energy(q.message, get_user(q.from_user.id)["gender"])
     return E_ENERGY
 
-async def ask_energy(message):
+async def ask_energy(message, gender):
+    exhausted = g(gender, "выжат", "выжата")
+    tired = g(gender, "устал", "устала")
+    charged = g(gender, "заряжен", "заряжена")
     await message.reply_text(
         "🔋 *Уровень энергии сейчас*\n\n"
         "Как ты себя чувствуешь по итогам дня?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("😴 1 — выжат(а) полностью", callback_data="energy_1")],
-            [InlineKeyboardButton("😔 2 — устал(а), тяжело", callback_data="energy_2")],
+            [InlineKeyboardButton(f"😴 1 — {exhausted} полностью", callback_data="energy_1")],
+            [InlineKeyboardButton(f"😔 2 — {tired}, тяжело", callback_data="energy_2")],
             [InlineKeyboardButton("😐 3 — нормально, средне", callback_data="energy_3")],
             [InlineKeyboardButton("😊 4 — хорошо, в ресурсе", callback_data="energy_4")],
-            [InlineKeyboardButton("⚡ 5 — заряжен(а) на 100%", callback_data="energy_5")],
+            [InlineKeyboardButton(f"⚡ 5 — {charged} на 100%", callback_data="energy_5")],
         ])
     )
 
@@ -1967,7 +2018,8 @@ async def finish_evening(message, uid, ctx):
         labels = dict(SELFCARE_ITEMS)
         used = [labels[k] for k in data["e_selfcare"] if k in labels]
         if used:
-            selfcare_summary = "\n\n🧩 *Сегодня применял(а):*\n" + "\n".join(used)
+            applied = g(user["gender"], "применял", "применяла")
+            selfcare_summary = f"\n\n🧩 *Сегодня {applied}:*\n" + "\n".join(used)
 
     # AI анализ дня
     ai_analysis = ""
@@ -2032,8 +2084,13 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
             context += f"Выполнено из них: {'; '.join(done_lines) if done_lines else 'ничего не отмечено выполненным'}\n"
         resp = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=200,
-            system=f"Ты коуч для {name} ({gender_hint}), у которой/которого СДВГ. Анализируй день кратко и тепло. 2-3 предложения. Отмечай прогресс и дай один конкретный совет на завтра. Пиши по-русски.",
+            max_tokens=400,
+            system=(
+                f"Ты коуч для {name} ({gender_hint}), у которой/которого СДВГ. Анализируй день кратко и тепло. "
+                "Максимум 3 предложения, одним абзацем, без заголовков и без разметки (никаких **, ##, списков) — "
+                "текст уже оборачивается в курсив снаружи. Отмечай прогресс и дай один конкретный совет на завтра. "
+                "Пиши по-русски."
+            ),
             messages=[{"role":"user","content":f"Вот мой день:\n{context}\nДай короткий анализ."}]
         )
         return resp.content[0].text.strip()
@@ -2120,12 +2177,14 @@ MIDDAY_LABELS = {
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    gender = get_user(q.from_user.id)["gender"]
+    write_self = g(gender, "сам", "сама")
     await q.message.reply_text(
-        "🤖 *Коуч*\n\nЧто происходит? Пиши сам(а) или выбери быструю кнопку:",
+        f"🤖 *Коуч*\n\nЧто происходит? Пиши {write_self} или выбери быструю кнопку:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🚫 Не могу начать", callback_data="c_start")],
-            [InlineKeyboardButton("😵 Отвлёкся(ась)", callback_data="c_dist")],
+            [InlineKeyboardButton(personalize("😵 Отвлёкся(ась)", gender), callback_data="c_dist")],
             [InlineKeyboardButton("❓ Что дальше?", callback_data="c_next")],
             [InlineKeyboardButton("😩 Прокрастинирую", callback_data="c_procr")],
             [InlineKeyboardButton("🌀 Всё навалилось", callback_data="c_overload")],
@@ -2183,10 +2242,11 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # выше, дыхание квадратом 4-4-4-4 по кнопке, чтобы не грузить два gif сразу.
         buttons.insert(0, [InlineKeyboardButton("🔲 Дыхание квадратом (4-4-4-4)", callback_data="skill_box_breathing")])
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+    gender = get_user(q.from_user.id)["gender"]
     await q.message.reply_text(
         f"🧠 *{skill['name']}*\n\n"
-        f"📖 *Описание*\n{skill['explanation']}\n\n"
-        f"✅ *Инструкция*\n{skill['instructions']}\n\n"
+        f"📖 *Описание*\n{personalize(skill['explanation'], gender)}\n\n"
+        f"✅ *Инструкция*\n{personalize(skill['instructions'], gender)}\n\n"
         "_Методика: когнитивно-поведенческая терапия для взрослых с СДВГ — «Mastering Your Adult ADHD» (Safren)_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -2468,7 +2528,7 @@ async def send_beacon(app, user):
             "🧭 *Сориентируемся*\n\nЗадачи дня:\n{tasks}\n\nТы где сейчас по задачам?",
             "💡 *Короткая пауза*\n\nЗадачи дня:\n{tasks}\n\nНа чём сосредоточен(а) прямо сейчас?",
         ]
-        beacon_text = random.choice(BEACON_TEXTS).format(tasks=tasks)
+        beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
 
         await app.bot.send_message(
             chat_id=uid,
@@ -2483,7 +2543,7 @@ async def send_beacon(app, user):
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
 
 
-def _tasks_text_and_kb(morning, done_set):
+def _tasks_text_and_kb(morning, done_set, gender):
     """Строит текст и клавиатуру задач с отметками выполнения.
 
     done_set — множество ключей TASK_FIELDS (focus/b1/b2/c1/c2/c3), а не
@@ -2504,7 +2564,7 @@ def _tasks_text_and_kb(morning, done_set):
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи не заданы_")
     kb_rows = buttons + [
-        [InlineKeyboardButton("🆘 Застрял(а)?", callback_data="mid_coach")],
+        [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ]
     return text, InlineKeyboardMarkup(kb_rows)
@@ -2525,7 +2585,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
-    text, kb = _tasks_text_and_kb(morning, done_set)
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2543,7 +2603,7 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     morning = get_diary(uid, "morning", today)
     done_set = set(done_list)
-    text, kb = _tasks_text_and_kb(morning, done_set)
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
 
     all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
     if all_keys and all_keys <= done_set:
@@ -2560,6 +2620,7 @@ def build_day_card_text(uid, for_date):
     morning = get_diary(uid, "morning", for_date)
     midday  = get_diary(uid, "midday",  for_date)
     evening = get_diary(uid, "evening", for_date)
+    gender = get_user(uid)["gender"]
 
     d = date.fromisoformat(for_date)
     lines = [f"🗂 *Карточка дня — {d.strftime('%d.%m.%Y')}*"]
@@ -2598,7 +2659,7 @@ def build_day_card_text(uid, for_date):
         if evening.get("e_selfcare"):
             labels = dict(SELFCARE_ITEMS)
             used = [labels[k] for k in evening["e_selfcare"] if k in labels]
-            if used: lines.append("🧩 Применял(а):\n" + "\n".join(used))
+            if used: lines.append(f"🧩 {g(gender, 'Применял', 'Применяла')}:\n" + "\n".join(used))
 
     if not morning and not midday and not evening:
         lines.append("\n_Пока пусто. Заполни утро или вечер — и здесь появятся записи._")
@@ -2799,7 +2860,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 print(f"Не удалось переслать обратную связь: {e}")
         await update.message.reply_text(
-            "Спасибо! Идею записал(а) 🙏",
+            "Спасибо! Идея записана 🙏",
             reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("admin_msg_target"):
@@ -3056,16 +3117,17 @@ async def send_research_question(app, uid, day):
         update_user(uid, research_awaiting=f"3_open:{RESEARCH_OPEN_Q_DAY3_OK}")
 
     elif day == 7:
+        thought = g(user["gender"], "подумал", "подумала")
         await app.bot.send_message(
             chat_id=uid,
             text=(
                 f"🔬 *{name}, ты с ботом уже неделю!*\n\n"
-                f"Был ли момент когда подумал(а) «о, это работает»?"
+                f"Был ли момент когда {thought} «о, это работает»?"
             ),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Да, был такой момент", callback_data="research_7_yes")],
-                [InlineKeyboardButton("🤔 Не уверен(а)", callback_data="research_7_maybe")],
+                [InlineKeyboardButton(personalize("🤔 Не уверен(а)", user["gender"]), callback_data="research_7_maybe")],
                 [InlineKeyboardButton("❌ Нет пока", callback_data="research_7_no")],
             ])
         )
@@ -3098,7 +3160,7 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton("😢 Очень расстроюсь", callback_data="research_30_sad")],
                 [InlineKeyboardButton("😕 Немного расстроюсь", callback_data="research_30_meh")],
                 [InlineKeyboardButton("😐 Всё равно", callback_data="research_30_nope")],
-                [InlineKeyboardButton("😅 Даже рад(а)", callback_data="research_30_glad")],
+                [InlineKeyboardButton(personalize("😅 Даже рад(а)", user["gender"]), callback_data="research_30_glad")],
             ])
         )
 
@@ -3108,13 +3170,14 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     parts = q.data.split("_")  # research_DAY_VALUE
     day = int(parts[1])
     value = "_".join(parts[2:])
+    gender = get_user(uid)["gender"]
 
     LABELS = {
         "yes": "Да, был момент", "maybe": "Не уверен(а)", "no": "Нет пока",
         "sad": "Очень расстроюсь", "meh": "Немного расстроюсь",
         "nope": "Всё равно", "glad": "Даже рад(а)",
     }
-    answer = LABELS.get(value, value)
+    answer = personalize(LABELS.get(value, value), gender)
     save_research(uid, day, f"day{day}_rating", answer)
 
     # Переслать ответ администратору
@@ -3185,22 +3248,26 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    gender = get_user(q.from_user.id)["gender"]
     await q.message.reply_text(
-        "ℹ️ *О боте*\n\n"
-        "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
-        "и помогаю, если начинаешь фрустрироваться.\n\n"
-        "Мозг с СДВГ живёт интересом и срочностью, а не важностью — "
-        "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
-        "☀️ *Утром* — разминка, задачи по системе ABC, настрой на день.\n"
-        "☕ *Днём* — напоминаю о задачах, если застрял — даю конкретную технику.\n"
-        "🌙 *Вечером* — что получилось, что из плана сделано, план на завтра.\n\n"
-        "🍅 *Фокус-режим* — запускаешь таймер когда нужно поработать без отвлечений. "
-        "Бот напишет когда время вышло и предложит перерыв. "
-        "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
-        "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
-        "📚 В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
-        "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
-        "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
+        personalize(
+            "ℹ️ *О боте*\n\n"
+            "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
+            "и помогаю, если начинаешь фрустрироваться.\n\n"
+            "Мозг с СДВГ живёт интересом и срочностью, а не важностью — "
+            "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
+            "☀️ *Утром* — разминка, задачи по системе ABC, настрой на день.\n"
+            "☕ *Днём* — напоминаю о задачах, если застрял — даю конкретную технику.\n"
+            "🌙 *Вечером* — что получилось, что из плана сделано, план на завтра.\n\n"
+            "🍅 *Фокус-режим* — запускаешь таймер когда нужно поработать без отвлечений. "
+            "Бот напишет когда время вышло и предложит перерыв. "
+            "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
+            "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
+            "📚 В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
+            "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
+            "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
+            gender
+        ),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
@@ -3275,9 +3342,10 @@ async def send_resume_check(bot, uid) -> bool:
         user = get_user(uid)
         _, morning, done_set = get_today_context(user)
         tasks = build_tasks_summary(morning, done_set)
+        returned = g(user["gender"], "Вернулся", "Вернулась")
         await bot.send_message(
             chat_id=uid,
-            text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\nВернулся(ась) к работе?",
+            text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\n{returned} к работе?",
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
@@ -3332,12 +3400,13 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     name = user["name"]
+    gender = user["gender"]
     today, morning, done_set = get_today_context(user)
     focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
     action = q.data
 
     if action in MIDDAY_LABELS:
-        save_diary(uid, "midday", {"state": MIDDAY_LABELS[action]}, for_date=today)
+        save_diary(uid, "midday", {"state": personalize(MIDDAY_LABELS[action], user["gender"])}, for_date=today)
 
     def back_kb_with_skill(mid_action):
         """Тот же back_kb, плюс кнопка на полную карточку навыка (объяснение
@@ -3371,7 +3440,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(
             f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
-            reply_markup=mid_procr_kb(struggles)
+            reply_markup=mid_procr_kb(struggles, user["gender"])
         )
 
     elif action == "mid_a_done_b":
@@ -3411,15 +3480,18 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_a_skipped":
         a_task = morning.get("focus", "А-задача")
         await q.message.reply_text(
-            f"⚠️ *Стоп — А-задача важнее*\n\n"
-            f"_{a_task}_\n\n"
-            f"Система ABC работает так: А — самое важное дело, которое нужно сделать *первым*. "
-            f"Если браться за Б или В пока А не сделана, мозг создаёт иллюзию продуктивности — ты занят(а), но главное откладывается.\n\n"
-            f"Это особенно частая ловушка при СДВГ: браться за лёгкое и приятное вместо важного.\n\n"
-            f"*Что сделать прямо сейчас:*\n"
-            f"👣 Найди один самый маленький первый шаг по А-задаче\n"
-            f"⏱ Поставь таймер на 25 минут только на А\n"
-            f"📝 Б и В никуда не денутся — вернись к ним после",
+            personalize(
+                f"⚠️ *Стоп — А-задача важнее*\n\n"
+                f"_{a_task}_\n\n"
+                f"Система ABC работает так: А — самое важное дело, которое нужно сделать *первым*. "
+                f"Если браться за Б или В пока А не сделана, мозг создаёт иллюзию продуктивности — ты занят(а), но главное откладывается.\n\n"
+                f"Это особенно частая ловушка при СДВГ: браться за лёгкое и приятное вместо важного.\n\n"
+                f"*Что сделать прямо сейчас:*\n"
+                f"👣 Найди один самый маленький первый шаг по А-задаче\n"
+                f"⏱ Поставь таймер на 25 минут только на А\n"
+                f"📝 Б и В никуда не денутся — вернись к ним после",
+                gender
+            ),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🍅 Запустить таймер на А", callback_data="go_focus")],
@@ -3456,28 +3528,34 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "mid_waiting":
         await q.message.reply_text(
-            "⏳ *«Начну когда буду готов(а)»*\n\nЭтот момент обычно не наступает — это ловушка.\n\n"
-            "🤲 *Ладони + 5 чувств* — возвращает в настоящий момент\n\n"
-            "⏱ *Таймер* — поставь на 10 минут. Не на весь день. Просто попробуй.\n\n"
-            "⚡ *Активация* — тело сначала, голова потом. Попрыгай, умойся.\n\n"
-            "💧 *Тазик/кастрюля ледяной воды* — радикально, но работает мгновенно\n\n"
-            "🎵 *Активная музыка* — 3-5 минут энергичной музыки перед стартом\n\n"
-            "🔤 *За и против* — напомни себе ЗАЧЕМ это важно\n\n"
-            "_Подходящее состояние появляется ПОСЛЕ начала, а не до._",
+            personalize(
+                "⏳ *«Начну когда буду готов(а)»*\n\nЭтот момент обычно не наступает — это ловушка.\n\n"
+                "🤲 *Ладони + 5 чувств* — возвращает в настоящий момент\n\n"
+                "⏱ *Таймер* — поставь на 10 минут. Не на весь день. Просто попробуй.\n\n"
+                "⚡ *Активация* — тело сначала, голова потом. Попрыгай, умойся.\n\n"
+                "💧 *Тазик/кастрюля ледяной воды* — радикально, но работает мгновенно\n\n"
+                "🎵 *Активная музыка* — 3-5 минут энергичной музыки перед стартом\n\n"
+                "🔤 *За и против* — напомни себе ЗАЧЕМ это важно\n\n"
+                "_Подходящее состояние появляется ПОСЛЕ начала, а не до._",
+                gender
+            ),
             parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_waiting")
         )
 
     elif action == "mid_perfect":
         await q.message.reply_text(
-            f"🎯 *Перфекционизм — страх сделать недостаточно хорошо*\n\nЗадача: _{focus}_\n\n"
-            "💩 *Поставь цель «сделать плохо»* — буквально. Разреши себе черновик.\n\n"
-            "✌️ *Сделать просто как-нибудь* — готово > идеально. Всегда.\n\n"
-            "🤲 *Принятие реальности* — ладони готовности, позволь себе быть несовершенным(ой)\n\n"
-            "📋 *Долгосрочные приоритеты* — это вообще важно в масштабе месяца?\n\n"
-            "👏 *Похвали себя* — за то что начал(а), не за результат\n\n"
-            "🧠 *Представь что получилось плохо — и прими это* — мысленная репетиция\n\n"
-            "👫 *Поговори с другом* — страх часто преувеличен, взгляд со стороны помогает\n\n"
-            "_Всем не угодишь. Сделанное лучше идеального._",
+            personalize(
+                f"🎯 *Перфекционизм — страх сделать недостаточно хорошо*\n\nЗадача: _{focus}_\n\n"
+                "💩 *Поставь цель «сделать плохо»* — буквально. Разреши себе черновик.\n\n"
+                "✌️ *Сделать просто как-нибудь* — готово > идеально. Всегда.\n\n"
+                "🤲 *Принятие реальности* — ладони готовности, позволь себе быть несовершенным(ой)\n\n"
+                "📋 *Долгосрочные приоритеты* — это вообще важно в масштабе месяца?\n\n"
+                "👏 *Похвали себя* — за то что начал(а), не за результат\n\n"
+                "🧠 *Представь что получилось плохо — и прими это* — мысленная репетиция\n\n"
+                "👫 *Поговори с другом* — страх часто преувеличен, взгляд со стороны помогает\n\n"
+                "_Всем не угодишь. Сделанное лучше идеального._",
+                gender
+            ),
             parse_mode="Markdown", reply_markup=back_kb
         )
 
@@ -3520,14 +3598,17 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
         ]
         await q.message.reply_text(
-            "📱 *Поймал(а) себя — это уже победа!*\n\n"
-            "Навык *СТОП*:\n"
-            "🛑 *С* — Стоп. Положи телефон.\n"
-            "👣 *Т* — Шаг назад. Глубокий вдох.\n"
-            "👀 *О* — Осмотрись. 5 предметов вокруг.\n"
-            "✅ *П* — Попытайся. Возвращайся к задаче.\n\n"
-            f"Возвращайся к: *{focus}*\n\n"
-            "_Поставь таймер на 10 минут и просто открой нужный файл._",
+            personalize(
+                "📱 *Поймал(а) себя — это уже победа!*\n\n"
+                "Навык *СТОП*:\n"
+                "🛑 *С* — Стоп. Положи телефон.\n"
+                "👣 *Т* — Шаг назад. Глубокий вдох.\n"
+                "👀 *О* — Осмотрись. 5 предметов вокруг.\n"
+                "✅ *П* — Попытайся. Возвращайся к задаче.\n\n"
+                f"Возвращайся к: *{focus}*\n\n"
+                "_Поставь таймер на 10 минут и просто открой нужный файл._",
+                gender
+            ),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(phone_buttons)
         )
