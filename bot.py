@@ -1202,8 +1202,9 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if resuming:
         for key, state, ask_fn in RESUME_FIELDS:
             if key not in ctx.user_data:
-                await q.message.reply_text("↩️ Продолжаем с того места, где остановился(ась) сегодня утром:")
-                await ask_fn(q.message, ctx)
+                stopped = g(user["gender"], "остановился", "остановилась")
+                await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
+                await ask_fn(q.message, ctx, user["gender"])
                 return state
         # Все шаги уже пройдены (крайний случай — finish_morning не успел
         # отработать) — начинаем заново, ниже.
@@ -1244,7 +1245,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if undone_yesterday:
         undone_list = "\n".join(f"• {md_escape(t)}" for t in undone_yesterday)
         undone_text = (
-            f"\n\n📌 *Вчера не успел(а):*\n{undone_list}\n\n"
+            f"\n\n📌 *Вчера не {g(gender, 'успел', 'успела')}:*\n{undone_list}\n\n"
             "Это нормально — не обязательно доделывать именно это. Сегодня новый день: "
             "загляни в свой общий список дел и выбери то, что сейчас приоритетнее."
         )
@@ -1261,7 +1262,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     energy_note = ""
     if last_energy in (1, 2):
         energy_note = (
-            "\n\n🔋 *Вчера был тяжёлый день* — ты отметил(а) низкий уровень энергии.\n"
+            f"\n\n🔋 *Вчера был тяжёлый день* — ты {g(gender, 'отметил', 'отметила')} низкий уровень энергии.\n"
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
         )
 
@@ -1289,7 +1290,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         warmup_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Только задачи (5 мин)", callback_data="morning_quick")],
             [InlineKeyboardButton("▶️ Полное утро с разминкой", callback_data="warmup_go")],
-            [InlineKeyboardButton("✅ Разминку уже сделал(а)", callback_data="warmup_done")],
+            [InlineKeyboardButton(f"✅ Разминку уже {g(gender, 'сделал', 'сделала')}", callback_data="warmup_done")],
         ])
         warmup_text = (
             "🏃 *Разминка или сразу к делу?*\n\n"
@@ -1299,7 +1300,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         warmup_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Начать разминку", callback_data="warmup_go")],
-            [InlineKeyboardButton("✅ Уже сделал(а)", callback_data="warmup_done")],
+            [InlineKeyboardButton(f"✅ Уже {g(gender, 'сделал', 'сделала')}", callback_data="warmup_done")],
             [InlineKeyboardButton("Пропустить →", callback_data="skip_warmup")],
             [InlineKeyboardButton("⚡ Быстро — только задачи", callback_data="morning_quick")],
         ])
@@ -1344,7 +1345,7 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = ""
     ctx.user_data["m_gratitude"] = ""
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message, ctx)
+    await ask_morning_focus(q.message, ctx, get_user(q.from_user.id)["gender"])
     return M_FOCUS
 
 def keep_or_skip_kb(keep_cb, skip_cb):
@@ -1355,7 +1356,7 @@ def keep_or_skip_kb(keep_cb, skip_cb):
 
 CARRYOVER_HINT = "\n\n_Или просто напиши новый вариант текстом — он заменит этот._"
 
-async def ask_morning_focus(message, ctx):
+async def ask_morning_focus(message, ctx, gender):
     y = ctx.user_data.get("y_plan", {})
     intro = (
         "🎯 *Сейчас — приоритет.*\n\n"
@@ -1366,8 +1367,9 @@ async def ask_morning_focus(message, ctx):
         "━━━━━━━━━━━━━━━\n"
     )
     if y.get("a"):
+        planned = g(gender, "запланировал", "запланировала")
         await message.reply_text(
-            intro + f"🎯 *Задача A* — вчера ты запланировал(а):\n_{y['a']}_\n\nОставить как есть?{CARRYOVER_HINT}",
+            intro + f"🎯 *Задача A* — вчера ты {planned}:\n_{y['a']}_\n\nОставить как есть?{CARRYOVER_HINT}",
             parse_mode="Markdown",
             reply_markup=keep_or_skip_kb("use_m_focus", "skip_m_focus")
         )
@@ -1520,41 +1522,43 @@ async def ask_writing(message):
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = update.message.text
-    await ask_gratitude(update.message); return M_GRATITUDE
+    await ask_gratitude(update.message, get_user(update.effective_user.id)["gender"]); return M_GRATITUDE
 
 async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_writing"] = ""; await ask_gratitude(q.message); return M_GRATITUDE
+    ctx.user_data["m_writing"] = ""; await ask_gratitude(q.message, get_user(q.from_user.id)["gender"]); return M_GRATITUDE
 
-async def ask_gratitude(message):
+async def ask_gratitude(message, gender):
+    thankful = g(gender, "благодарен", "благодарна")
     await message.reply_text(
-        "🙏 *Благодарность*\n\nЗа что благодарен(а) сегодня? Большое или маленькое — всё считается.",
+        f"🙏 *Благодарность*\n\nЗа что {thankful} сегодня? Большое или маленькое — всё считается.",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_gratitude", "m_gratitude")
     )
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = update.message.text
-    await ask_child(update.message); return M_CHILD
+    await ask_child(update.message, get_user(update.effective_user.id)["gender"]); return M_CHILD
 
 async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_gratitude"] = ""; await ask_child(q.message); return M_CHILD
+    ctx.user_data["m_gratitude"] = ""; await ask_child(q.message, get_user(q.from_user.id)["gender"]); return M_CHILD
 
-async def ask_child(message):
+async def ask_child(message, gender):
+    talked = g(gender, "поговорил", "поговорила")
     await message.reply_text(
-        "💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты поговорил(а) с лучшим другом?",
+        f"💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты {talked} с лучшим другом?",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_child", "m_child")
     )
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
-    await ask_morning_focus(update.message, ctx)
+    await ask_morning_focus(update.message, ctx, get_user(update.effective_user.id)["gender"])
     return M_FOCUS
 
 async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message, ctx)
+    await ask_morning_focus(q.message, ctx, get_user(q.from_user.id)["gender"])
     return M_FOCUS
 
 # Шаги утреннего диалога по порядку, вместе с ключом ctx.user_data, который
@@ -1563,15 +1567,15 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # morning_start, чтобы при повторном заходе (после таймаута/случайного
 # закрытия) продолжить с первого непройденного шага, а не с начала.
 RESUME_FIELDS = [
-    ("m_writing",   M_WRITING,   lambda msg, ctx: ask_writing(msg)),
-    ("m_gratitude", M_GRATITUDE, lambda msg, ctx: ask_gratitude(msg)),
-    ("m_child",     M_CHILD,     lambda msg, ctx: ask_child(msg)),
-    ("m_focus",     M_FOCUS,     ask_morning_focus),
-    ("m_b1",        M_B1,        ask_m_b1),
-    ("m_b2",        M_B2,        ask_m_b2),
-    ("m_c1",        M_C1,        ask_m_c1),
-    ("m_c2",        M_C2,        ask_m_c2),
-    ("m_c3",        M_C3,        ask_m_c3),
+    ("m_writing",   M_WRITING,   lambda msg, ctx, gender: ask_writing(msg)),
+    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender: ask_gratitude(msg, gender)),
+    ("m_child",     M_CHILD,     lambda msg, ctx, gender: ask_child(msg, gender)),
+    ("m_focus",     M_FOCUS,     lambda msg, ctx, gender: ask_morning_focus(msg, ctx, gender)),
+    ("m_b1",        M_B1,        lambda msg, ctx, gender: ask_m_b1(msg, ctx)),
+    ("m_b2",        M_B2,        lambda msg, ctx, gender: ask_m_b2(msg, ctx)),
+    ("m_c1",        M_C1,        lambda msg, ctx, gender: ask_m_c1(msg, ctx)),
+    ("m_c2",        M_C2,        lambda msg, ctx, gender: ask_m_c2(msg, ctx)),
+    ("m_c3",        M_C3,        lambda msg, ctx, gender: ask_m_c3(msg, ctx)),
 ]
 
 async def pin_today_tasks(ctx, uid, sent_message):
@@ -1709,14 +1713,20 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await ask_achievements(q.message)
+    gender = get_user(q.from_user.id)["gender"]
+    await ask_achievements(q.message, gender, had_checklist=True)
     return E_ACH
 
-async def ask_achievements(message):
-    await message.reply_text(
-        "⭐ *Достижения дня*\n\nЧего достиг(ла) сегодня? Большое или маленькое — всё считается.",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach")
-    )
+async def ask_achievements(message, gender, had_checklist=False):
+    if had_checklist:
+        text = (
+            "⭐ *Достижения дня*\n\n"
+            "Помимо запланированного — что ещё сегодня получилось? "
+            "Большое или маленькое — всё считается."
+        )
+    else:
+        text = f"⭐ *Достижения дня*\n\n{g(gender, 'Чего достиг', 'Чего достигла')} сегодня? Большое или маленькое — всё считается."
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach"))
 
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1744,7 +1754,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ask_tasks_done(q.message, uid, ctx)
         return E_TASKS_DONE
     else:
-        await ask_achievements(q.message)
+        await ask_achievements(q.message, user["gender"])
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1758,7 +1768,7 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask_praise(message):
     await message.reply_text(
         "🎉 *Похвали себя*\n\n"
-        "Скажи себе 'молодец'. Что сегодня сделал(а) хорошо?\n"
+        "Просто скажи себе 'молодец' — своими словами, без 'но' и оговорок.\n"
         "_Даже маленькая победа заслуживает признания._",
         parse_mode="Markdown", reply_markup=skip_why_kb("skip_e_praise", "e_praise")
     )
@@ -1780,17 +1790,19 @@ async def ask_highlights(message):
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
     uid = update.effective_user.id
+    gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
-        await ask_selfcare(update.message, ctx); return E_SELFCARE
-    await ask_energy(update.message); return E_ENERGY
+        await ask_selfcare(update.message, ctx, gender); return E_SELFCARE
+    await ask_energy(update.message, gender); return E_ENERGY
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_highlights"] = ""
     uid = q.from_user.id
+    gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
-        await ask_selfcare(q.message, ctx); return E_SELFCARE
-    await ask_energy(q.message); return E_ENERGY
+        await ask_selfcare(q.message, ctx, gender); return E_SELFCARE
+    await ask_energy(q.message, gender); return E_ENERGY
 
 SELFCARE_ITEMS = [
     ("warmup",      "🏃 Зарядка / физическая активность"),
@@ -1816,11 +1828,13 @@ def selfcare_kb(selected):
     rows.append([InlineKeyboardButton("Готово ✅", callback_data="sc_done")])
     return InlineKeyboardMarkup(rows)
 
-async def ask_selfcare(message, ctx):
+async def ask_selfcare(message, ctx, gender):
     ctx.user_data.setdefault("e_selfcare", [])
+    did = g(gender, "делал", "делала")
+    used = g(gender, "применял", "применяла")
     await message.reply_text(
-        "🧩 *Что из этого делал(а) сегодня?*\n\n"
-        "Отметь всё, что применял(а) — это помогает быть в себе.",
+        f"🧩 *Что из этого {did} сегодня?*\n\n"
+        f"Отметь всё, что {used} — это помогает быть в себе.",
         parse_mode="Markdown",
         reply_markup=selfcare_kb(ctx.user_data["e_selfcare"])
     )
@@ -1838,20 +1852,23 @@ async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await ask_energy(q.message)
+    await ask_energy(q.message, get_user(q.from_user.id)["gender"])
     return E_ENERGY
 
-async def ask_energy(message):
+async def ask_energy(message, gender):
+    exhausted = g(gender, "выжат", "выжата")
+    tired = g(gender, "устал", "устала")
+    charged = g(gender, "заряжен", "заряжена")
     await message.reply_text(
         "🔋 *Уровень энергии сейчас*\n\n"
         "Как ты себя чувствуешь по итогам дня?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("😴 1 — выжат(а) полностью", callback_data="energy_1")],
-            [InlineKeyboardButton("😔 2 — устал(а), тяжело", callback_data="energy_2")],
+            [InlineKeyboardButton(f"😴 1 — {exhausted} полностью", callback_data="energy_1")],
+            [InlineKeyboardButton(f"😔 2 — {tired}, тяжело", callback_data="energy_2")],
             [InlineKeyboardButton("😐 3 — нормально, средне", callback_data="energy_3")],
             [InlineKeyboardButton("😊 4 — хорошо, в ресурсе", callback_data="energy_4")],
-            [InlineKeyboardButton("⚡ 5 — заряжен(а) на 100%", callback_data="energy_5")],
+            [InlineKeyboardButton(f"⚡ 5 — {charged} на 100%", callback_data="energy_5")],
         ])
     )
 
@@ -1967,7 +1984,8 @@ async def finish_evening(message, uid, ctx):
         labels = dict(SELFCARE_ITEMS)
         used = [labels[k] for k in data["e_selfcare"] if k in labels]
         if used:
-            selfcare_summary = "\n\n🧩 *Сегодня применял(а):*\n" + "\n".join(used)
+            applied = g(user["gender"], "применял", "применяла")
+            selfcare_summary = f"\n\n🧩 *Сегодня {applied}:*\n" + "\n".join(used)
 
     # AI анализ дня
     ai_analysis = ""
@@ -2032,8 +2050,13 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
             context += f"Выполнено из них: {'; '.join(done_lines) if done_lines else 'ничего не отмечено выполненным'}\n"
         resp = client.messages.create(
             model="claude-sonnet-4-5",
-            max_tokens=200,
-            system=f"Ты коуч для {name} ({gender_hint}), у которой/которого СДВГ. Анализируй день кратко и тепло. 2-3 предложения. Отмечай прогресс и дай один конкретный совет на завтра. Пиши по-русски.",
+            max_tokens=400,
+            system=(
+                f"Ты коуч для {name} ({gender_hint}), у которой/которого СДВГ. Анализируй день кратко и тепло. "
+                "Максимум 3 предложения, одним абзацем, без заголовков и без разметки (никаких **, ##, списков) — "
+                "текст уже оборачивается в курсив снаружи. Отмечай прогресс и дай один конкретный совет на завтра. "
+                "Пиши по-русски."
+            ),
             messages=[{"role":"user","content":f"Вот мой день:\n{context}\nДай короткий анализ."}]
         )
         return resp.content[0].text.strip()
@@ -2120,8 +2143,9 @@ MIDDAY_LABELS = {
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    write_self = g(get_user(q.from_user.id)["gender"], "сам", "сама")
     await q.message.reply_text(
-        "🤖 *Коуч*\n\nЧто происходит? Пиши сам(а) или выбери быструю кнопку:",
+        f"🤖 *Коуч*\n\nЧто происходит? Пиши {write_self} или выбери быструю кнопку:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🚫 Не могу начать", callback_data="c_start")],
