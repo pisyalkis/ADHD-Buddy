@@ -2892,7 +2892,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await ctx.bot.send_message(
                         NOTIFY_USER_ID,
                         f"🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n"
-                        f"_{q_text}_\n{text}",
+                        f"_{q_text}_\n{md_escape(text)}",
                         parse_mode="Markdown"
                     )
                 except Exception as e:
@@ -2911,7 +2911,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 await ctx.bot.send_message(
                     NOTIFY_USER_ID,
-                    f"💬 *Обратная связь от {user['name'] or uid}:*\n\n{text}",
+                    f"💬 *Обратная связь от {user['name'] or uid}:*\n\n{md_escape(text)}",
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -4255,7 +4255,7 @@ async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user = get_user(user_id)
         name = user["name"] if user and user["name"] else str(user_id)
         date_str = created[:10] if created else "?"
-        lines.append(f"*{name}* ({date_str}):\n{text}")
+        lines.append(f"*{name}* ({date_str}):\n{md_escape(text)}")
     msg = "\n\n─────\n\n".join(lines)
     # Telegram limit 4096 chars per message
     for i in range(0, len(msg), 4000):
@@ -4284,7 +4284,7 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         name = user["name"] if user and user["name"] else str(user_id)
         date_str = created[:10] if created else "?"
         q_text = RESEARCH_QUESTION_LABELS.get(question, question)
-        lines.append(f"*{name}* · день {day} ({date_str}):\n_{q_text}_\n{answer}")
+        lines.append(f"*{name}* · день {day} ({date_str}):\n_{q_text}_\n{md_escape(answer)}")
 
     # Какие вопросы отправили, но человек так и не ответил — иначе это молча
     # теряется: research_done проставляется в момент ОТПРАВКИ, а не ответа.
