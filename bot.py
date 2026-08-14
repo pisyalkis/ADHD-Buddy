@@ -613,6 +613,14 @@ def redeem_promo_code(uid, code):
     update_user(uid, promo_extra_days=new_extra)
     return True, f"Промокод принят — пробный период продлён на {days} дн. 🎉"
 
+def grant_access_days(uid, days):
+    """Прямая выдача доступа конкретному аккаунту, без промокода — для
+    случаев когда уже точно знаешь, кому дать (см. /grant и кнопку
+    «🎁 +30» в /users)."""
+    user = get_user(uid)
+    new_extra = int(user.get("promo_extra_days") or 0) + days
+    update_user(uid, promo_extra_days=new_extra)
+
 def save_diary(uid, block, data, for_date=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -3917,6 +3925,46 @@ async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     create_promo_code(code, days, max_uses)
     await update.message.reply_text(f"✅ Промокод `{code}` создан: +{days} дн., {max_uses} активаций.", parse_mode="Markdown")
 
+async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: /grant USER_ID [дней=30] — выдать доступ конкретному
+    аккаунту напрямую, без промокода."""
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /grant USER_ID [дней=30]")
+        return
+    try:
+        target_uid = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("USER_ID должен быть числом (см. /users).")
+        return
+    days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
+    await _grant_and_notify(ctx, target_uid, days)
+    target = get_user(target_uid)
+    await update.message.reply_text(f"✅ {target.get('name') or target_uid}: +{days} дн.")
+
+async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «🎁 +30» в /users."""
+    q = update.callback_query; await q.answer()
+    if NOTIFY_USER_ID and q.from_user.id != NOTIFY_USER_ID:
+        return
+    target_uid = int(q.data.replace("grant30_", ""))
+    await _grant_and_notify(ctx, target_uid, 30)
+    target = get_user(target_uid)
+    await q.message.reply_text(f"✅ {target.get('name') or target_uid}: +30 дн. к доступу.")
+
+async def _grant_and_notify(ctx, target_uid, days):
+    grant_access_days(target_uid, days)
+    try:
+        await ctx.bot.send_message(
+            target_uid,
+            f"🎁 Тебе продлили доступ на {days} дней — спасибо, что помогаешь боту становиться лучше!"
+        )
+    except Exception as e:
+        print(f"Не удалось уведомить {target_uid} о выданном доступе: {e}")
+
 # Экраны/действия, доступные даже пользователю с истёкшим доступом — иначе
 # он физически не сможет ни оплатить, ни ввести промокод, чтобы выйти из
 # пейволла (см. access_gate).
@@ -5063,14 +5111,18 @@ async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Пользователей пока нет.")
             return
 
-        # Кнопка на каждого пользователя — нажать чтобы написать
+        # Кнопка на каждого пользователя — нажать чтобы написать; вторая —
+        # выдать доступ на 30 дней без промокода, для конкретного человека.
         buttons = []
         for uid_u, name, gender in rows:
             g = {"M": "👨", "F": "👩", "N": "🏳️‍🌈"}.get(gender, "")
-            buttons.append([InlineKeyboardButton(f"{g} {name}", callback_data=f"admin_msg_{uid_u}")])
+            buttons.append([
+                InlineKeyboardButton(f"{g} {name}", callback_data=f"admin_msg_{uid_u}"),
+                InlineKeyboardButton("🎁 +30", callback_data=f"grant30_{uid_u}"),
+            ])
 
         await update.message.reply_text(
-            f"👥 *Пользователи ({len(rows)})*\n\nНажми на имя чтобы написать:",
+            f"👥 *Пользователи ({len(rows)})*\n\nИмя — написать · 🎁 +30 — выдать 30 дней доступа без промокода:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
@@ -5211,6 +5263,8 @@ def main():
     app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(CommandHandler("newpromo", newpromo_command), group=-1)
+    app.add_handler(CommandHandler("grant", grant_command), group=-1)
+    app.add_handler(CallbackQueryHandler(grant30_callback, pattern="^grant30_"), group=-1)
     app.add_handler(TypeHandler(Update, access_gate), group=-2)
     app.add_handler(onboard_conv)
     global _morning_conv, _evening_conv
