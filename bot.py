@@ -475,6 +475,8 @@ def init_db():
         ("daily_skill_override", "''"),
         ("disabled_fields", "''"),
         ("skip_streaks", "''"),
+        ("beacon_types", "''"),
+        ("beacon_rotation_idx", "'0'"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -2581,6 +2583,7 @@ def _settings_text_and_kb(user):
          *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
         *([ beacon_interval_row ] if be else []),
         *([ beacon_hours_row ] if be else []),
+        *([[InlineKeyboardButton("🎯 Типы маячка", callback_data="beacon_types_menu")]] if be else []),
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
@@ -2654,6 +2657,41 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
 async def dismiss_nudge_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     await q.message.edit_text("Окей, продолжаю спрашивать как раньше.")
+
+def _beacon_types_kb(user):
+    enabled = set((user.get("beacon_types") or "").split(","))
+    rows = []
+    for key, label in BEACON_TECHNIQUE_TYPES:
+        mark = "✅ " if key in enabled else "▫️ "
+        rows.append([InlineKeyboardButton(mark + label, callback_data=f"toggle_beacontype_{key}")])
+    rows.append([InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")])
+    return InlineKeyboardMarkup(rows)
+
+async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    user = get_user(q.from_user.id)
+    await q.message.reply_text(
+        "🎯 *Типы маячка*\n\n"
+        "Маячок по умолчанию просто проверяет, чем ты занят(а). Можно добавить "
+        "короткие техники — они иногда будут вставать в тот же тик вместо обычной "
+        "проверки, а не отдельным напоминанием (интервал не меняется).\n\n"
+        "После техники бот всё равно спросит про задачи — как обычно, просто на шаг позже.",
+        parse_mode="Markdown",
+        reply_markup=_beacon_types_kb(user)
+    )
+
+async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    key = q.data.replace("toggle_beacontype_", "")
+    user = get_user(uid)
+    enabled = [k for k in (user.get("beacon_types") or "").split(",") if k]
+    if key in enabled:
+        enabled.remove(key)
+    else:
+        enabled.append(key)
+    update_user(uid, beacon_types=",".join(enabled))
+    await q.message.edit_reply_markup(reply_markup=_beacon_types_kb(get_user(uid)))
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2755,6 +2793,72 @@ async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
+BEACON_TEXTS = [
+    "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
+    "⏱ *Стоп на секунду*\n\nЗадачи дня:\n{tasks}\n\nНад чем работаешь прямо сейчас?",
+    "🔔 *Проверка*\n\nЗадачи дня:\n{tasks}\n\nКак дела? Всё по плану?",
+    "👁 *Внимание, маячок*\n\nЗадачи дня:\n{tasks}\n\nВернёмся к задачам — что сейчас происходит?",
+    "🧭 *Сориентируемся*\n\nЗадачи дня:\n{tasks}\n\nТы где сейчас по задачам?",
+    "💡 *Короткая пауза*\n\nЗадачи дня:\n{tasks}\n\nНа чём сосредоточен(а) прямо сейчас?",
+]
+
+# ── ТИПЫ МАЯЧКА ──────────────────────────────────────────────────────────────
+# Маячок по умолчанию — просто проверка задач (как раньше). Пользователь может
+# дополнительно включить короткие техники, которые иногда встают в тот же
+# слот вместо обычной проверки — не отдельным напоминанием (это удвоило бы
+# число прерываний за день), а ротацией внутри одного и того же тика.
+BEACON_TECHNIQUE_TYPES = [
+    ("stop",      "🛑 Техника СТОП"),
+    ("breathing", "🌬 Дыхание"),
+    ("grounding", "👁 Заземление 5-4-3-2-1"),
+    ("anchor",    "⚓ Якорь"),
+]
+
+BEACON_TECHNIQUE_PROMPTS = {
+    "stop":      "🛑 *СТОП*\n\nЗамри на секунду. Оглянись — что вообще сейчас происходит вокруг и внутри тебя? Дальше продолжай осознанно, не на автомате.",
+    "breathing": "🌬 *Дыхание*\n\nВдох на 4 счёта — выдох на 8. Повтори 5-6 раз подряд.",
+    "grounding": "👁 *Заземление*\n\n5 предметов, которые видишь. 4 вещи, которые можешь потрогать. 3 звука, которые слышишь.",
+    "anchor":    "⚓ *Якорь*\n\nВдави ноги в пол, выпрями спину, сожми пальцы. Найди 5 предметов вокруг, услышь 3-4 звука.",
+}
+
+BEACON_TECHNIQUE_WHY = (
+    "Мозг с СДВГ легко теряет связь с телом и текущим моментом — застревает в задаче, "
+    "в тревоге или в скролле, и сам этого не замечает. Короткие техники в течение дня — "
+    "это внешний тычок, который возвращает в контакт с собой, до того как накопится "
+    "перегруз или потеряется весь день."
+)
+WHY_EXPLANATIONS["beacon_technique"] = BEACON_TECHNIQUE_WHY
+
+def _beacon_rotation_pool(user):
+    """None в пуле — обычная проверка задач без техники (то, что было раньше
+    единственным поведением маячка). Пул всегда содержит хотя бы None, даже
+    если пользователь не включил ни одной техники."""
+    enabled = [k for k, _ in BEACON_TECHNIQUE_TYPES if k in (user.get("beacon_types") or "").split(",")]
+    return [None] + enabled
+
+def next_beacon_slot(uid):
+    """Круговая ротация типов маячка — что выпадет в этот тик. Индекс
+    хранится в БД (а не в памяти планировщика), чтобы не сбрасывался при
+    рестарте процесса и не совпадал у всех пользователей одновременно."""
+    user = get_user(uid)
+    pool = _beacon_rotation_pool(user)
+    idx = int(user.get("beacon_rotation_idx") or "0") % len(pool)
+    update_user(uid, beacon_rotation_idx=str((idx + 1) % len(pool)))
+    return pool[idx]
+
+async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«✅ Сделал(а)» после техники маячка — сразу следом обычная проверка
+    задач, тот же переход, что и после обычного тика маячка."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+    _, morning, done_set = get_today_context(user)
+    if not morning:
+        return
+    tasks = build_tasks_summary(morning, done_set)
+    beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
+    await q.message.reply_text(beacon_text, parse_mode="Markdown", reply_markup=midday_kb(morning, done_set))
+
 async def send_beacon(app, user):
     """Маячок внимания — периодический чекин в течение дня."""
     try:
@@ -2814,22 +2918,29 @@ async def send_beacon(app, user):
         if not morning: return
         tasks = build_tasks_summary(morning, done_set)
 
-        BEACON_TEXTS = [
-            "👀 *Маячок внимания*\n\nЗадачи дня:\n{tasks}\n\nЧто сейчас делаешь?",
-            "⏱ *Стоп на секунду*\n\nЗадачи дня:\n{tasks}\n\nНад чем работаешь прямо сейчас?",
-            "🔔 *Проверка*\n\nЗадачи дня:\n{tasks}\n\nКак дела? Всё по плану?",
-            "👁 *Внимание, маячок*\n\nЗадачи дня:\n{tasks}\n\nВернёмся к задачам — что сейчас происходит?",
-            "🧭 *Сориентируемся*\n\nЗадачи дня:\n{tasks}\n\nТы где сейчас по задачам?",
-            "💡 *Короткая пауза*\n\nЗадачи дня:\n{tasks}\n\nНа чём сосредоточен(а) прямо сейчас?",
-        ]
-        beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
-
-        await app.bot.send_message(
-            chat_id=uid,
-            text=beacon_text,
-            parse_mode="Markdown",
-            reply_markup=midday_kb(morning, done_set)
-        )
+        # Ротация: обычная проверка задач или (если включено в настройках)
+        # короткая техника, после которой — та же самая проверка задач по
+        # кнопке "Сделал(а)". Один слот на тик, ничего не наслаивается.
+        slot = next_beacon_slot(uid)
+        if slot is None:
+            beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
+            await app.bot.send_message(
+                chat_id=uid,
+                text=beacon_text,
+                parse_mode="Markdown",
+                reply_markup=midday_kb(morning, done_set)
+            )
+        else:
+            done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
+            await app.bot.send_message(
+                chat_id=uid,
+                text=BEACON_TECHNIQUE_PROMPTS[slot],
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(done_label, callback_data="beacon_technique_done")],
+                    [InlineKeyboardButton("❓ Зачем это?", callback_data="why_beacon_technique")],
+                ])
+            )
         # Отмечаем как отправленный только после успешной отправки — иначе
         # временный сбой навсегда "съедает" этот тик маячка.
         update_user(uid, beacon_last_sent=now.isoformat())
@@ -4862,6 +4973,9 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_field_callback, pattern="^toggle_field_"))
     app.add_handler(CallbackQueryHandler(quickdisable_field_callback, pattern="^quickdisable_"))
     app.add_handler(CallbackQueryHandler(dismiss_nudge_callback, pattern="^dismiss_nudge$"))
+    app.add_handler(CallbackQueryHandler(beacon_types_menu, pattern="^beacon_types_menu$"))
+    app.add_handler(CallbackQueryHandler(toggle_beacon_type_callback, pattern="^toggle_beacontype_"))
+    app.add_handler(CallbackQueryHandler(beacon_technique_done, pattern="^beacon_technique_done$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
     app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
