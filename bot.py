@@ -2221,6 +2221,7 @@ MIDDAY_LABELS = {
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     write_self = g(gender, "сам", "сама")
     await q.message.reply_text(
@@ -2743,7 +2744,13 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     (уже было реальным багом несколько раз: фидбек проглатывал город,
     имя бадди проглатывало ответ на research-вопрос и т.д.).
     update (опционально) — если передан, дополнительно гасит research_awaiting
-    в БД (тот же класс флага, но не в ctx.user_data)."""
+    в БД (тот же класс флага, но не в ctx.user_data), а также отменяет
+    активный morning/evening ConversationHandler для этого пользователя —
+    иначе тот перехватывает следующий текст сам, ДО того как он вообще
+    доходит до awaiting_*-проверок в handle_text (реальный баг: человек
+    посреди вечернего ритуала открыл «Обратная связь» и написал «Бот топ» —
+    текст записался в поле Задача A, потому что вечерняя conversation всё
+    ещё была активна и первой забрала сообщение)."""
     ctx.user_data["awaiting_time"] = False
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_city"] = False
@@ -2757,6 +2764,12 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
         user = get_user(uid)
         if str(user.get("research_awaiting") or "0") != "0":
             update_user(uid, research_awaiting=0)
+        if update.effective_chat is not None:
+            conv_key = (update.effective_chat.id, uid)
+            if _morning_conv is not None:
+                _morning_conv._conversations.pop(conv_key, None)
+            if _evening_conv is not None:
+                _evening_conv._conversations.pop(conv_key, None)
 
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3319,6 +3332,7 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FEEDBACK ───────────────────────────────────────────────────────────────
 async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
     await q.message.reply_text(
         "💬 *Обратная связь*\n\n"
@@ -3358,6 +3372,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_buddy"] = True
     await q.message.reply_text("Напиши имя своего бадди:")
 
