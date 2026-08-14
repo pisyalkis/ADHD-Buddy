@@ -473,6 +473,8 @@ def init_db():
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
         ("daily_skill_override", "''"),
+        ("disabled_fields", "''"),
+        ("skip_streaks", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -691,6 +693,71 @@ def md_escape(text):
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, "\\" + ch)
     return text
+
+# ── ОТКЛЮЧАЕМЫЕ ПОЛЯ РИТУАЛА ────────────────────────────────────────────────
+# Только ситуативные "мягкие" поля — задачи A/B/C, чек-лист выполненного и
+# уровень энергии остаются обязательными, это не декорация ритуала, а его
+# механика.
+TOGGLEABLE_FIELDS = [
+    ("m_writing",    "📝 Свободное письмо"),
+    ("m_gratitude",  "🙏 Благодарность"),
+    ("m_child",      "💛 Внутренний ребёнок"),
+    ("e_ach",        "⭐ Достижения дня"),
+    ("e_praise",     "🎉 Похвали себя"),
+    ("e_highlights", "✨ Яркие моменты дня"),
+    ("e_selfcare",   "🧩 Какие техники применял(а)"),
+]
+
+# e_selfcare — множественный выбор, отмечается как "пройден" отдельным
+# ключом e_selfcare_done (см. RESUME_FIELDS_EVENING) — сам "e_selfcare"
+# занят списком выбранных техник, а не флагом прохождения шага.
+_TOGGLE_TO_RESUME_KEY = {"e_selfcare": "e_selfcare_done"}
+
+def is_field_disabled(user, key):
+    return key in (user.get("disabled_fields") or "").split(",")
+
+SKIP_STREAK_NUDGE_THRESHOLD = 3  # столько подряд пропусков — и бот сам предложит отключить поле
+
+def _parse_streaks(user):
+    raw = user.get("skip_streaks") or ""
+    return dict(item.split(":") for item in raw.split(",") if ":" in item)
+
+def bump_skip_streak(uid, key):
+    """Увеличивает счётчик подряд идущих пропусков поля key (сбрасывается
+    при первом реальном ответе — см. reset_skip_streak). Возвращает новое
+    значение — по нему решаем, не пора ли предложить отключить поле."""
+    user = get_user(uid)
+    streaks = _parse_streaks(user)
+    streaks[key] = str(int(streaks.get(key, 0)) + 1)
+    update_user(uid, skip_streaks=",".join(f"{k}:{v}" for k, v in streaks.items()))
+    return int(streaks[key])
+
+def reset_skip_streak(uid, key):
+    user = get_user(uid)
+    streaks = _parse_streaks(user)
+    if key in streaks:
+        del streaks[key]
+        update_user(uid, skip_streaks=",".join(f"{k}:{v}" for k, v in streaks.items()))
+
+def disable_field_kb(key):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Отключить этот вопрос", callback_data=f"quickdisable_{key}")],
+        [InlineKeyboardButton("Не сейчас", callback_data="dismiss_nudge")],
+    ])
+
+async def maybe_send_skip_nudge(message, uid, key):
+    """После SKIP_STREAK_NUDGE_THRESHOLD пропусков подряд — предлагает
+    отключить поле насовсем вместо того чтобы молча продолжать спрашивать
+    то, что человек явно не хочет заполнять."""
+    streak = bump_skip_streak(uid, key)
+    if streak == SKIP_STREAK_NUDGE_THRESHOLD:
+        label = dict(TOGGLEABLE_FIELDS).get(key, key)
+        await message.reply_text(
+            f"Заметил — уже несколько раз подряд пропускаешь «{label}». "
+            "Могу отключить этот вопрос насовсем, чтобы он больше не появлялся "
+            "(включить обратно можно в любой момент через ⚙️ Настройки → Редактировать отчёты).",
+            reply_markup=disable_field_kb(key)
+        )
 
 TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
 
@@ -1168,7 +1235,9 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
             f"Цель — не просто пережить сегодня, а натренировать навык: {goals_text}. "
             "Со временем это начинает получаться само, без подсказок.\n\n"
             "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
-            "и когнитивно-поведенческой терапии (протокол Safren).",
+            "и когнитивно-поведенческой терапии (протокол Safren).\n\n"
+            "_Если какой-то вопрос не заходит — его можно насовсем отключить: "
+            "⚙️ Настройки → Редактировать отчёты._",
             parse_mode="Markdown",
             reply_markup=goal_kb
         )
@@ -1178,7 +1247,9 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
                 "Общая задача — сформировать привычку: строить структуру дня, мягко входить в него, "
                 "держать фокус на приоритетах и замечать всё хорошее, что было. И по кругу, день за днём.\n\n"
                 "Постепенно привыкаешь замечать, что сам(а) ставишь задачи и выполняешь их — и "
-                "самооценка становится устойчивее.",
+                "самооценка становится устойчивее.\n\n"
+                "_Если какой-то вопрос не заходит — его можно насовсем отключить: "
+                "⚙️ Настройки → Редактировать отчёты._",
                 gender
             ),
             parse_mode="Markdown"
@@ -1388,21 +1459,18 @@ async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
         await asyncio.sleep(20)
     await msg.edit_text("✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
-    await ask_writing(q.message)
-    return M_WRITING
+    return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def warmup_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     await q.message.reply_text("💪 Отлично, тело уже разбужено!")
-    await ask_writing(q.message)
-    return M_WRITING
+    return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await ask_writing(q.message)
-    return M_WRITING
+    return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -1587,11 +1655,17 @@ async def ask_writing(message):
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = update.message.text
-    await ask_gratitude(update.message, get_user(update.effective_user.id)["gender"]); return M_GRATITUDE
+    uid = update.effective_user.id
+    reset_skip_streak(uid, "m_writing")
+    return await advance_morning(ctx, update.message, get_user(uid)["gender"], uid, "m_writing")
 
 async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_writing"] = ""; await ask_gratitude(q.message, get_user(q.from_user.id)["gender"]); return M_GRATITUDE
+    ctx.user_data["m_writing"] = ""
+    uid = q.from_user.id
+    result = await advance_morning(ctx, q.message, get_user(uid)["gender"], uid, "m_writing")
+    await maybe_send_skip_nudge(q.message, uid, "m_writing")
+    return result
 
 async def ask_gratitude(message, gender):
     thankful = g(gender, "благодарен", "благодарна")
@@ -1602,11 +1676,17 @@ async def ask_gratitude(message, gender):
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = update.message.text
-    await ask_child(update.message, get_user(update.effective_user.id)["gender"]); return M_CHILD
+    uid = update.effective_user.id
+    reset_skip_streak(uid, "m_gratitude")
+    return await advance_morning(ctx, update.message, get_user(uid)["gender"], uid, "m_gratitude")
 
 async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["m_gratitude"] = ""; await ask_child(q.message, get_user(q.from_user.id)["gender"]); return M_CHILD
+    ctx.user_data["m_gratitude"] = ""
+    uid = q.from_user.id
+    result = await advance_morning(ctx, q.message, get_user(uid)["gender"], uid, "m_gratitude")
+    await maybe_send_skip_nudge(q.message, uid, "m_gratitude")
+    return result
 
 async def ask_child(message, gender):
     talked = g(gender, "поговорил", "поговорила")
@@ -1617,14 +1697,17 @@ async def ask_child(message, gender):
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
-    await ask_morning_focus(update.message, ctx, get_user(update.effective_user.id)["gender"])
-    return M_FOCUS
+    uid = update.effective_user.id
+    reset_skip_streak(uid, "m_child")
+    return await advance_morning(ctx, update.message, get_user(uid)["gender"], uid, "m_child")
 
 async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
-    await ask_morning_focus(q.message, ctx, get_user(q.from_user.id)["gender"])
-    return M_FOCUS
+    uid = q.from_user.id
+    result = await advance_morning(ctx, q.message, get_user(uid)["gender"], uid, "m_child")
+    await maybe_send_skip_nudge(q.message, uid, "m_child")
+    return result
 
 # Шаги утреннего диалога по порядку, вместе с ключом ctx.user_data, который
 # появляется как только шаг пройден (даже если ответ пустой — см. skip_m_*),
@@ -1642,6 +1725,26 @@ RESUME_FIELDS = [
     ("m_c2",        M_C2,        lambda msg, ctx, gender: ask_m_c2(msg, ctx)),
     ("m_c3",        M_C3,        lambda msg, ctx, gender: ask_m_c3(msg, ctx)),
 ]
+
+async def advance_morning(ctx, message, gender, uid, from_key=None):
+    """Переходит к следующему шагу утреннего ритуала после from_key (или с
+    самого начала, если from_key=None), молча пропуская поля, отключённые
+    в ⚙️ Настройки → Редактировать отчёты — как явный skip, только без
+    самого вопроса. Использует тот же RESUME_FIELDS, что и резюме прерванного
+    утра, поэтому отключённые поля корректно не считаются "недопройденными"
+    при повторном заходе."""
+    user = get_user(uid)
+    start_idx = 0
+    if from_key is not None:
+        start_idx = next(i for i, (k, _, _) in enumerate(RESUME_FIELDS) if k == from_key) + 1
+    for key, state, ask_fn in RESUME_FIELDS[start_idx:]:
+        if is_field_disabled(user, key):
+            ctx.user_data[key] = ""
+            continue
+        await ask_fn(message, ctx, gender)
+        return state
+    await finish_morning(message, uid, ctx)
+    return ConversationHandler.END
 
 async def pin_today_tasks(ctx, uid, sent_message):
     """Пинит сообщение с задачами дня, сняв старый пин (если остался, например
@@ -1778,8 +1881,12 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    gender = get_user(q.from_user.id)["gender"]
-    await ask_achievements(q.message, gender, had_checklist=True)
+    uid = q.from_user.id
+    user = get_user(uid)
+    if is_field_disabled(user, "e_ach"):
+        ctx.user_data["e_ach"] = ""
+        return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
+    await ask_achievements(q.message, user["gender"], had_checklist=True)
     return E_ACH
 
 async def ask_achievements(message, gender, had_checklist=False):
@@ -1840,16 +1947,25 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ask_tasks_done(q.message, uid, ctx)
         return E_TASKS_DONE
     else:
+        if is_field_disabled(user, "e_ach"):
+            ctx.user_data["e_ach"] = ""
+            return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
         await ask_achievements(q.message, user["gender"])
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_ach"] = update.message.text
-    await ask_praise(update.message); return E_PRAISE
+    uid = update.effective_user.id
+    reset_skip_streak(uid, "e_ach")
+    return await advance_evening(ctx, update.message, get_user(uid)["gender"], uid, "e_ach")
 
 async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["e_ach"] = ""; await ask_praise(q.message); return E_PRAISE
+    ctx.user_data["e_ach"] = ""
+    uid = q.from_user.id
+    result = await advance_evening(ctx, q.message, get_user(uid)["gender"], uid, "e_ach")
+    await maybe_send_skip_nudge(q.message, uid, "e_ach")
+    return result
 
 async def ask_praise(message):
     await message.reply_text(
@@ -1861,11 +1977,17 @@ async def ask_praise(message):
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_praise"] = update.message.text
-    await ask_highlights(update.message); return E_HIGHLIGHTS
+    uid = update.effective_user.id
+    reset_skip_streak(uid, "e_praise")
+    return await advance_evening(ctx, update.message, get_user(uid)["gender"], uid, "e_praise")
 
 async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["e_praise"] = ""; await ask_highlights(q.message); return E_HIGHLIGHTS
+    ctx.user_data["e_praise"] = ""
+    uid = q.from_user.id
+    result = await advance_evening(ctx, q.message, get_user(uid)["gender"], uid, "e_praise")
+    await maybe_send_skip_nudge(q.message, uid, "e_praise")
+    return result
 
 async def ask_highlights(message):
     await message.reply_text(
@@ -1876,21 +1998,16 @@ async def ask_highlights(message):
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
     uid = update.effective_user.id
-    gender = get_user(uid)["gender"]
-    if has_any_diary_ever(uid):
-        await ask_selfcare(update.message, ctx, gender); return E_SELFCARE
-    ctx.user_data["e_selfcare_done"] = True
-    await ask_energy(update.message, gender); return E_ENERGY
+    reset_skip_streak(uid, "e_highlights")
+    return await advance_evening(ctx, update.message, get_user(uid)["gender"], uid, "e_highlights")
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_highlights"] = ""
     uid = q.from_user.id
-    gender = get_user(uid)["gender"]
-    if has_any_diary_ever(uid):
-        await ask_selfcare(q.message, ctx, gender); return E_SELFCARE
-    ctx.user_data["e_selfcare_done"] = True
-    await ask_energy(q.message, gender); return E_ENERGY
+    result = await advance_evening(ctx, q.message, get_user(uid)["gender"], uid, "e_highlights")
+    await maybe_send_skip_nudge(q.message, uid, "e_highlights")
+    return result
 
 SELFCARE_ITEMS = [
     ("warmup",      "🏃 Зарядка / физическая активность"),
@@ -2051,6 +2168,29 @@ RESUME_FIELDS_EVENING = [
     ("e_c2",            E_C2,         lambda msg, ctx, gender: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
     ("e_c3",            E_C3,         lambda msg, ctx, gender: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
 ]
+
+async def advance_evening(ctx, message, gender, uid, from_key=None):
+    """Переходит к следующему шагу вечернего ритуала после from_key (или с
+    самого начала, если from_key=None) — см. advance_morning, тот же принцип.
+    Чек-лист техник (e_selfcare) дополнительно пропускается для тех, кто
+    закрывает вечер первый раз в жизни (has_any_diary_ever) — те же техники,
+    что и в чек-листе выше, новичку ещё незнакомы."""
+    user = get_user(uid)
+    start_idx = 0
+    if from_key is not None:
+        start_idx = next(i for i, (k, _, _) in enumerate(RESUME_FIELDS_EVENING) if k == from_key) + 1
+    for key, state, ask_fn in RESUME_FIELDS_EVENING[start_idx:]:
+        toggle_name = {v: k for k, v in _TOGGLE_TO_RESUME_KEY.items()}.get(key, key)
+        if key == "e_selfcare_done" and not has_any_diary_ever(uid):
+            ctx.user_data[key] = True
+            continue
+        if is_field_disabled(user, toggle_name):
+            ctx.user_data[key] = True if key == "e_selfcare_done" else ""
+            continue
+        await ask_fn(message, ctx, gender)
+        return state
+    await finish_evening(message, uid, ctx)
+    return ConversationHandler.END
 
 async def finish_evening(message, uid, ctx):
     user = get_user(uid)
@@ -2446,6 +2586,7 @@ def _settings_text_and_kb(user):
             callback_data="toggle_notif"
         )],
         [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
+        [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
@@ -2455,6 +2596,64 @@ async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     text, kb = _settings_text_and_kb(get_user(uid))
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+def _edit_reports_kb(user):
+    disabled = set((user.get("disabled_fields") or "").split(","))
+    rows = [[InlineKeyboardButton("☀️ Утро", callback_data="noop")]]
+    for key, label in TOGGLEABLE_FIELDS[:3]:
+        mark = "▫️ " if key in disabled else "✅ "
+        rows.append([InlineKeyboardButton(mark + label, callback_data=f"toggle_field_{key}")])
+    rows.append([InlineKeyboardButton("🌙 Вечер", callback_data="noop")])
+    for key, label in TOGGLEABLE_FIELDS[3:]:
+        mark = "▫️ " if key in disabled else "✅ "
+        rows.append([InlineKeyboardButton(mark + label, callback_data=f"toggle_field_{key}")])
+    rows.append([InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")])
+    return InlineKeyboardMarkup(rows)
+
+async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    user = get_user(q.from_user.id)
+    await q.message.reply_text(
+        "🎛 *Редактировать отчёты*\n\n"
+        "Отметь, что не нужно спрашивать — бот не будет предлагать заполнить эти поля.\n\n"
+        "_Задачи A/B/C, чек-лист выполненного и уровень энергии отключить нельзя — "
+        "это основа ритуала, не ситуативные поля._",
+        parse_mode="Markdown",
+        reply_markup=_edit_reports_kb(user)
+    )
+
+async def toggle_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    key = q.data.replace("toggle_field_", "")
+    user = get_user(uid)
+    disabled = [k for k in (user.get("disabled_fields") or "").split(",") if k]
+    if key in disabled:
+        disabled.remove(key)
+    else:
+        disabled.append(key)
+        reset_skip_streak(uid, key)  # включил обратно вручную — счётчик подсказки не нужен
+    update_user(uid, disabled_fields=",".join(disabled))
+    await q.message.edit_reply_markup(reply_markup=_edit_reports_kb(get_user(uid)))
+
+async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Отключить этот вопрос» в подсказке после нескольких пропусков
+    подряд (см. maybe_send_skip_nudge)."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    key = q.data.replace("quickdisable_", "")
+    user = get_user(uid)
+    disabled = [k for k in (user.get("disabled_fields") or "").split(",") if k]
+    if key not in disabled:
+        disabled.append(key)
+    update_user(uid, disabled_fields=",".join(disabled))
+    reset_skip_streak(uid, key)
+    label = dict(TOGGLEABLE_FIELDS).get(key, key)
+    await q.message.edit_text(f"Готово — «{label}» больше не будет спрашиваться. Включить обратно можно в ⚙️ Настройки → Редактировать отчёты.")
+
+async def dismiss_nudge_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.edit_text("Окей, продолжаю спрашивать как раньше.")
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4659,6 +4858,10 @@ def main():
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
+    app.add_handler(CallbackQueryHandler(edit_reports_menu, pattern="^edit_reports$"))
+    app.add_handler(CallbackQueryHandler(toggle_field_callback, pattern="^toggle_field_"))
+    app.add_handler(CallbackQueryHandler(quickdisable_field_callback, pattern="^quickdisable_"))
+    app.add_handler(CallbackQueryHandler(dismiss_nudge_callback, pattern="^dismiss_nudge$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
     app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
