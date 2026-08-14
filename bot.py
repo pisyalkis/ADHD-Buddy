@@ -1769,9 +1769,30 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
     user = get_user(uid)
-    streak = calc_streak(uid)
-
     today = evening_day(get_user_tz(user)).isoformat()
+
+    # Резюме прерванного вечера — см. комментарий у RESUME_FIELDS_EVENING и
+    # у аналогичной ветки в morning_start. Без этого набранный текст (планы
+    # на завтра и т.п.) молча терялся при повторном заходе после перерыва.
+    resuming = (
+        ctx.user_data.get("e_progress_date") == today
+        and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS_EVENING)
+    )
+    if resuming:
+        for key, state, ask_fn in RESUME_FIELDS_EVENING:
+            if key not in ctx.user_data:
+                stopped = g(user["gender"], "остановился", "остановилась")
+                await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
+                await ask_fn(q.message, ctx, user["gender"])
+                return state
+        # Все шаги уже пройдены (крайний случай — finish_evening не успел
+        # отработать) — начинаем заново, ниже.
+
+    ctx.user_data["e_progress_date"] = today
+    for key, _, _ in RESUME_FIELDS_EVENING:
+        ctx.user_data.pop(key, None)
+
+    streak = calc_streak(uid)
     morning = get_diary(uid, "morning", today)
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
 
@@ -1827,6 +1848,7 @@ async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
         await ask_selfcare(update.message, ctx, gender); return E_SELFCARE
+    ctx.user_data["e_selfcare_done"] = True
     await ask_energy(update.message, gender); return E_ENERGY
 
 async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1836,6 +1858,7 @@ async def skip_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = get_user(uid)["gender"]
     if has_any_diary_ever(uid):
         await ask_selfcare(q.message, ctx, gender); return E_SELFCARE
+    ctx.user_data["e_selfcare_done"] = True
     await ask_energy(q.message, gender); return E_ENERGY
 
 SELFCARE_ITEMS = [
@@ -1886,6 +1909,7 @@ async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    ctx.user_data["e_selfcare_done"] = True
     await ask_energy(q.message, get_user(q.from_user.id)["gender"])
     return E_ENERGY
 
@@ -1976,6 +2000,26 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.setdefault("e_c3", "")
     await finish_evening(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
+
+# Шаги вечернего диалога по порядку, для резюме прерванного вечера — тот же
+# принцип, что и RESUME_FIELDS для утра (см. комментарий там). Чек-лист задач
+# (E_TASKS_DONE) сюда не входит — как и утренняя разминка, при прерывании на
+# этом шаге ничего не жалко потерять, просто перетыкать чек-боксы заново.
+# e_selfcare_done — отдельный маркер завершения (не сам "e_selfcare", он
+# устанавливается уже при ВХОДЕ в шаг, до того как человек что-то отметил).
+RESUME_FIELDS_EVENING = [
+    ("e_ach",           E_ACH,        lambda msg, ctx, gender: ask_achievements(msg, gender)),
+    ("e_praise",        E_PRAISE,     lambda msg, ctx, gender: ask_praise(msg)),
+    ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender: ask_highlights(msg)),
+    ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender: ask_selfcare(msg, ctx, gender)),
+    ("e_energy",        E_ENERGY,     lambda msg, ctx, gender: ask_energy(msg, gender)),
+    ("e_a",             E_A,          lambda msg, ctx, gender: ask_plan_a(msg)),
+    ("e_b1",            E_B1,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1"))),
+    ("e_b2",            E_B2,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2"))),
+    ("e_c1",            E_C1,         lambda msg, ctx, gender: ask_e_c1(msg)),
+    ("e_c2",            E_C2,         lambda msg, ctx, gender: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
+    ("e_c3",            E_C3,         lambda msg, ctx, gender: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
+]
 
 async def finish_evening(message, uid, ctx):
     user = get_user(uid)
