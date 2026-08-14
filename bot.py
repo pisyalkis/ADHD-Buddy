@@ -453,8 +453,13 @@ def init_db():
         days INTEGER DEFAULT 30,
         max_uses INTEGER DEFAULT 1,
         uses INTEGER DEFAULT 0,
-        created TEXT
+        created TEXT,
+        label TEXT DEFAULT ''
     )""")
+    try:
+        c.execute("ALTER TABLE promo_codes ADD COLUMN label TEXT DEFAULT ''")
+    except Exception:
+        pass
     c.execute("""CREATE TABLE IF NOT EXISTS promo_redemptions (
         user_id INTEGER, code TEXT, redeemed TEXT,
         PRIMARY KEY (user_id, code)
@@ -578,14 +583,38 @@ def get_trial_days_left(user):
     trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
     return max(0, (trial_end - date.today()).days)
 
-def create_promo_code(code, days, max_uses):
+def create_promo_code(code, days, max_uses, label=""):
+    """max_uses=0 значит без ограничения — так делаются личные коды
+    блогеров, которые видит вся их аудитория, а не один человек."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "INSERT OR REPLACE INTO promo_codes(code, days, max_uses, uses, created) VALUES(?,?,?,?,?)",
-        (code, days, max_uses, 0, datetime.now().isoformat())
+        "INSERT OR REPLACE INTO promo_codes(code, days, max_uses, uses, created, label) VALUES(?,?,?,?,?,?)",
+        (code, days, max_uses, 0, datetime.now().isoformat(), label)
     )
     conn.commit(); conn.close()
+
+def promo_code_exists(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    row = c.execute("SELECT 1 FROM promo_codes WHERE code=?", (code,)).fetchone()
+    conn.close()
+    return row is not None
+
+def list_promo_codes():
+    """Список всех кодов с числом активаций — чтобы видеть, сколько
+    пользователей пришло через каждый (в т.ч. через блогерские)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    rows = c.execute(
+        "SELECT code, label, days, uses, max_uses, created FROM promo_codes ORDER BY uses DESC, created DESC"
+    ).fetchall()
+    conn.close()
+    return rows
+
+def _slugify_promo_code(name):
+    s = re.sub(r"[^0-9A-Za-zА-Яа-яЁё]", "", name).upper()
+    return s[:20] or "PROMO"
 
 def redeem_promo_code(uid, code):
     """Возвращает (ok: bool, message: str). Промокод продлевает пробный
@@ -604,7 +633,7 @@ def redeem_promo_code(uid, code):
     if already:
         conn.close()
         return False, "Этот промокод уже использован тобой раньше."
-    if uses >= max_uses:
+    if max_uses > 0 and uses >= max_uses:
         conn.close()
         return False, "У этого промокода закончились активации."
     c.execute("UPDATE promo_codes SET uses = uses + 1 WHERE code=?", (code,))
@@ -3940,19 +3969,74 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
 
 async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Админ-команда: /newpromo CODE DAYS MAX_USES"""
+    """Админ-команда: /newpromo CODE [дней=30] [активаций=1, 0=без лимита] [метка]"""
     uid = update.effective_user.id
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     if len(ctx.args) < 1:
-        await update.message.reply_text("Использование: /newpromo CODE [дней=30] [активаций=1]")
+        await update.message.reply_text("Использование: /newpromo CODE [дней=30] [активаций=1, 0=без лимита] [метка]")
         return
     code = ctx.args[0].strip().upper()
     days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
     max_uses = int(ctx.args[2]) if len(ctx.args) > 2 else 1
-    create_promo_code(code, days, max_uses)
-    await update.message.reply_text(f"✅ Промокод `{code}` создан: +{days} дн., {max_uses} активаций.", parse_mode="Markdown")
+    label = " ".join(ctx.args[3:]).strip()
+    create_promo_code(code, days, max_uses, label)
+    limit_str = "без ограничения" if max_uses <= 0 else f"{max_uses} активаций"
+    who = f", метка «{label}»" if label else ""
+    await update.message.reply_text(f"✅ Промокод `{code}` создан: +{days} дн., {limit_str}{who}.", parse_mode="Markdown")
+
+async def blogger_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: /blogger Имя [дней=14] — быстро создать личный промокод
+    для блогера: код генерируется из имени, активаций без ограничения (код
+    один на всю аудиторию), метка = имя. Статистика по всем кодам — /promocodes."""
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Использование: /blogger Имя [дней=14]")
+        return
+    args = list(ctx.args)
+    days = 14
+    if args and args[-1].isdigit():
+        days = int(args.pop())
+    label = " ".join(args).strip()
+    if not label:
+        await update.message.reply_text("Использование: /blogger Имя [дней=14]")
+        return
+    code = _slugify_promo_code(label)
+    base_code, n = code, 2
+    while promo_code_exists(code):
+        code = f"{base_code}{n}"
+        n += 1
+    create_promo_code(code, days, 0, label)
+    await update.message.reply_text(
+        f"✅ Личный промокод для *{md_escape(label)}*: `{code}`\n\n"
+        f"Даёт +{days} дн. пробного периода, активаций без ограничения.\n\n"
+        f"Что отправить блогеру:\n"
+        f"«Промокод {code} — {days} дней бесплатного доступа к ADHD Buddy. Ввести: /promo {code}»\n\n"
+        f"Смотреть статистику по всем кодам: /promocodes",
+        parse_mode="Markdown"
+    )
+
+async def promocodes_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: /promocodes — список всех промокодов и сколько раз
+    каждый активирован (в т.ч. блогерские — видно, сколько пришло людей)."""
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    rows = list_promo_codes()
+    if not rows:
+        await update.message.reply_text("Промокодов пока нет. Создать: /newpromo или /blogger.")
+        return
+    lines = ["🎟 *Промокоды:*\n"]
+    for code, label, days, uses, max_uses, created in rows:
+        limit = "∞" if max_uses <= 0 else str(max_uses)
+        who = f" — _{md_escape(label)}_" if label else ""
+        lines.append(f"`{code}`{who}: *{uses}*/{limit} исп. · +{days} дн.")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Админ-команда: /grant USER_ID [дней=30] — выдать доступ конкретному
@@ -5295,6 +5379,8 @@ def main():
     app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(CommandHandler("newpromo", newpromo_command), group=-1)
+    app.add_handler(CommandHandler("blogger", blogger_command), group=-1)
+    app.add_handler(CommandHandler("promocodes", promocodes_command), group=-1)
     app.add_handler(CommandHandler("grant", grant_command), group=-1)
     app.add_handler(CallbackQueryHandler(grant30_callback, pattern="^grant30_"), group=-1)
     app.add_handler(TypeHandler(Update, access_gate), group=-2)
