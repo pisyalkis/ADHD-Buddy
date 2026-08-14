@@ -459,6 +459,11 @@ def init_db():
         user_id INTEGER, code TEXT, redeemed TEXT,
         PRIMARY KEY (user_id, code)
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, stars INTEGER, days INTEGER,
+        charge_id TEXT, created TEXT
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -620,6 +625,19 @@ def grant_access_days(uid, days):
     user = get_user(uid)
     new_extra = int(user.get("promo_extra_days") or 0) + days
     update_user(uid, promo_extra_days=new_extra)
+
+def save_payment(uid, stars, days, charge_id):
+    """Отдельный лог реальных оплат Stars — источник для /admin ("сколько
+    людей заплатило", "сколько всего Stars"), а не просто текущий статус
+    subscription_until (который не отличает "заплатил и подписка ещё
+    активна" от "заплатил, но подписка уже закончилась")."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO payments(user_id, stars, days, charge_id, created) VALUES(?,?,?,?,?)",
+        (uid, stars, days, charge_id, datetime.now().isoformat())
+    )
+    conn.commit(); conn.close()
 
 def save_diary(uid, block, data, for_date=None):
     conn = sqlite3.connect(DB_PATH)
@@ -1401,6 +1419,13 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
+PIN_CHAT_TIP = (
+    "📌 *Совет напоследок*\n\n"
+    "Закрепи этот чат в Телеграме (зажми на нём в списке чатов → «Закрепить») — "
+    "тогда бот всегда будет сверху и не потеряется среди других переписок. "
+    "Для ежедневного инструмента это реально важно."
+)
+
 async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
@@ -1411,6 +1436,7 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Изменить время можно в ⚙️ Настройки.",
         parse_mode="Markdown"
     )
+    await q.message.reply_text(PIN_CHAT_TIP, parse_mode="Markdown")
     await send_onboarding_final(q.message, uid)
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1420,6 +1446,7 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки."
     )
+    await q.message.reply_text(PIN_CHAT_TIP, parse_mode="Markdown")
     await send_onboarding_final(q.message, uid)
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
@@ -3867,6 +3894,7 @@ async def precheckout_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = get_user(uid)
+    payment = update.message.successful_payment
     base = date.today()
     current_until = (user.get("subscription_until") or "")[:10]
     try:
@@ -3877,6 +3905,7 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
         pass
     new_until = base + timedelta(days=STARS_SUBSCRIPTION_DAYS)
     update_user(uid, subscription_until=new_until.isoformat())
+    save_payment(uid, payment.total_amount, STARS_SUBSCRIPTION_DAYS, payment.telegram_payment_charge_id)
     await update.message.reply_text(
         f"⭐ Спасибо! Подписка продлена до *{new_until.isoformat()}*.",
         parse_mode="Markdown", reply_markup=menu_button_kb()
@@ -3885,7 +3914,7 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
         try:
             await ctx.bot.send_message(
                 NOTIFY_USER_ID,
-                f"⭐ Оплата подписки от {user['name'] or uid} — до {new_until.isoformat()}"
+                f"⭐ Оплата {payment.total_amount} Stars от {user['name'] or uid} — подписка до {new_until.isoformat()}"
             )
         except Exception as e:
             print(f"Не удалось уведомить об оплате: {e}")
@@ -5024,6 +5053,8 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for r in access_rows:
             access_counts[get_access_status(dict(r))] += 1
         promo_redemptions_total = cur.execute("SELECT COUNT(*) FROM promo_redemptions").fetchone()[0]
+        paid_users = cur.execute("SELECT COUNT(DISTINCT user_id) FROM payments").fetchone()[0]
+        stars_total = cur.execute("SELECT COALESCE(SUM(stars), 0) FROM payments").fetchone()[0]
 
         # Research summary
         r3_ratings  = cur.execute("SELECT answer FROM research WHERE day=3 AND question='day3_rating'").fetchall()
@@ -5074,7 +5105,8 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"📅 Активны за 7 дней: *{active7}*\n"
             f"📅 Активны за 30 дней: *{active30}*\n\n"
             f"💎 *Доступ:* 🎁 Пробный: {access_counts['trial']} · ✅ Подписка: {access_counts['subscribed']} · "
-            f"⌛ Истёк: {access_counts['expired']} · 🎟 Промокодов активировано: {promo_redemptions_total}\n\n"
+            f"⌛ Истёк: {access_counts['expired']} · 🎟 Промокодов активировано: {promo_redemptions_total}\n"
+            f"💳 *Оплатили:* {paid_users} чел. · ⭐ Всего получено: {stars_total} Stars\n\n"
             f"🌍 *Города:*\n{cities_str}\n\n"
             f"📋 *Чекины:*\n"
             f"  ☀️ Утро: {block_map.get('morning',0)}\n"
