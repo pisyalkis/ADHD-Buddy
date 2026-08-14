@@ -472,6 +472,7 @@ def init_db():
         ("pinned_msg_id", "''"),
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
+        ("daily_skill_override", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -907,23 +908,12 @@ def today_str(tz=None):
 # в разделе 🧠 Навыки, а не в случайной ротации наравне с ситуативными техниками.
 DAILY_SKILL_EXCLUDE = {"Список дел", "Приоритеты"}
 
-def get_daily_skill(uid):
-    """Возвращает навык дня — меняется каждый день (по таймзоне пользователя).
-
-    Используем hashlib, а не встроенный hash(): для строк он рандомизирован
-    per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
-    дня для той же даты мог бы внезапно смениться.
-
-    Если при онбординге отмечены главные трудности (user.struggles) — ротация
-    идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
-    а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
-
-    DAILY_SKILL_EXCLUDE вырезается из пула в обоих случаях.
-    """
-    user = get_user(uid)
-    today = datetime.now(get_user_tz(user)).date().isoformat()
-    digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
-
+def _daily_skill_indices(user):
+    """Пул индексов SKILLS, из которого выбирается навык дня — с учётом
+    struggles (если заданы в онбординге) и без DAILY_SKILL_EXCLUDE. Вынесено
+    отдельно от get_daily_skill, чтобы reroll_daily_skill мог найти "следующий"
+    индекс в том же самом пуле, а не пересчитывать его отдельно и рисковать
+    рассинхроном."""
     struggles = [s for s in (user.get("struggles") or "").split(",") if s]
     pool = []
     if struggles:
@@ -934,8 +924,48 @@ def get_daily_skill(uid):
 
     indices = pool or list(range(len(SKILLS)))
     indices = [i for i in indices if not any(ex in SKILLS[i]["name"] for ex in DAILY_SKILL_EXCLUDE)] or indices
+    return indices
+
+def get_daily_skill(uid):
+    """Возвращает навык дня — меняется каждый день (по таймзоне пользователя),
+    если только пользователь не переопределил его сегодня кнопкой
+    «🔄 Другой навык» (см. reroll_daily_skill) — тогда до конца дня
+    возвращается именно сохранённый выбор, а не хэш заново.
+
+    Используем hashlib, а не встроенный hash(): для строк он рандомизирован
+    per-process (PYTHONHASHSEED), так что после каждого рестарта бота навык
+    дня для той же даты мог бы внезапно смениться.
+
+    Если при онбординге отмечены главные трудности (user.struggles) — ротация
+    идёт только среди навыков, связанных с этими трудностями (PROBLEM_TO_SKILLS),
+    а не среди всех подряд. Без выбранных трудностей — как раньше, по всем.
+    """
+    user = get_user(uid)
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+
+    override_date, _, override_name = (user.get("daily_skill_override") or "").partition("|")
+    if override_date == today:
+        for sk in SKILLS:
+            if sk["name"] == override_name:
+                return sk
+
+    digest = hashlib.md5(f"{today}{uid}".encode()).hexdigest()
+    indices = _daily_skill_indices(user)
     idx = indices[int(digest, 16) % len(indices)]
     return SKILLS[idx]
+
+def reroll_daily_skill(uid):
+    """Кнопка «🔄 Другой навык» — переключает навык дня на следующий в том
+    же пуле (по кругу) и запоминает выбор в БД до конца дня. Без сохранения
+    выбор слетел бы обратно к хэш-навыку при любом следующем показе."""
+    user = get_user(uid)
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    current_idx = SKILLS.index(get_daily_skill(uid))
+    indices = _daily_skill_indices(user)
+    pos = indices.index(current_idx) if current_idx in indices else -1
+    next_skill = SKILLS[indices[(pos + 1) % len(indices)]]
+    update_user(uid, daily_skill_override=f"{today}|{next_skill['name']}")
+    return next_skill
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1289,6 +1319,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
     kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
+    kb_rows.append([InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")])
     reply_markup = InlineKeyboardMarkup(kb_rows)
 
     # Адаптивное приветствие по уровню энергии вечера
@@ -2255,13 +2286,32 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     daily = get_daily_skill(uid)
+    kb = skills_list_kb()
+    kb.inline_keyboard = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + kb.inline_keyboard
     await q.message.reply_text(
         "🧠 *Навыки*\n\n"
         f"💡 *Навык дня:* {daily['name']}\n"
         f"_{daily['desc']}_\n\n"
         "Весь список — выбери, чтобы посмотреть подробнее:",
         parse_mode="Markdown",
-        reply_markup=skills_list_kb()
+        reply_markup=kb
+    )
+
+async def reroll_skill_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«🔄 Поменять навык» — берёт следующий навык из того же пула
+    (см. reroll_daily_skill) и присылает новой карточкой, с той же кнопкой,
+    чтобы можно было прокрутить ещё раз, если и этот не подходит."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    skill = reroll_daily_skill(uid)
+    skill_idx = SKILLS.index(skill)
+    await q.message.reply_text(
+        f"🔄 *Новый навык дня:* {skill['name']}\n_{skill['desc']}_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
+            [InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")],
+        ])
     )
 
 async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3725,6 +3775,7 @@ async def morning_notification(app, uid):
 
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
+            [InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")],
             [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")],
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
         ])
@@ -4599,6 +4650,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
+    app.add_handler(CallbackQueryHandler(reroll_skill_callback, pattern="^reroll_skill$"))
     app.add_handler(CallbackQueryHandler(show_box_breathing, pattern="^skill_box_breathing$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(why_callback, pattern=r"^why_"))
