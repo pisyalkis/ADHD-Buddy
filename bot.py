@@ -1319,7 +1319,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
     kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
-    kb_rows.append([InlineKeyboardButton("🔄 Другой навык дня", callback_data="reroll_skill")])
+    kb_rows.append([InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")])
     reply_markup = InlineKeyboardMarkup(kb_rows)
 
     # Адаптивное приветствие по уровню энергии вечера
@@ -2287,7 +2287,7 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     daily = get_daily_skill(uid)
     kb = skills_list_kb()
-    kb.inline_keyboard = [[InlineKeyboardButton("🔄 Другой навык дня", callback_data="reroll_skill")]] + kb.inline_keyboard
+    kb.inline_keyboard = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + kb.inline_keyboard
     await q.message.reply_text(
         "🧠 *Навыки*\n\n"
         f"💡 *Навык дня:* {daily['name']}\n"
@@ -2298,7 +2298,7 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def reroll_skill_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """«🔄 Другой навык дня» — берёт следующий навык из того же пула
+    """«🔄 Поменять навык» — берёт следующий навык из того же пула
     (см. reroll_daily_skill) и присылает новой карточкой, с той же кнопкой,
     чтобы можно было прокрутить ещё раз, если и этот не подходит."""
     q = update.callback_query; await q.answer()
@@ -2310,7 +2310,7 @@ async def reroll_skill_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
-            [InlineKeyboardButton("🔄 Другой навык дня", callback_data="reroll_skill")],
+            [InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")],
         ])
     )
 
@@ -3775,7 +3775,7 @@ async def morning_notification(app, uid):
 
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
-            [InlineKeyboardButton("🔄 Другой навык дня", callback_data="reroll_skill")],
+            [InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")],
             [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")],
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
         ])
