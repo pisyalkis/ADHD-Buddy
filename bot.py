@@ -12,11 +12,11 @@ ADHD Focus Bot v5
 import os, json, sqlite3, asyncio, random, threading, time, hashlib, re
 from datetime import datetime, date, timedelta
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, filters, ContextTypes,
-    PicklePersistence
+    PicklePersistence, PreCheckoutQueryHandler, ApplicationHandlerStop, TypeHandler
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -31,6 +31,17 @@ USER_TIMEZONE = os.getenv("USER_TIMEZONE", "Asia/Tbilisi")
 # Путь к SQLite-базе — укажи путь на смонтированном volume (например /data/adhd.db),
 # иначе данные будут теряться при каждом передеплое
 DB_PATH = os.getenv("DB_PATH", "adhd.db")
+
+# ── ДОСТУП / ПОДПИСКА ──────────────────────────────────────────────────────
+# Общий рубильник платного доступа. Пока False — весь код ниже (промокоды,
+# Stars-оплата, статус подписки) активен и тестируем, но НИКОГО не блокирует:
+# access_gate выходит первой же строкой. Включать только явно, отдельным
+# решением — не флагом окружения по умолчанию, чтобы случайный редеплой без
+# заданной переменной не включил пейволл всем разом.
+ACCESS_GATE_ENABLED = False
+TRIAL_DAYS = 7  # бесплатный период с момента регистрации (created_at) + promo_extra_days
+STARS_SUBSCRIPTION_DAYS = 30
+STARS_PRICE_MONTHLY = 150  # цена ещё не решена — одна константа, легко поменять
 # Статичные анимации-инструменты (не данные пользователя, один и тот же файл
 # для всех) — путь считаем от расположения самого файла, а не от cwd, чтобы
 # не зависеть от того, откуда запущен процесс.
@@ -437,6 +448,17 @@ def init_db():
         user_id INTEGER, day INTEGER, question TEXT,
         answer TEXT, created TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS promo_codes (
+        code TEXT PRIMARY KEY,
+        days INTEGER DEFAULT 30,
+        max_uses INTEGER DEFAULT 1,
+        uses INTEGER DEFAULT 0,
+        created TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS promo_redemptions (
+        user_id INTEGER, code TEXT, redeemed TEXT,
+        PRIMARY KEY (user_id, code)
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -477,6 +499,8 @@ def init_db():
         ("skip_streaks", "''"),
         ("beacon_types", "''"),
         ("beacon_rotation_idx", "'0'"),
+        ("promo_extra_days", "0"),
+        ("subscription_until", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -516,6 +540,78 @@ def update_user(uid, **kwargs):
     for k, v in kwargs.items():
         c.execute(f"UPDATE users SET {k}=? WHERE user_id=?", (v, uid))
     conn.commit(); conn.close()
+
+# ── ДОСТУП / ПОДПИСКА ────────────────────────────────────────────────────
+def get_access_status(user):
+    """trial / subscribed / expired. Владелец бота (NOTIFY_USER_ID) всегда
+    subscribed — иначе легко случайно выпилить себе доступ во время теста."""
+    if NOTIFY_USER_ID and int(user.get("user_id") or 0) == NOTIFY_USER_ID:
+        return "subscribed"
+    sub_until = user.get("subscription_until") or ""
+    if sub_until:
+        try:
+            if date.fromisoformat(sub_until[:10]) >= date.today():
+                return "subscribed"
+        except Exception:
+            pass
+    created = (user.get("created_at") or date.today().isoformat())[:10]
+    try:
+        created_date = date.fromisoformat(created)
+    except Exception:
+        created_date = date.today()
+    extra_days = int(user.get("promo_extra_days") or 0)
+    trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
+    return "trial" if date.today() <= trial_end else "expired"
+
+def get_trial_days_left(user):
+    created = (user.get("created_at") or date.today().isoformat())[:10]
+    try:
+        created_date = date.fromisoformat(created)
+    except Exception:
+        created_date = date.today()
+    extra_days = int(user.get("promo_extra_days") or 0)
+    trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
+    return max(0, (trial_end - date.today()).days)
+
+def create_promo_code(code, days, max_uses):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO promo_codes(code, days, max_uses, uses, created) VALUES(?,?,?,?,?)",
+        (code, days, max_uses, 0, datetime.now().isoformat())
+    )
+    conn.commit(); conn.close()
+
+def redeem_promo_code(uid, code):
+    """Возвращает (ok: bool, message: str). Промокод продлевает пробный
+    период (promo_extra_days), а не даёт постоянный доступ — это осознанное
+    решение: подарок должен заканчиваться, иначе это не пробный период."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    row = c.execute("SELECT days, max_uses, uses FROM promo_codes WHERE code=?", (code,)).fetchone()
+    if not row:
+        conn.close()
+        return False, "Такого промокода нет — проверь, правильно ли ввёл(а)."
+    days, max_uses, uses = row
+    already = c.execute(
+        "SELECT 1 FROM promo_redemptions WHERE user_id=? AND code=?", (uid, code)
+    ).fetchone()
+    if already:
+        conn.close()
+        return False, "Этот промокод уже использован тобой раньше."
+    if uses >= max_uses:
+        conn.close()
+        return False, "У этого промокода закончились активации."
+    c.execute("UPDATE promo_codes SET uses = uses + 1 WHERE code=?", (code,))
+    c.execute(
+        "INSERT INTO promo_redemptions(user_id, code, redeemed) VALUES(?,?,?)",
+        (uid, code, datetime.now().isoformat())
+    )
+    conn.commit(); conn.close()
+    user = get_user(uid)
+    new_extra = int(user.get("promo_extra_days") or 0) + days
+    update_user(uid, promo_extra_days=new_extra)
+    return True, f"Промокод принят — пробный период продлён на {days} дн. 🎉"
 
 def save_diary(uid, block, data, for_date=None):
     conn = sqlite3.connect(DB_PATH)
@@ -913,6 +1009,7 @@ def menu_more_kb():
         [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
         [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        [InlineKeyboardButton("💎 Подписка", callback_data="go_subscribe")],
         [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
@@ -3115,6 +3212,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_city"] = False
     ctx.user_data["awaiting_feedback"] = False
+    ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
     ctx.user_data.pop("admin_msg_target", None)
@@ -3278,6 +3376,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 print(f"Не удалось переслать обратную связь: {e}")
         await update.message.reply_text(
             "Спасибо! Идея записана 🙏",
+            reply_markup=menu_button_kb()
+        )
+    elif ctx.user_data.get("awaiting_promo_code"):
+        ctx.user_data["awaiting_promo_code"] = False
+        code = update.message.text.strip().upper()
+        ok, msg = redeem_promo_code(uid, code)
+        await update.message.reply_text(
+            ("✅ " if ok else "⚠️ ") + msg,
             reply_markup=menu_button_kb()
         )
     elif ctx.user_data.get("admin_msg_target"):
@@ -3700,6 +3806,161 @@ async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
     )
+
+
+# ── ПОДПИСКА ───────────────────────────────────────────────────────────────
+def _subscribe_text_and_kb(user):
+    status = get_access_status(user)
+    if status == "subscribed":
+        sub_until = (user.get("subscription_until") or "")[:10]
+        body = f"✅ Подписка активна до *{sub_until}*." if sub_until else "✅ У тебя постоянный доступ."
+    elif status == "trial":
+        left = get_trial_days_left(user)
+        body = f"🎁 Пробный период — осталось *{left} {'день' if left == 1 else 'дня' if 1 < left < 5 else 'дней'}*."
+    else:
+        body = "⌛ Пробный период закончился."
+    text = (
+        "💎 *Подписка*\n\n"
+        f"{body}\n\n"
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
+        "Есть промокод — можно продлить пробный период бесплатно."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+        [InlineKeyboardButton("🎁 У меня промокод", callback_data="go_promo")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+    return text, kb
+
+async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    text, kb = _subscribe_text_and_kb(get_user(q.from_user.id))
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    text, kb = _subscribe_text_and_kb(get_user(update.effective_user.id))
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await ctx.bot.send_invoice(
+        chat_id=q.from_user.id,
+        title="Подписка ADHD Buddy",
+        description=f"Продлевает доступ на {STARS_SUBSCRIPTION_DAYS} дней.",
+        payload=f"subscription_{q.from_user.id}",
+        currency="XTR",
+        prices=[LabeledPrice(f"Подписка на {STARS_SUBSCRIPTION_DAYS} дней", STARS_PRICE_MONTHLY)],
+        provider_token="",  # Stars не требует provider_token
+    )
+
+async def precheckout_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.pre_checkout_query.answer(ok=True)
+
+async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = get_user(uid)
+    base = date.today()
+    current_until = (user.get("subscription_until") or "")[:10]
+    try:
+        existing = date.fromisoformat(current_until)
+        if existing > base:
+            base = existing
+    except Exception:
+        pass
+    new_until = base + timedelta(days=STARS_SUBSCRIPTION_DAYS)
+    update_user(uid, subscription_until=new_until.isoformat())
+    await update.message.reply_text(
+        f"⭐ Спасибо! Подписка продлена до *{new_until.isoformat()}*.",
+        parse_mode="Markdown", reply_markup=menu_button_kb()
+    )
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        try:
+            await ctx.bot.send_message(
+                NOTIFY_USER_ID,
+                f"⭐ Оплата подписки от {user['name'] or uid} — до {new_until.isoformat()}"
+            )
+        except Exception as e:
+            print(f"Не удалось уведомить об оплате: {e}")
+
+async def go_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_promo_code"] = True
+    await q.message.reply_text(
+        "🎁 *Промокод*\n\nВведи код текстом:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
+    )
+
+async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not ctx.args:
+        clear_awaiting_flags(ctx, update)
+        ctx.user_data["awaiting_promo_code"] = True
+        await update.message.reply_text("🎁 Введи промокод текстом:")
+        return
+    ok, msg = redeem_promo_code(uid, ctx.args[0].strip().upper())
+    await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+
+async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Админ-команда: /newpromo CODE DAYS MAX_USES"""
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    if len(ctx.args) < 1:
+        await update.message.reply_text("Использование: /newpromo CODE [дней=30] [активаций=1]")
+        return
+    code = ctx.args[0].strip().upper()
+    days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
+    max_uses = int(ctx.args[2]) if len(ctx.args) > 2 else 1
+    create_promo_code(code, days, max_uses)
+    await update.message.reply_text(f"✅ Промокод `{code}` создан: +{days} дн., {max_uses} активаций.", parse_mode="Markdown")
+
+# Экраны/действия, доступные даже пользователю с истёкшим доступом — иначе
+# он физически не сможет ни оплатить, ни ввести промокод, чтобы выйти из
+# пейволла (см. access_gate).
+ACCESS_GATE_EXEMPT_CALLBACKS = {
+    "go_subscribe", "go_subscribe_pay", "go_promo", "go_menu",
+}
+ACCESS_GATE_EXEMPT_COMMANDS = {"start", "subscribe", "promo", "admin", "newpromo"}
+
+async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Group=-2 — перед вообще всеми остальными обработчиками. Пока
+    ACCESS_GATE_ENABLED=False ничего не делает, полностью прозрачен."""
+    if not ACCESS_GATE_ENABLED:
+        return
+    user_obj = update.effective_user
+    if user_obj is None:
+        return
+    uid = user_obj.id
+    if NOTIFY_USER_ID and uid == NOTIFY_USER_ID:
+        return
+    if update.message and update.message.successful_payment:
+        return
+    if update.pre_checkout_query:
+        return
+    if update.message and update.message.text and update.message.text.startswith("/"):
+        cmd = update.message.text[1:].split()[0].split("@")[0].lower()
+        if cmd in ACCESS_GATE_EXEMPT_COMMANDS:
+            return
+    if update.callback_query and update.callback_query.data in ACCESS_GATE_EXEMPT_CALLBACKS:
+        return
+    if ctx.user_data.get("awaiting_promo_code"):
+        return
+    user = get_user(uid)
+    if get_access_status(user) != "expired":
+        return
+    _, kb = _subscribe_text_and_kb(user)
+    paywall_text = (
+        "⌛ *Пробный период закончился*\n\n"
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
+        "Есть промокод — можно продлить пробный период бесплатно."
+    )
+    target = update.effective_message
+    if target:
+        await target.reply_text(paywall_text, parse_mode="Markdown", reply_markup=kb)
+    raise ApplicationHandlerStop
 
 
 # ── BUDDY ──────────────────────────────────────────────────────────────────
@@ -4707,6 +4968,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ).fetchall()
         block_map = {r[0]: r[1] for r in checkins}
 
+        # Доступ/подписка
+        conn.row_factory = sqlite3.Row
+        cur2 = conn.cursor()
+        access_rows = cur2.execute("SELECT * FROM users WHERE name != ''").fetchall()
+        access_counts = {"trial": 0, "subscribed": 0, "expired": 0}
+        for r in access_rows:
+            access_counts[get_access_status(dict(r))] += 1
+        promo_redemptions_total = cur.execute("SELECT COUNT(*) FROM promo_redemptions").fetchone()[0]
+
         # Research summary
         r3_ratings  = cur.execute("SELECT answer FROM research WHERE day=3 AND question='day3_rating'").fetchall()
         r14_nps     = cur.execute("SELECT answer FROM research WHERE day=14 AND question='day14_rating'").fetchall()
@@ -4755,6 +5025,8 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  👨 Мужчин: {males} · 👩 Женщин: {females}" + (f" · 🏳️‍🌈 Другое: {nonbin}" if nonbin else "") + "\n"
             f"📅 Активны за 7 дней: *{active7}*\n"
             f"📅 Активны за 30 дней: *{active30}*\n\n"
+            f"💎 *Доступ:* 🎁 Пробный: {access_counts['trial']} · ✅ Подписка: {access_counts['subscribed']} · "
+            f"⌛ Истёк: {access_counts['expired']} · 🎟 Промокодов активировано: {promo_redemptions_total}\n\n"
             f"🌍 *Города:*\n{cities_str}\n\n"
             f"📋 *Чекины:*\n"
             f"  ☀️ Утро: {block_map.get('morning',0)}\n"
@@ -4938,6 +5210,8 @@ def main():
     app.add_handler(CommandHandler("users", admin_users), group=-1)
     app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
+    app.add_handler(CommandHandler("newpromo", newpromo_command), group=-1)
+    app.add_handler(TypeHandler(Update, access_gate), group=-2)
     app.add_handler(onboard_conv)
     global _morning_conv, _evening_conv
     _morning_conv = morning_conv
@@ -4989,6 +5263,13 @@ def main():
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
+    app.add_handler(CommandHandler("subscribe", subscribe_command))
+    app.add_handler(CommandHandler("promo", promo_command))
+    app.add_handler(CallbackQueryHandler(go_subscribe,     pattern="^go_subscribe$"))
+    app.add_handler(CallbackQueryHandler(go_subscribe_pay, pattern="^go_subscribe_pay$"))
+    app.add_handler(CallbackQueryHandler(go_promo,         pattern="^go_promo$"))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
