@@ -3157,8 +3157,20 @@ async def send_beacon(app, user):
         print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
 
 
+TASK_LABELS = {
+    "focus": "🅰️ Главная задача",
+    "b1":    "🅱️ Задача B1",
+    "b2":    "🅱️ Задача B2",
+    "c1":    "🅲 Задача C1",
+    "c2":    "🅲 Задача C2",
+    "c3":    "🅲 Задача C3",
+}
+
 def _tasks_text_and_kb(morning, done_set, gender):
-    """Строит текст и клавиатуру задач с отметками выполнения.
+    """Строит текст и клавиатуру задач с отметками выполнения, добавлением
+    и правкой — без прохождения полного утреннего ритуала. См. фидбек
+    Виктории (хотела добавить задачу днём, а бот предлагал пройти утро
+    заново) и Анны (хотела доступ к задачам не только через ритуал).
 
     done_set — множество ключей TASK_FIELDS (focus/b1/b2/c1/c2/c3), а не
     отдельных "A/B1/.." меток — тот же формат, что использует вечерний
@@ -3169,14 +3181,19 @@ def _tasks_text_and_kb(morning, done_set, gender):
     buttons = []
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
-        if not val: continue
+        if not val:
+            buttons.append([InlineKeyboardButton(f"➕ {TASK_LABELS[key]}", callback_data=f"edit_task_{key}")])
+            continue
         done = key in done_set
         prefix = "✅" if done else icon
         lines.append(f"{prefix} {val}")
+        row = []
         if not done:
-            buttons.append([InlineKeyboardButton(f"✅ Выполнено: {val[:30]}", callback_data=f"task_done_{key}")])
+            row.append(InlineKeyboardButton(f"✅ Выполнено: {val[:24]}", callback_data=f"task_done_{key}"))
+        row.append(InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_task_{key}"))
+        buttons.append(row)
 
-    text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи не заданы_")
+    text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
     kb_rows = buttons + [
         [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
@@ -3184,23 +3201,31 @@ def _tasks_text_and_kb(morning, done_set, gender):
     return text, InlineKeyboardMarkup(kb_rows)
 
 async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Показать все задачи на сегодня."""
+    """Показать все задачи на сегодня — с возможностью добавить или
+    поменять любую из них прямо здесь, не проходя весь утренний ритуал."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
-
-    if not morning:
-        await q.message.reply_text(
-            "📋 *Задачи на сегодня*\n\n_Утренний дневник ещё не заполнен._\n\nЗаполни утро чтобы поставить задачи 👇",
-            parse_mode="Markdown", reply_markup=menu_button_kb()
-        )
-        return
-
     done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    if not morning:
+        text += "\n\n_Утро ещё не заполнялось — можно поставить задачи прямо тут, или пройти полный утренний ритуал кнопкой ☀️ в меню._"
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Точечное добавление/правка одной задачи, без полного утреннего
+    ритуала — вход и с пустого, и с уже заполненного слота (см. _tasks_text_and_kb)."""
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("edit_task_", "")
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_task_edit"] = key
+    label = TASK_LABELS.get(key, key)
+    await q.message.reply_text(
+        f"{label}\n\nВведи текст задачи:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
+    )
 
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Отметить задачу выполненной."""
@@ -3325,6 +3350,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_city"] = False
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_promo_code"] = False
+    ctx.user_data.pop("awaiting_task_edit", None)
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
     ctx.user_data.pop("admin_msg_target", None)
@@ -3497,6 +3523,28 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             ("✅ " if ok else "⚠️ ") + msg,
             reply_markup=menu_button_kb()
+        )
+    elif ctx.user_data.get("awaiting_task_edit"):
+        key = ctx.user_data.pop("awaiting_task_edit")
+        text = update.message.text.strip()
+        today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+        morning = get_diary(uid, "morning", today)
+        was_filled = bool(morning.get(key))
+        morning[key] = text
+        save_diary(uid, "morning", morning, for_date=today)
+        if was_filled:
+            # Текст задачи поменялся — старая отметка "выполнено" больше не
+            # про эту задачу (иначе новая задача выглядела бы уже сделанной).
+            done_data = get_diary(uid, "tasks_done", today)
+            done_list = [k for k in done_data.get("done", []) if k != key]
+            if len(done_list) != len(done_data.get("done", [])):
+                save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
+        done_data2 = get_diary(uid, "tasks_done", today)
+        done_set = set(done_data2.get("done", []))
+        out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+        await update.message.reply_text(
+            ("✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n") + out_text,
+            parse_mode="Markdown", reply_markup=kb
         )
     elif ctx.user_data.get("admin_msg_target"):
         target_id = ctx.user_data.pop("admin_msg_target")
@@ -5479,6 +5527,7 @@ def main():
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
+    app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
