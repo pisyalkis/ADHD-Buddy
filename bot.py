@@ -1004,8 +1004,8 @@ def midday_kb(morning=None, done_set=None):
     return InlineKeyboardMarkup(rows)
 
 
-def skip_kb(cb):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Пропустить →", callback_data=cb)]])
+def skip_kb(cb, label="Пропустить →"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=cb)]])
 
 # Объяснения "зачем это нужно" для полей, где польза не самоочевидна (в
 # отличие от, скажем, задач A/B/C) — пользователи спрашивали, зачем вообще
@@ -2296,13 +2296,13 @@ async def ask_plan_a(message):
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_a"] = update.message.text
-    await update.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1"))
+    await update.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))
     return E_B1
 
 async def skip_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_a"] = ""
-    await q.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1"))
+    await q.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))
     return E_B1
 
 async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2317,13 +2317,13 @@ async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b1"] = update.message.text
-    await update.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2"))
+    await update.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))
     return E_B2
 
 async def skip_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_b1"] = ""
-    await q.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2"))
+    await q.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))
     return E_B2
 
 async def got_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2335,16 +2335,16 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b2"] = ""; await ask_e_c1(q.message); return E_C1
 
 async def ask_e_c1(message):
-    await message.reply_text("🅲 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await message.reply_text("🅲 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c1"] = update.message.text
-    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c2"] = update.message.text
-    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))
+    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2373,11 +2373,11 @@ RESUME_FIELDS_EVENING = [
     ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender: ask_selfcare(msg, ctx, gender)),
     ("e_energy",        E_ENERGY,     lambda msg, ctx, gender: ask_energy(msg, gender)),
     ("e_a",             E_A,          lambda msg, ctx, gender: ask_plan_a(msg)),
-    ("e_b1",            E_B1,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1"))),
-    ("e_b2",            E_B2,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2"))),
+    ("e_b1",            E_B1,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))),
+    ("e_b2",            E_B2,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))),
     ("e_c1",            E_C1,         lambda msg, ctx, gender: ask_e_c1(msg)),
-    ("e_c2",            E_C2,         lambda msg, ctx, gender: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
-    ("e_c3",            E_C3,         lambda msg, ctx, gender: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all"))),
+    ("e_c2",            E_C2,         lambda msg, ctx, gender: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
+    ("e_c3",            E_C3,         lambda msg, ctx, gender: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
 ]
 
 async def advance_evening(ctx, message, gender, uid, from_key=None):
