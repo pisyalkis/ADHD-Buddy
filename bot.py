@@ -4934,7 +4934,8 @@ async def morning_notification(app, uid):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
             [InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")],
-            [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")],
+            [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning"),
+             InlineKeyboardButton("📋 Задачи", callback_data="go_tasks")],
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
         ])
         await app.bot.send_message(
