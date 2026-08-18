@@ -3365,6 +3365,14 @@ TASK_LABELS = {
     "c3":    "🅲 Задача C3",
 }
 
+# Короткая форма для кнопок "Выполнено" в 📋 Задачи — раньше там был сам
+# текст задачи (обрезанный до 24 символов), но Telegram всё равно резал
+# длинную подпись кнопки в произвольном месте, получалось нечитаемо.
+SHORT_TASK_LABELS = {
+    "focus": "Задача A", "b1": "Задача B1", "b2": "Задача B2",
+    "c1": "Задача C1", "c2": "Задача C2", "c3": "Задача C3",
+}
+
 def _tasks_text_and_kb(morning, done_set, gender):
     """Строит текст и клавиатуру задач с отметками выполнения, добавлением
     и правкой — без прохождения полного утреннего ритуала. См. фидбек
@@ -3388,7 +3396,7 @@ def _tasks_text_and_kb(morning, done_set, gender):
         lines.append(f"{prefix} {val}")
         row = []
         if not done:
-            row.append(InlineKeyboardButton(f"✅ Выполнено: {val[:24]}", callback_data=f"task_done_{key}"))
+            row.append(InlineKeyboardButton(f"✅ Выполнено: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
         row.append(InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_task_{key}"))
         buttons.append(row)
 
