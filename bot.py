@@ -3074,6 +3074,7 @@ def _settings_text_and_kb(user):
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
         )],
+        [InlineKeyboardButton("✏️ Изменить имя", callback_data="set_name")],
         [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
         [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
         [InlineKeyboardButton(
@@ -3215,6 +3216,19 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]])
     )
     ctx.user_data["awaiting_time"] = True
+
+async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    user = get_user(q.from_user.id)
+    await q.message.reply_text(
+        f"✏️ *Как мне тебя называть?*\n\nСейчас: {user['name'] or '—'}\n\nНапиши новое имя:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Отмена", callback_data="go_settings")
+        ]])
+    )
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_name"] = True
 
 async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4053,6 +4067,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     текст записался в поле Задача A, потому что вечерняя conversation всё
     ещё была активна и первой забрала сообщение)."""
     ctx.user_data["awaiting_time"] = False
+    ctx.user_data["awaiting_name"] = False
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_city"] = False
     ctx.user_data["awaiting_feedback"] = False
@@ -4128,6 +4143,18 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             ctx.user_data["awaiting_time"] = True
+    elif ctx.user_data.get("awaiting_name"):
+        ctx.user_data["awaiting_name"] = False
+        new_name = update.message.text.strip()
+        if len(new_name) > 30:
+            ctx.user_data["awaiting_name"] = True
+            await update.message.reply_text("Имя слишком длинное, напиши покороче:")
+        else:
+            update_user(uid, name=new_name)
+            await update.message.reply_text(
+                f"✅ Готово, буду звать тебя *{new_name}*.",
+                parse_mode="Markdown", reply_markup=menu_button_kb()
+            )
     elif ctx.user_data.get("awaiting_buddy"):
         ctx.user_data["awaiting_buddy"] = False
         bname = update.message.text.strip()
@@ -6326,6 +6353,7 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_beacon_type_callback, pattern="^toggle_beacontype_"))
     app.add_handler(CallbackQueryHandler(beacon_technique_done, pattern="^beacon_technique_done$"))
     app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
+    app.add_handler(CallbackQueryHandler(set_name_prompt,   pattern="^set_name$"))
     app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
