@@ -439,6 +439,10 @@ def init_db():
         done INTEGER DEFAULT 0,
         created TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, text TEXT, remind_at TEXT, created TEXT
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, text TEXT, created TEXT
@@ -743,6 +747,35 @@ def delete_pool_task(uid, task_id):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
     conn.commit(); conn.close()
+
+def add_reminder(uid, text, remind_at_key):
+    """remind_at_key — naive 'YYYY-MM-DDTHH:MM:SS' в локальном времени
+    пользователя (не UTC) — так же, как day_key/now сравниваются везде
+    в check_notifications, лексикографическое сравнение строк работает
+    как сравнение времени благодаря фиксированной ширине полей."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO reminders(user_id, text, remind_at, created) VALUES (?, ?, ?, ?)",
+                 (uid, text, remind_at_key, datetime.now().isoformat()))
+    conn.commit(); conn.close()
+
+def get_reminders(uid):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, text, remind_at FROM reminders WHERE user_id=? ORDER BY remind_at", (uid,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def cancel_reminder(uid, rem_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (rem_id, uid))
+    conn.commit(); conn.close()
+
+def get_due_reminders(uid, now_key):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, text FROM reminders WHERE user_id=? AND remind_at<=?", (uid, now_key)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 def get_latest_evening_plan(uid):
     """Вчерашний вечерний дневник для переноса плана в утро.
@@ -1093,6 +1126,7 @@ def main_menu(user=None):
 def menu_more_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+        [InlineKeyboardButton("⏰ Напоминания", callback_data="go_reminders")],
         [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
         [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
@@ -2575,6 +2609,49 @@ async def finish_evening(message, uid, ctx):
         )
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
+async def parse_reminder_request(text, now_dt):
+    """Разбирает свободную фразу («напомни через 20 минут проверить почту»,
+    «завтра в 10 позвонить Джону») в (remind_at_key, короткий_текст) —
+    идея Виктории, аналог @SkeddyBot. Ручной regex-парсер русского
+    естественного языка — отдельная больная тема, а ANTHROPIC_KEY уже
+    подключён (ИИ-коуч), так что разбор поручаем ему.
+    Возвращает None, если ключ не настроен или разбор не удался."""
+    if not ANTHROPIC_KEY:
+        return None
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now_dt.weekday()]
+        resp = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=200,
+            system=(
+                "Ты парсер напоминаний для Telegram-бота. Пользователь пишет свободным текстом просьбу "
+                "поставить напоминание (например «напомни через 20 минут проверить почту» или "
+                "«завтра в 10 позвонить Джону»). "
+                f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
+                "Верни СТРОГО один JSON-объект без пояснений и без markdown-разметки: "
+                '{"remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "короткая суть дела"}. '
+                "remind_at обязательно строго позже текущего времени, в том же часовом поясе, что и текущее "
+                "время пользователя (конвертировать не нужно). Если не удалось понять время или дело — верни "
+                '{"error": "причина"}.'
+            ),
+            messages=[{"role": "user", "content": text}]
+        )
+        raw = resp.content[0].text.strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        if "error" in data or "remind_at" not in data:
+            return None
+        when = datetime.fromisoformat(data["remind_at"])
+        if when.replace(tzinfo=None) <= now_dt.replace(tzinfo=None):
+            return None
+        return when.strftime("%Y-%m-%dT%H:%M:%S"), (data.get("text") or text).strip()
+    except Exception:
+        return None
+
 async def ai_morning_boost(name, gender, focus):
     """Короткая AI-мотивация утром на основе фокуса."""
     if not ANTHROPIC_KEY: return ""
@@ -3679,6 +3756,74 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
+# ── REMINDERS ─────────────────────────────────────────────────────────────
+def reminders_text_and_kb(reminders):
+    if not reminders:
+        text = "⏰ *Напоминания*\n\n_Активных напоминаний нет — можно поставить одно свободной фразой._"
+    else:
+        lines = []
+        for r in reminders:
+            try:
+                when_str = datetime.fromisoformat(r["remind_at"]).strftime("%d.%m %H:%M")
+            except Exception:
+                when_str = r["remind_at"]
+            lines.append(f"🔹 {when_str} — {r['text']}")
+        text = "⏰ *Напоминания*\n\n" + "\n".join(lines)
+    rows = [[InlineKeyboardButton(f"🗑 {r['text'][:30]}", callback_data=f"remdel_{r['id']}")] for r in reminders]
+    rows.append([InlineKeyboardButton("➕ Новое напоминание", callback_data="rem_add")])
+    rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+    return text, InlineKeyboardMarkup(rows)
+
+async def show_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    reminders = get_reminders(q.from_user.id)
+    text, kb = reminders_text_and_kb(reminders)
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    if not ANTHROPIC_KEY:
+        await q.message.reply_text(
+            "⚠️ Напоминания разбирают текст через ИИ, а он сейчас не настроен (нет ANTHROPIC_KEY).",
+            reply_markup=menu_button_kb()
+        )
+        return
+    ctx.user_data["awaiting_reminder_add"] = True
+    await q.message.reply_text(
+        "Когда и о чём напомнить? Напиши свободно, например:\n"
+        "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
+    )
+
+async def reminder_cancel_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    rem_id = int(q.data.replace("remdel_", ""))
+    cancel_reminder(q.from_user.id, rem_id)
+    reminders = get_reminders(q.from_user.id)
+    text, kb = reminders_text_and_kb(reminders)
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def send_due_reminders(app, user, now_dt):
+    """Часть per-user тика check_notifications — независима от общего
+    тумблера notif_enabled (как маячок и фокус-таймер): это явные разовые
+    напоминания, которые пользователь сам поставил."""
+    uid = user["user_id"]
+    now_key = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    for rem in get_due_reminders(uid, now_key):
+        try:
+            await app.bot.send_message(
+                chat_id=uid,
+                text=f"⏰ *Напоминание*\n\n{rem['text']}",
+                parse_mode="Markdown",
+                reply_markup=menu_button_kb()
+            )
+            cancel_reminder(uid, rem["id"])
+        except Exception as e:
+            print(f"Ошибка reminder uid={uid}: {e}")
+
+
 # ── DAY CARD ───────────────────────────────────────────────────────────────
 def build_day_card_text(uid, for_date):
     morning = get_diary(uid, "morning", for_date)
@@ -3777,6 +3922,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
     ctx.user_data["awaiting_pool_add"] = False
+    ctx.user_data["awaiting_reminder_add"] = False
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
@@ -3961,6 +4107,27 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "✅ Добавил в список дел.\n\n" + task_pool_text(pool),
             parse_mode="Markdown", reply_markup=task_pool_kb(pool)
         )
+    elif ctx.user_data.get("awaiting_reminder_add"):
+        ctx.user_data["awaiting_reminder_add"] = False
+        now_dt = datetime.now(get_user_tz(get_user(uid)))
+        parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
+        if parsed is None:
+            ctx.user_data["awaiting_reminder_add"] = True
+            await update.message.reply_text(
+                "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n"
+                "`через 20 минут проверить почту`",
+                parse_mode="Markdown"
+            )
+        else:
+            remind_at_key, rem_text = parsed
+            add_reminder(uid, rem_text, remind_at_key)
+            when = datetime.fromisoformat(remind_at_key)
+            reminders = get_reminders(uid)
+            text, kb = reminders_text_and_kb(reminders)
+            await update.message.reply_text(
+                f"✅ Напомню {when.strftime('%d.%m в %H:%M')}: {rem_text}\n\n" + text,
+                parse_mode="Markdown", reply_markup=kb
+            )
     elif ctx.user_data.get("awaiting_work_start"):
         ctx.user_data["awaiting_work_start"] = False
         text = update.message.text.strip()
@@ -5516,6 +5683,10 @@ async def check_notifications(app):
                 # утром, см. morning_task_offer_yes / send_work_start_reminder
                 await send_work_start_reminder(app, user)
 
+                # Свои напоминания (⏰ Напоминания) — разбираются ИИ из
+                # свободного текста, см. parse_reminder_request
+                await send_due_reminders(app, user, now_dt)
+
                 # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
                 # (не в памяти планировщика), чтобы рестарт процесса её не терял
                 due_raw = user.get("resume_check_due") or ""
@@ -6049,6 +6220,9 @@ def main():
     app.add_handler(CallbackQueryHandler(pool_use_item,        pattern="^pooluse_"))
     app.add_handler(CallbackQueryHandler(pool_show_more,       pattern="^poolmore_"))
     app.add_handler(CallbackQueryHandler(pool_write_own,       pattern="^poolwrite_"))
+    app.add_handler(CallbackQueryHandler(show_reminders,       pattern="^go_reminders$"))
+    app.add_handler(CallbackQueryHandler(reminder_add_start,   pattern="^rem_add$"))
+    app.add_handler(CallbackQueryHandler(reminder_cancel_item, pattern="^remdel_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
