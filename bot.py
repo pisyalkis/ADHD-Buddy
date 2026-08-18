@@ -1235,10 +1235,10 @@ async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Сохраняем имя в БД сразу — чтобы оно не потерялось при перезапуске бота
     update_user(update.effective_user.id, name=name)
     await update.message.reply_text(
-        f"Отлично, {name}! Чтобы мне правильно к тебе обращаться, мне нужно знать твой пол 👇",
+        f"Отлично, {name}! Как мне к тебе обращаться?",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Мужской", callback_data="gender_M"),
-             InlineKeyboardButton("Женский", callback_data="gender_F")],
+            [InlineKeyboardButton("Как к нему", callback_data="gender_M"),
+             InlineKeyboardButton("Как к ней", callback_data="gender_F")],
             [InlineKeyboardButton("Другое", callback_data="gender_N")],
         ])
     )
