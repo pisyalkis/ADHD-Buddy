@@ -975,21 +975,21 @@ async def maybe_send_skip_nudge(message, uid, key):
             reply_markup=disable_field_kb(key)
         )
 
-TASK_FIELDS = [("focus", "🔴"), ("b1", "🟠1"), ("b2", "🟠2"), ("c1", "🟡1"), ("c2", "🟡2"), ("c3", "🟡3")]
+TASK_FIELDS = [("focus", "A"), ("b1", "B1"), ("b2", "B2"), ("c1", "C1"), ("c2", "C2"), ("c3", "C3")]
 
 def build_tasks_summary(morning_data, done_set=None):
     """Формирует текстовый список задач из утреннего дневника.
 
-    Всегда показывает цветной значок приоритета (см. TASK_FIELDS), даже для
-    уже выполненных задач — галочка ✅ здесь не используется: в списке
-    "что нужно сделать" она читается как "уже сделано" и сбивает с толку,
-    даже если формально верна (жалоба тестировщицы Виктории).
+    Всегда показывает буквенную метку (A/B1/B2/C1/C2/C3, см. TASK_FIELDS),
+    даже для уже выполненных задач — галочка ✅ здесь не используется: в
+    списке "что нужно сделать" она читается как "уже сделано" и сбивает с
+    толку, даже если формально верна (жалоба тестировщицы Виктории).
     """
     lines = []
     for key, icon in TASK_FIELDS:
         val = morning_data.get(key)
         if val:
-            lines.append(f"{icon} {md_escape(val)}")
+            lines.append(f"{icon}: {md_escape(val)}")
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
 def next_undone_task(morning_data, done_set=None):
@@ -2148,7 +2148,7 @@ def tasks_done_kb(morning, done):
         text = morning.get(key)
         if not text: continue
         mark = "✅" if key in done else "▫️"
-        label = f"{mark} {icon} {text}"
+        label = f"{mark} {icon}: {text}"
         rows.append([InlineKeyboardButton(label[:60], callback_data=f"td_{key}")])
     rows.append([InlineKeyboardButton("Готово ✅", callback_data="td_done")])
     return InlineKeyboardMarkup(rows)
@@ -2566,7 +2566,7 @@ async def finish_evening(message, uid, ctx):
             text = morning_for_summary.get(key)
             if not text: continue
             mark = "✅" if key in done else "▫️"
-            lines.append(f"{mark} {icon} {md_escape(text)}")
+            lines.append(f"{mark} {icon}: {md_escape(text)}")
         if lines:
             tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
 
@@ -3591,12 +3591,12 @@ async def send_work_start_reminder(app, user):
 
 
 TASK_LABELS = {
-    "focus": "🔴 Главная задача",
-    "b1":    "🟠 Задача B1",
-    "b2":    "🟠 Задача B2",
-    "c1":    "🟡 Задача C1",
-    "c2":    "🟡 Задача C2",
-    "c3":    "🟡 Задача C3",
+    "focus": "Задача A",
+    "b1":    "Задача B1",
+    "b2":    "Задача B2",
+    "c1":    "Задача C1",
+    "c2":    "Задача C2",
+    "c3":    "Задача C3",
 }
 
 # Короткая форма для кнопок "Выполнено" в 📋 Задачи — раньше там был сам
@@ -3618,10 +3618,10 @@ def _tasks_text_and_kb(morning, done_set, gender):
     блок и карточка дня, чтобы отметки, поставленные днём в этом меню,
     не терялись при вечернем ревью и наоборот.
 
-    Строка задачи всегда показывает цветной значок приоритета, даже если
-    задача уже выполнена — без ✅: галочка в списке "что сделать" читается
-    как "уже сделано" (фидбек Виктории). О том, что задача выполнена,
-    говорит исчезновение кнопки "Отметить: ..." под ней.
+    Строка задачи всегда показывает буквенную метку (A/B1/B2/C1/C2/C3), даже
+    если задача уже выполнена — без ✅: галочка в списке "что сделать"
+    читается как "уже сделано" (фидбек Виктории). О том, что задача
+    выполнена, говорит исчезновение кнопки "Отметить: ..." под ней.
     """
     lines = []
     buttons = []
@@ -3631,7 +3631,7 @@ def _tasks_text_and_kb(morning, done_set, gender):
             buttons.append([InlineKeyboardButton(f"➕ {TASK_LABELS[key]}", callback_data=f"edit_task_{key}")])
             continue
         done = key in done_set
-        lines.append(f"{icon} {val}")
+        lines.append(f"{icon}: {val}")
         row = []
         if not done:
             row.append(InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
@@ -3979,7 +3979,7 @@ def build_day_card_text(uid, for_date):
             text = morning.get(key)
             if not text: continue
             mark = "✅ " if key in done else ""
-            tasks.append(f"{mark}{icon} {text}")
+            tasks.append(f"{mark}{icon}: {text}")
         if tasks: lines.append("\n".join(tasks))
         if morning.get("writing"):   lines.append(f"📝 Свободное письмо: _{morning['writing']}_")
         if morning.get("gratitude"): lines.append(f"🙏 Благодарность: _{morning['gratitude']}_")
