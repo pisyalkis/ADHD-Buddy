@@ -3739,8 +3739,9 @@ def _match_by_text(items, query):
 
 async def handle_delete_reminder_intent(message, uid, query):
     """Удаление напоминания по свободной фразе. При точном одном совпадении
-    удаляет сразу; если совпадений 0 или больше 1 — не гадает, а переспрашивает
-    (показывает список с кнопками 🗑) — так попросил Артём."""
+    удаляет сразу; если совпадений 0 или больше 1 — не гадает, а переспрашивает,
+    показывая максимум пару похожих кандидатов (не весь список — иначе тот же
+    паралич выбора, от которого уже лечили экран задач) — так попросил Артём."""
     items = get_reminders(uid)
     if not items:
         await message.reply_text("Активных напоминаний нет.", reply_markup=menu_button_kb())
@@ -3753,12 +3754,14 @@ async def handle_delete_reminder_intent(message, uid, query):
         text, kb = reminders_text_and_kb(remaining)
         await message.reply_text(f"✅ Удалил: {target['text']}\n\n" + text, parse_mode="Markdown", reply_markup=kb)
         return
-    text, kb = reminders_text_and_kb(items)
-    await message.reply_text("Не понял, какое именно — выбери 🗑 рядом с нужным:\n\n" + text, parse_mode="Markdown", reply_markup=kb)
+    candidates = (matches or items)[:2]
+    text, kb = reminders_text_and_kb(candidates)
+    await message.reply_text("Не понял, какое именно — вот похожие, выбери 🗑:\n\n" + text, parse_mode="Markdown", reply_markup=kb)
 
 async def handle_delete_pool_intent(message, uid, query):
     """Удаление дела из списка дел по свободной фразе — та же логика
-    "переспрашивать при неоднозначности", что и у напоминаний."""
+    "переспрашивать при неоднозначности, максимум пара кандидатов", что и
+    у напоминаний."""
     items = get_pool_tasks(uid)
     if not items:
         await message.reply_text("Список дел пуст.", reply_markup=menu_button_kb())
@@ -3773,7 +3776,8 @@ async def handle_delete_pool_intent(message, uid, query):
             parse_mode="Markdown", reply_markup=task_pool_kb(pool)
         )
         return
-    await send_pool_delete_menu(message, uid)
+    candidates = (matches or items)[:2]
+    await send_pool_delete_menu(message, uid, items=candidates)
 
 async def apply_task_edit(message, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
@@ -3839,12 +3843,16 @@ async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
     )
 
-async def send_pool_delete_menu(message, uid):
+async def send_pool_delete_menu(message, uid, items=None):
+    """items (опционально) — конкретный список кандидатов для показа вместо
+    всего пула (см. handle_delete_pool_intent: при неоднозначном совпадении
+    переспрашиваем максимум парой похожих, а не всем списком дел)."""
     pool = get_pool_tasks(uid)
     if not pool:
         await message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
         return
-    rows = [[InlineKeyboardButton(f"🗑 {t['text'][:35]}", callback_data=f"pooldel_{t['id']}")] for t in pool]
+    shown = items if items is not None else pool
+    rows = [[InlineKeyboardButton(f"🗑 {t['text'][:35]}", callback_data=f"pooldel_{t['id']}")] for t in shown]
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_task_pool")])
     await message.reply_text("Что удалить?", reply_markup=InlineKeyboardMarkup(rows))
 
