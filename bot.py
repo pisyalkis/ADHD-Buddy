@@ -511,6 +511,11 @@ def init_db():
         ("beacon_rotation_idx", "'0'"),
         ("promo_extra_days", "0"),
         ("subscription_until", "''"),
+        ("skill_beacon_enabled", "0"),
+        ("skill_beacon_mode", "'interval'"),
+        ("skill_beacon_interval", "60"),
+        ("skill_beacon_daily_count", "3"),
+        ("skill_beacon_last_sent", "''"),
         ("streak_hidden", "0"),
     ]:
         try:
@@ -1977,8 +1982,8 @@ async def finish_morning(message, uid, ctx):
     today = now_dt.date().isoformat()
     focus = ctx.user_data.get("m_focus", "")
     if focus: update_user(uid, focus=focus)
-    # Момент заполнения утра — нужен маячку, чтобы не стрелять сразу вслед,
-    # если утро заполнено поздно (см. send_beacon).
+    # Момент заполнения утра — нужен маячку задач, чтобы не стрелять сразу
+    # вслед, если утро заполнено поздно (см. send_task_beacon).
     update_user(uid, morning_filled_at=now_dt.isoformat())
 
     save_diary(uid, "morning", {
@@ -2791,10 +2796,18 @@ def _settings_text_and_kb(user):
     bi = int(user.get("beacon_interval")  or 2)
     bs = user.get("beacon_start") or "09:00"
     bfin = user.get("beacon_end") or "21:00"
+    se = int(user.get("skill_beacon_enabled") or 0)
+    smode = user.get("skill_beacon_mode") or "interval"
+    sint = int(user.get("skill_beacon_interval") or 60)
+    scount = int(user.get("skill_beacon_daily_count") or 3)
     sh = int(user.get("streak_hidden")    or 0)
 
     status = "✅ включены" if enabled else "❌ выключены"
     beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
+    if smode == "random":
+        skill_label = f"{scount} раз(а) в день, в случайные моменты"
+    else:
+        skill_label = "каждые 30 мин" if sint == 30 else ("каждый час" if sint == 60 else f"каждые {sint // 60} ч")
     tz_name = user.get("timezone") or USER_TIMEZONE
     city_name = user.get("city") or ""
     tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
@@ -2805,10 +2818,13 @@ def _settings_text_and_kb(user):
         f"{'✅' if do else '🔕'} День: *{d}*\n"
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n\n"
         f"🌍 Таймзона: *{tz_display}*\n\n"
-        f"{'✅' if be else '🔕'} Маячок внимания: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
-        + (f"🕐 Рабочие часы маячка: *{bs}–{bfin}*\n" if be else "")
-        + "_Маячок периодически спрашивает «что сейчас делаешь?» в течение дня_\n\n"
-        "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
+        "*🔔 Маячок*\n"
+        f"{'✅' if be else '🔕'} Напоминания по задачам: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
+        "_Периодически спрашивает «что сейчас делаешь?» по задачам дня_\n\n"
+        f"{'✅' if se else '🔕'} Напоминания с навыками: *{'вкл, ' + skill_label if se else 'выкл'}*\n"
+        "_Периодически предлагает короткую технику (СТОП/Дыхание/...)_\n"
+        + ("🕐 Рабочие часы маячка: *{}–{}*\n".format(bs, bfin) if (be or se) else "")
+        + "\n_Нажми на время чтобы изменить, на иконку — включить/выключить_"
     )
     beacon_interval_row = [
         InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
@@ -2819,6 +2835,19 @@ def _settings_text_and_kb(user):
         InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
         InlineKeyboardButton(f"🌇 До {bfin}", callback_data="set_beacon_end"),
     ]
+    skill_mode_row = [
+        InlineKeyboardButton(f"{'→' if smode=='interval' else ''} Интервал", callback_data="skill_mode_interval"),
+        InlineKeyboardButton(f"{'→' if smode=='random' else ''} Рандом N/день", callback_data="skill_mode_random"),
+    ]
+    skill_interval_row = [
+        InlineKeyboardButton(f"{'→' if sint==30 else ''} 30 мин", callback_data="skill_int_30"),
+        InlineKeyboardButton(f"{'→' if sint==60 else ''} 1 ч", callback_data="skill_int_60"),
+        InlineKeyboardButton(f"{'→' if sint==120 else ''} 2 ч", callback_data="skill_int_120"),
+    ]
+    skill_count_row = [
+        InlineKeyboardButton(f"{'→' if scount==n else ''} {n}", callback_data=f"skill_count_{n}")
+        for n in (1, 2, 3, 4, 5)
+    ]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
          InlineKeyboardButton(f"☀️ {m}", callback_data="set_morning")],
@@ -2827,11 +2856,16 @@ def _settings_text_and_kb(user):
         [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
          InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
         [InlineKeyboardButton(
-            f"{'✅' if be else '🔕'} Маячок", callback_data="toggle_beacon"),
+            f"{'✅' if be else '🔕'} Маячок: задачи", callback_data="toggle_beacon"),
          *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
         *([ beacon_interval_row ] if be else []),
-        *([ beacon_hours_row ] if be else []),
-        *([[InlineKeyboardButton("🎯 Типы маячка", callback_data="beacon_types_menu")]] if be else []),
+        [InlineKeyboardButton(
+            f"{'✅' if se else '🔕'} Маячок: навыки", callback_data="toggle_skill_beacon")],
+        *([ skill_mode_row ] if se else []),
+        *([ skill_interval_row ] if (se and smode == "interval") else []),
+        *([ skill_count_row ] if (se and smode == "random") else []),
+        *([[InlineKeyboardButton("🎯 Типы маячка", callback_data="beacon_types_menu")]] if se else []),
+        *([ beacon_hours_row ] if (be or se) else []),
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
@@ -2937,10 +2971,9 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(q.from_user.id)
     await q.message.reply_text(
         "🎯 *Типы маячка*\n\n"
-        "Маячок по умолчанию просто проверяет, чем ты занят(а). Можно добавить "
-        "короткие техники — они иногда будут вставать в тот же тик вместо обычной "
-        "проверки, а не отдельным напоминанием (интервал не меняется).\n\n"
-        "После техники бот всё равно спросит про задачи — как обычно, просто на шаг позже.",
+        "Выбери, какие короткие техники предлагать в напоминаниях с навыками "
+        "(частота настраивается отдельно, в ⚙️ Настройки → Маячок: навыки).\n\n"
+        "После техники бот всё равно спросит про задачи, как в обычном напоминании по задачам.",
         parse_mode="Markdown",
         reply_markup=_beacon_types_kb(user)
     )
@@ -3055,6 +3088,53 @@ async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
+async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Вкл/выкл напоминаний с навыками — независимо от напоминаний по
+    задачам (toggle_beacon), см. задачу «разделить настройки маячка»."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+    cur = int(user.get("skill_beacon_enabled") or 0)
+    update_user(uid, skill_beacon_enabled=0 if cur else 1)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    mode = "random" if q.data == "skill_mode_random" else "interval"
+    update_user(uid, skill_beacon_mode=mode)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    minutes = int(q.data.replace("skill_int_", ""))
+    update_user(uid, skill_beacon_interval=minutes)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def set_skill_beacon_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    count = int(q.data.replace("skill_count_", ""))
+    update_user(uid, skill_beacon_daily_count=count)
+    text, kb = _settings_text_and_kb(get_user(uid))
+    try:
+        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
 async def noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
@@ -3095,18 +3175,20 @@ BEACON_TECHNIQUE_WHY = (
 WHY_EXPLANATIONS["beacon_technique"] = BEACON_TECHNIQUE_WHY
 
 def _beacon_rotation_pool(user):
-    """None в пуле — обычная проверка задач без техники (то, что было раньше
-    единственным поведением маячка). Пул всегда содержит хотя бы None, даже
-    если пользователь не включил ни одной техники."""
-    enabled = [k for k, _ in BEACON_TECHNIQUE_TYPES if k in (user.get("beacon_types") or "").split(",")]
-    return [None] + enabled
+    """Список включённых типов техник для блока «напоминания с навыками».
+    Обычная проверка задач (раньше была в этой же ротации как None) теперь
+    отдельный, независимый блок — см. send_task_beacon."""
+    return [k for k, _ in BEACON_TECHNIQUE_TYPES if k in (user.get("beacon_types") or "").split(",")]
 
 def next_beacon_slot(uid):
     """Круговая ротация типов маячка — что выпадет в этот тик. Индекс
     хранится в БД (а не в памяти планировщика), чтобы не сбрасывался при
-    рестарте процесса и не совпадал у всех пользователей одновременно."""
+    рестарте процесса и не совпадал у всех пользователей одновременно.
+    None, если ни одна техника не включена в "🎯 Типы маячка"."""
     user = get_user(uid)
     pool = _beacon_rotation_pool(user)
+    if not pool:
+        return None
     idx = int(user.get("beacon_rotation_idx") or "0") % len(pool)
     update_user(uid, beacon_rotation_idx=str((idx + 1) % len(pool)))
     return pool[idx]
@@ -3124,8 +3206,22 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
     await q.message.reply_text(beacon_text, parse_mode="Markdown", reply_markup=midday_kb(morning, done_set))
 
-async def send_beacon(app, user):
-    """Маячок внимания — периодический чекин в течение дня."""
+def _in_beacon_hours(user, now):
+    """Рабочие часы маячка — общие для обоих блоков напоминаний (задачи и
+    навыки), настраиваются в ⚙️ Настройки."""
+    start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
+    end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
+    now_minutes = now.hour * 60 + now.minute
+    start_minutes, end_minutes = start_h * 60 + start_m, end_h * 60 + end_m
+    if start_minutes <= end_minutes:
+        return start_minutes <= now_minutes <= end_minutes
+    # Окно через полночь (например 22:00–06:00) — вне [end, start) считается рабочим временем.
+    return not (end_minutes < now_minutes < start_minutes)
+
+async def send_task_beacon(app, user):
+    """Напоминания по задачам — независимый блок настроек: периодически
+    спрашивает «что сейчас делаешь?» по задачам дня. Частота и вкл/выкл —
+    отдельно от напоминаний с навыками, см. send_skill_beacon."""
     try:
         uid = user["user_id"]
         if not int(user.get("beacon_enabled") or 0): return
@@ -3134,17 +3230,7 @@ async def send_beacon(app, user):
         now = datetime.now(tz)
         interval_h = int(user.get("beacon_interval") or 2)
 
-        # Рабочие часы маячка — отдельные от времени утро/вечер уведомлений,
-        # настраиваются в ⚙️ Настройки
-        start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
-        end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
-        now_minutes = now.hour * 60 + now.minute
-        start_minutes, end_minutes = start_h * 60 + start_m, end_h * 60 + end_m
-        if start_minutes <= end_minutes:
-            if not (start_minutes <= now_minutes <= end_minutes): return
-        else:
-            # Окно через полночь (например 22:00–06:00) — вне [end, start) считается рабочим временем.
-            if end_minutes < now_minutes < start_minutes: return
+        if not _in_beacon_hours(user, now): return
 
         # beacon_last_sent почти всегда вчерашний в начале дня (маячок ещё не
         # стрелял сегодня) — интервал "с последней отправки" формально
@@ -3183,34 +3269,91 @@ async def send_beacon(app, user):
         if not morning: return
         tasks = build_tasks_summary(morning, done_set)
 
-        # Ротация: обычная проверка задач или (если включено в настройках)
-        # короткая техника, после которой — та же самая проверка задач по
-        # кнопке "Сделал(а)". Один слот на тик, ничего не наслаивается.
-        slot = next_beacon_slot(uid)
-        if slot is None:
-            beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
-            await app.bot.send_message(
-                chat_id=uid,
-                text=beacon_text,
-                parse_mode="Markdown",
-                reply_markup=midday_kb(morning, done_set)
-            )
-        else:
-            done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
-            await app.bot.send_message(
-                chat_id=uid,
-                text=BEACON_TECHNIQUE_PROMPTS[slot],
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(done_label, callback_data="beacon_technique_done")],
-                    [InlineKeyboardButton("❓ Зачем это?", callback_data="why_beacon_technique")],
-                ])
-            )
+        beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
+        await app.bot.send_message(
+            chat_id=uid,
+            text=beacon_text,
+            parse_mode="Markdown",
+            reply_markup=midday_kb(morning, done_set)
+        )
         # Отмечаем как отправленный только после успешной отправки — иначе
         # временный сбой навсегда "съедает" этот тик маячка.
         update_user(uid, beacon_last_sent=now.isoformat())
     except Exception as e:
-        print(f"Ошибка маячка uid={user.get('user_id')}: {e}")
+        print(f"Ошибка маячка задач uid={user.get('user_id')}: {e}")
+
+def _skill_beacon_random_times(user, now, count):
+    """N случайных моментов на сегодня внутри рабочих часов маячка,
+    стратифицированных по равным интервалам (окно делится на count частей,
+    внутри каждой — честно случайный момент) — так они не слипаются в кучу,
+    но и не превращаются в жёсткий равный интервал. Детерминировано по
+    uid+дате (seed), чтобы не хранить отдельно сгенерированный список и не
+    пересчитывать его по-разному на каждом минутном тике."""
+    start_h, start_m = map(int, (user.get("beacon_start") or "09:00").split(":"))
+    end_h, end_m = map(int, (user.get("beacon_end") or "21:00").split(":"))
+    start_dt = now.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+    end_dt = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+    window = (end_dt - start_dt).total_seconds()
+    if window <= 0 or count <= 0:
+        return []
+    rnd = random.Random(f"{user.get('user_id')}-{now.date().isoformat()}")
+    bucket = window / count
+    return [start_dt + timedelta(seconds=i * bucket + rnd.uniform(0, bucket)) for i in range(count)]
+
+def _skill_beacon_due(user, now):
+    """Пора ли слать напоминание с навыком — либо фиксированный интервал в
+    минутах, либо N раз в день в случайные моменты (см. _skill_beacon_random_times)."""
+    last_raw = user.get("skill_beacon_last_sent") or ""
+    last_dt = None
+    if last_raw:
+        try:
+            last_dt = datetime.fromisoformat(last_raw).astimezone(now.tzinfo)
+        except Exception:
+            pass
+
+    if (user.get("skill_beacon_mode") or "interval") == "random":
+        count = max(1, int(user.get("skill_beacon_daily_count") or 3))
+        targets = _skill_beacon_random_times(user, now, count)
+        if last_dt and last_dt.date() == now.date():
+            targets = [t for t in targets if t > last_dt]
+        return bool(targets) and now >= targets[0]
+
+    interval_min = int(user.get("skill_beacon_interval") or 60)
+    if last_dt is None:
+        return True
+    return (now - last_dt).total_seconds() >= interval_min * 60 - 30
+
+async def send_skill_beacon(app, user):
+    """Напоминания с навыками — независимый блок настроек: периодически
+    предлагает короткую технику (см. "🎯 Типы маячка"), после которой сама
+    же спрашивает про задачи дня (см. beacon_technique_done). Частота и
+    вкл/выкл — отдельно от напоминаний по задачам, см. send_task_beacon."""
+    try:
+        uid = user["user_id"]
+        if not int(user.get("skill_beacon_enabled") or 0): return
+        tz = get_user_tz(user)
+        now = datetime.now(tz)
+        if not _in_beacon_hours(user, now): return
+        if not _skill_beacon_due(user, now): return
+
+        slot = next_beacon_slot(uid)
+        if slot is None: return  # ни одна техника не включена
+
+        done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
+        await app.bot.send_message(
+            chat_id=uid,
+            text=BEACON_TECHNIQUE_PROMPTS[slot],
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(done_label, callback_data="beacon_technique_done")],
+                [InlineKeyboardButton("❓ Зачем это?", callback_data="why_beacon_technique")],
+            ])
+        )
+        update_user(uid, skill_beacon_last_sent=now.isoformat())
+    except Exception as e:
+        print(f"Ошибка маячка навыков uid={user.get('user_id')}: {e}")
 
 
 TASK_LABELS = {
@@ -5105,8 +5248,9 @@ async def check_notifications(app):
                 except Exception:
                     pass
 
-                # Маячок
-                await send_beacon(app, user)
+                # Маячок — два независимых блока: задачи и навыки
+                await send_task_beacon(app, user)
+                await send_skill_beacon(app, user)
 
                 # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
                 # (не в памяти планировщика), чтобы рестарт процесса её не терял
@@ -5583,6 +5727,10 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(toggle_streak_visibility, pattern="^toggle_streak_visibility$"))
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
+    app.add_handler(CallbackQueryHandler(toggle_skill_beacon, pattern="^toggle_skill_beacon$"))
+    app.add_handler(CallbackQueryHandler(set_skill_beacon_mode, pattern="^skill_mode_(interval|random)$"))
+    app.add_handler(CallbackQueryHandler(set_skill_beacon_interval, pattern="^skill_int_\\d+$"))
+    app.add_handler(CallbackQueryHandler(set_skill_beacon_count, pattern="^skill_count_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
