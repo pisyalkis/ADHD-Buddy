@@ -2652,6 +2652,59 @@ async def parse_reminder_request(text, now_dt):
     except Exception:
         return None
 
+async def classify_free_text(text, now_dt):
+    """Роутер свободного текста вне какого-либо раздела бота (см.
+    route_free_text) — идея Виктории: «через одно окно можно делать почти
+    всё», а не только пересылать сообщение админу. Различает 2 конкретных
+    действия, для которых уже есть готовые обработчики (напоминание, дело
+    в список дел); всё остальное — вопрос, растерянность, разговор — не
+    пытается классифицировать точнее и уходит в коуча, который уже умеет
+    отвечать по контексту пользователя (задачи, навык дня, СДВГ)."""
+    if not ANTHROPIC_KEY:
+        return {"intent": "other"}
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now_dt.weekday()]
+        resp = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=200,
+            system=(
+                "Ты роутер входящих сообщений в Telegram-боте для людей с СДВГ (ADHD Buddy). "
+                "Пользователь написал свободное сообщение вне какого-либо конкретного раздела бота. "
+                "Определи, что он хочет, и верни СТРОГО один JSON-объект без пояснений и без markdown:\n"
+                '1) Просит поставить напоминание на конкретное время («напомни через 20 минут...», '
+                '«завтра в 10 позвонить...»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть"}\n'
+                '2) Просит добавить дело в общий список дел БЕЗ конкретного времени («добавь в список дел '
+                'купить молоко», «не забыть записаться к врачу»): {"intent": "add_pool", "text": "суть дела"}\n'
+                '3) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
+                'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
+                '{"intent": "other"}\n'
+                f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
+                "remind_at обязательно строго позже текущего времени, в том же часовом поясе (конвертировать "
+                "не нужно). Если сомневаешься между вариантами — выбирай \"other\", это безопаснее."
+            ),
+            messages=[{"role": "user", "content": text}]
+        )
+        raw = resp.content[0].text.strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not m:
+            return {"intent": "other"}
+        data = json.loads(m.group(0))
+        intent = data.get("intent")
+        if intent == "reminder" and data.get("remind_at"):
+            when = datetime.fromisoformat(data["remind_at"])
+            if when.replace(tzinfo=None) <= now_dt.replace(tzinfo=None):
+                return {"intent": "other"}
+            data["remind_at"] = when.strftime("%Y-%m-%dT%H:%M:%S")
+            data.setdefault("text", text)
+            return data
+        if intent == "add_pool" and data.get("text"):
+            return data
+        return {"intent": "other"}
+    except Exception:
+        return {"intent": "other"}
+
 async def ai_morning_boost(name, gender, focus):
     """Короткая AI-мотивация утром на основе фокуса."""
     if not ANTHROPIC_KEY: return ""
@@ -3646,6 +3699,28 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = q.data.replace("poolwrite_", "")
     await ask_task_text(q.message, ctx, key)
 
+async def add_pool_and_reply(message, uid, text):
+    """Общая логика и для явного экрана «📥 Список дел», и для роутера
+    свободного текста (route_free_text)."""
+    add_pool_task(uid, text)
+    pool = get_pool_tasks(uid)
+    await message.reply_text(
+        "✅ Добавил в список дел.\n\n" + task_pool_text(pool),
+        parse_mode="Markdown", reply_markup=task_pool_kb(pool)
+    )
+
+async def create_reminder_and_reply(message, uid, remind_at_key, rem_text):
+    """Общая логика и для явного экрана «⏰ Напоминания», и для роутера
+    свободного текста (route_free_text)."""
+    add_reminder(uid, rem_text, remind_at_key)
+    when = datetime.fromisoformat(remind_at_key)
+    reminders = get_reminders(uid)
+    text, kb = reminders_text_and_kb(reminders)
+    await message.reply_text(
+        f"✅ Напомню {when.strftime('%d.%m в %H:%M')}: {rem_text}\n\n" + text,
+        parse_mode="Markdown", reply_markup=kb
+    )
+
 async def apply_task_edit(message, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула."""
@@ -4101,12 +4176,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await apply_task_edit(update.message, uid, key, update.message.text.strip())
     elif ctx.user_data.get("awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
-        add_pool_task(uid, update.message.text.strip())
-        pool = get_pool_tasks(uid)
-        await update.message.reply_text(
-            "✅ Добавил в список дел.\n\n" + task_pool_text(pool),
-            parse_mode="Markdown", reply_markup=task_pool_kb(pool)
-        )
+        await add_pool_and_reply(update.message, uid, update.message.text.strip())
     elif ctx.user_data.get("awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
         now_dt = datetime.now(get_user_tz(get_user(uid)))
@@ -4120,14 +4190,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             remind_at_key, rem_text = parsed
-            add_reminder(uid, rem_text, remind_at_key)
-            when = datetime.fromisoformat(remind_at_key)
-            reminders = get_reminders(uid)
-            text, kb = reminders_text_and_kb(reminders)
-            await update.message.reply_text(
-                f"✅ Напомню {when.strftime('%d.%m в %H:%M')}: {rem_text}\n\n" + text,
-                parse_mode="Markdown", reply_markup=kb
-            )
+            await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text)
     elif ctx.user_data.get("awaiting_work_start"):
         ctx.user_data["awaiting_work_start"] = False
         text = update.message.text.strip()
@@ -4156,18 +4219,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif ctx.user_data.get("coach_mode"):
         await send_coach(update.message, update.message.text, uid, ctx)
     else:
-        # Пересылаем свободное сообщение администратору
-        if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
-            user = get_user(uid)
-            try:
-                await ctx.bot.send_message(
-                    NOTIFY_USER_ID,
-                    f"💬 *Сообщение от {user['name'] or uid}* (`{uid}`):\n\n{update.message.text}",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                print(f"Не удалось переслать сообщение: {e}")
-        await update.message.reply_text("Выбери что хочешь сделать 👇", reply_markup=menu_button_kb())
+        # Свободный текст вне какого-либо раздела — вместо пересылки
+        # администратору бот сам разбирает намерение (см. classify_free_text):
+        # напоминание, дело в список дел, или разговор/вопрос — с коучем.
+        text = update.message.text.strip()
+        now_dt = datetime.now(get_user_tz(get_user(uid)))
+        routed = await classify_free_text(text, now_dt)
+        intent = routed.get("intent")
+        if intent == "reminder":
+            await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text)
+        elif intent == "add_pool":
+            await add_pool_and_reply(update.message, uid, routed.get("text") or text)
+        else:
+            ctx.user_data["coach_mode"] = True
+            await send_coach(update.message, text, uid, ctx)
 
 # ── ABOUT ──────────────────────────────────────────────────────────────────
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
