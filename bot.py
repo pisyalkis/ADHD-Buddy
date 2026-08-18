@@ -1507,6 +1507,15 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Все шаги уже пройдены (крайний случай — finish_morning не успел
         # отработать) — начинаем заново, ниже.
 
+    # Недописанное утро за ПРЕДЫДУЩИЙ день (например, оборвалась связь и
+    # человек вернулся уже на следующие сутки) — раньше молча стиралось
+    # прямо здесь при сбросе на новый день. Теперь сохраняем то, что успели
+    # заполнить, в дневник того дня, а не теряем безвозвратно.
+    stale_date = ctx.user_data.get("m_progress_date")
+    if (stale_date and stale_date != today_iso
+            and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS)):
+        checkpoint_morning_progress(ctx, uid, stale_date)
+
     ctx.user_data["m_progress_date"] = today_iso
     for key, _, _ in RESUME_FIELDS:
         ctx.user_data.pop(key, None)
@@ -1937,6 +1946,22 @@ async def unpin_today_tasks(ctx, uid):
         pass
     update_user(uid, pinned_msg_id="")
 
+def checkpoint_morning_progress(ctx, uid, for_date):
+    """Сохраняет недописанное утро, прерванное и не продолженное в тот же
+    день, в дневник этого дня как есть — без стрика и без сброса tasks_done
+    (это не завершение дня, а спасение того, что успели заполнить)."""
+    save_diary(uid, "morning", {
+        "focus":    ctx.user_data.get("m_focus", ""),
+        "b1":       ctx.user_data.get("m_b1", ""),
+        "b2":       ctx.user_data.get("m_b2", ""),
+        "c1":       ctx.user_data.get("m_c1", ""),
+        "c2":       ctx.user_data.get("m_c2", ""),
+        "c3":       ctx.user_data.get("m_c3", ""),
+        "writing":  ctx.user_data.get("m_writing", ""),
+        "gratitude":ctx.user_data.get("m_gratitude", ""),
+        "child":    ctx.user_data.get("m_child", ""),
+    }, for_date=for_date)
+
 async def finish_morning(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
@@ -2088,6 +2113,15 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return state
         # Все шаги уже пройдены (крайний случай — finish_evening не успел
         # отработать) — начинаем заново, ниже.
+
+    # Недописанный вечер за ПРЕДЫДУЩИЙ день (например, оборвалась связь и
+    # человек вернулся уже на следующие сутки) — раньше молча стирался
+    # прямо здесь при сбросе на новый день. Теперь сохраняем то, что успели
+    # заполнить, в дневник того дня, а не теряем безвозвратно.
+    stale_date = ctx.user_data.get("e_progress_date")
+    if (stale_date and stale_date != today
+            and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS_EVENING)):
+        checkpoint_evening_progress(ctx, uid, stale_date)
 
     ctx.user_data["e_progress_date"] = today
     for key, _, _ in RESUME_FIELDS_EVENING:
@@ -2354,6 +2388,20 @@ async def advance_evening(ctx, message, gender, uid, from_key=None):
         return state
     await finish_evening(message, uid, ctx)
     return ConversationHandler.END
+
+def checkpoint_evening_progress(ctx, uid, for_date):
+    """Сохраняет недописанный вечер, прерванный и не продолженный в тот же
+    день, в дневник этого дня как есть — без стрика и без побочных эффектов
+    finish_evening (это не завершение дня, а спасение того, что успели
+    заполнить). tasks_done намеренно не трогаем: список того, что реально
+    делали, мог наполниться отдельно (дневной чекин), и его нельзя молча
+    затирать пустым."""
+    data = {k: ctx.user_data.get(k, "") for k in
+            ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
+    data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
+    data["e_energy"] = ctx.user_data.get("e_energy", 0)
+    data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
+    save_diary(uid, "evening", data, for_date=for_date)
 
 async def finish_evening(message, uid, ctx):
     user = get_user(uid)
