@@ -2289,8 +2289,8 @@ async def ask_plan_a(message):
         "_Утром увидишь первым._",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Пропустить →", callback_data="skip_e_a")],
-            [InlineKeyboardButton("Пропустить весь блок целей ▸▸", callback_data="skip_all_goals")],
+            [InlineKeyboardButton("Пропустить задачу А →", callback_data="skip_e_a")],
+            [InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")],
         ])
     )
 
