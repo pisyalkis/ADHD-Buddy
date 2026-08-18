@@ -4159,6 +4159,33 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             gender
         ),
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔒 А что с приватностью?", callback_data="go_privacy")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ])
+    )
+
+# ── PRIVACY ────────────────────────────────────────────────────────────────
+async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Отвечает на прямой вопрос тестировщицы про безопасность/хранение
+    данных — раньше на него отвечали лично в переписке, в самом боте
+    объяснения не было. Доступ только из «О боте» — не дублируем кнопку
+    в Коуче, чтобы не перегружать экран быстрой помощи."""
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "🔒 *А что с приватностью?*\n\n"
+        "*Где что хранится.* Дневник, задачи и настройки — в закрытой базе "
+        "на нашем сервере. Мы не продаём и никому не передаём эти данные.\n\n"
+        "*Когда используешь 🤖 Коуча или получаешь AI-анализ дня.* Текст "
+        "уходит в облачную модель Claude (Anthropic) — она использует его, "
+        "чтобы дать более точный, персональный совет. Это не локальная "
+        "нейросеть.\n\n"
+        "*Видит ли админ бота твои записи?* Дневник и переписку с коучем — "
+        "нет, в самом боте для этого нет ни одного экрана. Админ видит "
+        "только то, что ты сам(а) явно отправляешь через 💬 Обратную связь "
+        "или опросы — это отдельный, осознанный канал.\n\n"
+        "Остались вопросы — пиши в 💬 Обратная связь.",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
 
@@ -5755,6 +5782,7 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
+    app.add_handler(CallbackQueryHandler(go_privacy,       pattern="^go_privacy$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
