@@ -42,6 +42,10 @@ ACCESS_GATE_ENABLED = False
 TRIAL_DAYS = 7  # бесплатный период с момента регистрации (created_at) + promo_extra_days
 STARS_SUBSCRIPTION_DAYS = 30
 STARS_PRICE_MONTHLY = 150  # цена ещё не решена — одна константа, легко поменять
+# Ценовой якорь для экрана подписки — по порядку величины (не точный курс
+# Stars→₽, курс плавает и не проверялся точно), используется в двух местах
+# (_subscribe_text_and_kb и access_gate), поэтому вынесено в одну строку.
+STARS_PRICE_ANCHOR = "— это примерно как одна чашка капучино в кофейне"
 # Статичные анимации-инструменты (не данные пользователя, один и тот же файл
 # для всех) — путь считаем от расположения самого файла, а не от cwd, чтобы
 # не зависеть от того, откуда запущен процесс.
@@ -4312,7 +4316,7 @@ def _subscribe_text_and_kb(user):
     text = (
         "💎 *Подписка*\n\n"
         f"{body}\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}.\n"
         "Есть промокод — можно продлить пробный период бесплатно."
     )
     kb = InlineKeyboardMarkup([
@@ -4541,7 +4545,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _, kb = _subscribe_text_and_kb(user)
     paywall_text = (
         "⌛ *Пробный период закончился*\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}.\n"
         "Есть промокод — можно продлить пробный период бесплатно."
     )
     target = update.effective_message
