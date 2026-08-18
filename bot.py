@@ -2649,6 +2649,7 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("😩 Прокрастинирую", callback_data="c_procr")],
             [InlineKeyboardButton("🌀 Всё навалилось", callback_data="c_overload")],
             [InlineKeyboardButton("💡 Совет дня", callback_data="c_tip")],
+            [InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
@@ -4150,6 +4151,31 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
             gender
         ),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔒 Приватность и данные", callback_data="go_privacy")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ])
+    )
+
+# ── PRIVACY ────────────────────────────────────────────────────────────────
+async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Отвечает на прямой вопрос тестировщицы про безопасность/хранение
+    данных — раньше на него отвечали лично в переписке, в самом боте
+    объяснения не было."""
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "🔒 *Приватность и данные*\n\n"
+        "*Где что хранится.* Дневник, задачи и настройки — в закрытой базе "
+        "на нашем сервере. Мы не продаём и никому не передаём эти данные.\n\n"
+        "*Когда используешь 🤖 Коуча или получаешь AI-анализ дня.* Текст, "
+        "который пишешь коучу, и данные для анализа уходят в облачную модель "
+        "(Claude от Anthropic) — так это технически работает, это не "
+        "локальная нейросеть. Мы не используем эти данные ни для чего, "
+        "кроме ответа тебе.\n\n"
+        "Если не хочешь делиться чем-то через коуча — просто не пиши это "
+        "там: остальной бот (ритуалы, задачи, техники) от коуча не зависит.\n\n"
+        "Остались вопросы — пиши в 💬 Обратная связь.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
     )
@@ -5747,6 +5773,7 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
+    app.add_handler(CallbackQueryHandler(go_privacy,       pattern="^go_privacy$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
