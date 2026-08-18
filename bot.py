@@ -926,21 +926,16 @@ TASK_FIELDS = [("focus", "🔴"), ("b1", "🟠1"), ("b2", "🟠2"), ("c1", "🟡
 def build_tasks_summary(morning_data, done_set=None):
     """Формирует текстовый список задач из утреннего дневника.
 
-    done_set (опционально) — множество ключей из TASK_FIELDS, уже отмеченных
-    выполненными (через 📋 Задачи или дневной чекин) — такие задачи помечаются
-    ✅, чтобы не выглядело будто бот снова спрашивает про уже сделанное.
+    Всегда показывает цветной значок приоритета (см. TASK_FIELDS), даже для
+    уже выполненных задач — галочка ✅ здесь не используется: в списке
+    "что нужно сделать" она читается как "уже сделано" и сбивает с толку,
+    даже если формально верна (жалоба тестировщицы Виктории).
     """
-    done_set = done_set or set()
-    def mark(key, icon, text):
-        text = md_escape(text)
-        return f"✅ {text}" if key in done_set else f"{icon} {text}"
     lines = []
-    if morning_data.get("focus"): lines.append(mark("focus", "🅰️", morning_data['focus']))
-    if morning_data.get("b1"):    lines.append(mark("b1", "🅱️", morning_data['b1']))
-    if morning_data.get("b2"):    lines.append(mark("b2", "🅱️", morning_data['b2']))
-    if morning_data.get("c1"):    lines.append(mark("c1", "🅲", morning_data['c1']))
-    if morning_data.get("c2"):    lines.append(mark("c2", "🅲", morning_data['c2']))
-    if morning_data.get("c3"):    lines.append(mark("c3", "🅲", morning_data['c3']))
+    for key, icon in TASK_FIELDS:
+        val = morning_data.get(key)
+        if val:
+            lines.append(f"{icon} {md_escape(val)}")
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
 def next_undone_task(morning_data, done_set=None):
@@ -3463,6 +3458,11 @@ def _tasks_text_and_kb(morning, done_set, gender):
     отдельных "A/B1/.." меток — тот же формат, что использует вечерний
     блок и карточка дня, чтобы отметки, поставленные днём в этом меню,
     не терялись при вечернем ревью и наоборот.
+
+    Строка задачи всегда показывает цветной значок приоритета, даже если
+    задача уже выполнена — без ✅: галочка в списке "что сделать" читается
+    как "уже сделано" (фидбек Виктории). О том, что задача выполнена,
+    говорит исчезновение кнопки "Отметить: ..." под ней.
     """
     lines = []
     buttons = []
@@ -3472,8 +3472,7 @@ def _tasks_text_and_kb(morning, done_set, gender):
             buttons.append([InlineKeyboardButton(f"➕ {TASK_LABELS[key]}", callback_data=f"edit_task_{key}")])
             continue
         done = key in done_set
-        prefix = "✅" if done else icon
-        lines.append(f"{prefix} {val}")
+        lines.append(f"{icon} {val}")
         row = []
         if not done:
             row.append(InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
