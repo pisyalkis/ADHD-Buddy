@@ -517,6 +517,9 @@ def init_db():
         ("skill_beacon_daily_count", "3"),
         ("skill_beacon_last_sent", "''"),
         ("streak_hidden", "0"),
+        ("work_start_time", "''"),
+        ("work_start_date", "''"),
+        ("work_start_sent_date", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1899,16 +1902,18 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # и функцией, которая заново присылает вопрос этого шага. Используется в
 # morning_start, чтобы при повторном заходе (после таймаута/случайного
 # закрытия) продолжить с первого непройденного шага, а не с начала.
+# Утренний ритуал — только практики (письмо/благодарность/ребёнок). Задачи
+# больше НЕ часть этого линейного диалога (см. advance_morning ниже и
+# morning_task_offer_yes/no) — по прямой просьбе Анны: "ритуалы отдельно,
+# задачки отдельно". Постановка задач теперь идёт через 📋 Задачи, которую
+# после ритуала предлагает открыть отдельное сообщение, а не встроенный шаг.
+# Старые ask_morning_focus/got_m_b1/... ниже больше не вызываются (M_FOCUS..
+# M_C3 убраны из states морning_conv) — оставлены как есть, не удалялись,
+# чтобы не расширять и так большой рефакторинг.
 RESUME_FIELDS = [
     ("m_writing",   M_WRITING,   lambda msg, ctx, gender: ask_writing(msg)),
     ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender: ask_gratitude(msg, gender)),
     ("m_child",     M_CHILD,     lambda msg, ctx, gender: ask_child(msg, gender)),
-    ("m_focus",     M_FOCUS,     lambda msg, ctx, gender: ask_morning_focus(msg, ctx, gender)),
-    ("m_b1",        M_B1,        lambda msg, ctx, gender: ask_m_b1(msg, ctx)),
-    ("m_b2",        M_B2,        lambda msg, ctx, gender: ask_m_b2(msg, ctx)),
-    ("m_c1",        M_C1,        lambda msg, ctx, gender: ask_m_c1(msg, ctx)),
-    ("m_c2",        M_C2,        lambda msg, ctx, gender: ask_m_c2(msg, ctx)),
-    ("m_c3",        M_C3,        lambda msg, ctx, gender: ask_m_c3(msg, ctx)),
 ]
 
 async def advance_morning(ctx, message, gender, uid, from_key=None):
@@ -1929,6 +1934,7 @@ async def advance_morning(ctx, message, gender, uid, from_key=None):
         await ask_fn(message, ctx, gender)
         return state
     await finish_morning(message, uid, ctx)
+    await send_morning_task_offer(message, uid)
     return ConversationHandler.END
 
 async def pin_today_tasks(ctx, uid, sent_message):
@@ -2039,6 +2045,50 @@ async def finish_morning(message, uid, ctx):
     # Пиним, только если реально есть что закреплять — не пустое "задачи не заданы".
     if sent is not None and any(morning_for_summary.values()):
         await pin_today_tasks(ctx, uid, sent)
+
+async def send_morning_task_offer(message, uid):
+    """После утреннего ритуала (только практики) — отдельное необязательное
+    предложение поставить задачи, а не встроенный шаг того же диалога. По
+    просьбе Анны: «ритуалы отдельно, задачки отдельно»."""
+    await message.reply_text(
+        "📋 Поставить задачи на сегодня?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Да, поставить", callback_data="morning_tasks_yes")],
+            [InlineKeyboardButton("Не сейчас", callback_data="morning_tasks_no")],
+        ])
+    )
+
+async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Открывает 📋 Задачи (уже готовый экран добавления/правки — не новый
+    сценарий) и следом спрашивает время начала работы для напоминания."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_work_start"] = True
+    await q.message.reply_text(
+        "🚪 Во сколько сегодня начинаешь работать?\n\n"
+        "Пришлю напоминание с задачами в это время. Формат: *ЧЧ:ММ* (например `10:00`)",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Не сейчас", callback_data="skip_work_start")]])
+    )
+
+async def morning_task_offer_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "Хорошо — задачи всегда можно поставить в 📋 Задачи, когда будешь готов(а).",
+        reply_markup=menu_button_kb()
+    )
+
+async def skip_work_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    ctx.user_data["awaiting_work_start"] = False
+    await q.message.reply_text("Окей, без напоминания.", reply_markup=menu_button_kb())
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
 
@@ -3355,6 +3405,36 @@ async def send_skill_beacon(app, user):
     except Exception as e:
         print(f"Ошибка маячка навыков uid={user.get('user_id')}: {e}")
 
+async def send_work_start_reminder(app, user):
+    """Разовое напоминание «пора начинать» в момент, который человек сам
+    назвал утром (см. morning_task_offer_yes) — не повторяющееся
+    расписание, актуально только на сегодня."""
+    try:
+        uid = user["user_id"]
+        wtime = user.get("work_start_time") or ""
+        wdate = user.get("work_start_date") or ""
+        if not wtime or not wdate: return
+
+        tz = get_user_tz(user)
+        now = datetime.now(tz)
+        today_iso = now.date().isoformat()
+        if wdate != today_iso: return
+        if user.get("work_start_sent_date") == today_iso: return
+        if now.strftime("%H:%M") < wtime: return
+
+        _, morning, _ = get_today_context(user)
+        focus = (morning or {}).get("focus", "")
+        text = "🚪 *Пора начинать!*"
+        if focus:
+            text += f"\n\n🅰️ {md_escape(focus)}"
+        await app.bot.send_message(
+            chat_id=uid, text=text, parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Все задачи на сегодня", callback_data="go_tasks")]])
+        )
+        update_user(uid, work_start_sent_date=today_iso)
+    except Exception as e:
+        print(f"Ошибка напоминания о начале работы uid={user.get('user_id')}: {e}")
+
 
 TASK_LABELS = {
     "focus": "🅰️ Главная задача",
@@ -3558,6 +3638,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
+    ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
     ctx.user_data.pop("admin_msg_target", None)
@@ -3590,7 +3671,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         block = ctx.user_data.get("setting_notif", "")
         text = update.message.text.strip()
         # Validate HH:MM format
-        import re
         if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
             if block in ("beacon_start", "beacon_end"):
                 update_user(uid, **{block: text})
@@ -3753,6 +3833,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ("✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n") + out_text,
             parse_mode="Markdown", reply_markup=kb
         )
+    elif ctx.user_data.get("awaiting_work_start"):
+        ctx.user_data["awaiting_work_start"] = False
+        text = update.message.text.strip()
+        if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
+            today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+            update_user(uid, work_start_time=text, work_start_date=today, work_start_sent_date="")
+            await update.message.reply_text(
+                f"🚪 Хорошо — в *{text}* пришлю напоминание с задачами.",
+                parse_mode="Markdown", reply_markup=menu_button_kb()
+            )
+        else:
+            await update.message.reply_text(
+                "Неверный формат. Введи время в формате ЧЧ:ММ, например: `10:00`",
+                parse_mode="Markdown"
+            )
+            ctx.user_data["awaiting_work_start"] = True
     elif ctx.user_data.get("admin_msg_target"):
         target_id = ctx.user_data.pop("admin_msg_target")
         name = ctx.user_data.pop("admin_msg_name", str(target_id))
@@ -5287,6 +5383,10 @@ async def check_notifications(app):
                 await send_task_beacon(app, user)
                 await send_skill_beacon(app, user)
 
+                # Разовое напоминание "пора начинать" — время задаётся
+                # утром, см. morning_task_offer_yes / send_work_start_reminder
+                await send_work_start_reminder(app, user)
+
                 # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
                 # (не в памяти планировщика), чтобы рестарт процесса её не терял
                 due_raw = user.get("resume_check_due") or ""
@@ -5667,13 +5767,9 @@ def main():
             M_WRITING:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_writing),    CallbackQueryHandler(skip_m_writing,  pattern="^skip_m_writing$")],
             M_GRATITUDE:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_gratitude),  CallbackQueryHandler(skip_m_gratitude,pattern="^skip_m_gratitude$")],
             M_CHILD:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_child),      CallbackQueryHandler(skip_m_child,    pattern="^skip_m_child$")],
-            # Потом задачи ABC
-            M_FOCUS:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_focus),    CallbackQueryHandler(skip_m_focus,    pattern="^skip_m_focus$"), CallbackQueryHandler(use_m_focus, pattern="^use_m_focus$")],
-            M_B1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b1),       CallbackQueryHandler(skip_m_b1,       pattern="^skip_m_b1$"),    CallbackQueryHandler(use_m_b1,    pattern="^use_m_b1$")],
-            M_B2:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_b2),       CallbackQueryHandler(skip_m_b2,       pattern="^skip_m_b2$"),    CallbackQueryHandler(use_m_b2,    pattern="^use_m_b2$")],
-            M_C1:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c1),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$"), CallbackQueryHandler(use_m_c_all, pattern="^use_m_c_all$")],
-            M_C2:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c2),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
-            M_C3:       [MessageHandler(filters.TEXT & ~filters.COMMAND, got_m_c3),       CallbackQueryHandler(skip_m_c_all,    pattern="^skip_m_c_all$")],
+            # Задачи A/B/C больше не встроенный шаг — см. комментарий у
+            # RESUME_FIELDS. M_FOCUS/M_B1/M_B2/M_C1/M_C2/M_C3 намеренно не
+            # зарегистрированы здесь, поэтому недостижимы.
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
@@ -5769,6 +5865,9 @@ def main():
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
+    app.add_handler(CallbackQueryHandler(morning_task_offer_yes, pattern="^morning_tasks_yes$"))
+    app.add_handler(CallbackQueryHandler(morning_task_offer_no,  pattern="^morning_tasks_no$"))
+    app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
     app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
