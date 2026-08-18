@@ -86,7 +86,7 @@ SKILLS = [
         "name": "📋 Список дел и календарь",
         "desc": "Записывай ВСЁ, что приходит в голову и нужно сделать — один общий список, а не только на сегодня.",
         "explanation": "Нет такого дела, которое ты не мог(ла) бы забыть. Список дел разгружает оперативную память мозга — не нужно держать всё в голове, если оно уже записано.",
-        "instructions": "Веди один большой список — туда попадает вообще всё: срочное и не очень, крупное и мелкое, даже то, что пригодится через месяц. Удобно вести его в заметках телефона или в блокноте — записывай новое сверху или снизу, а сделанное просто вычёркивай. Из этого списка каждый день ты выбираешь несколько дел и превращаешь их в свои A/B/C задачи на сегодня.\n\nКалендарь — только для встреч и событий с реальной договорённостью с другим человеком. *Не вноси в календарь дела, которым ты сам(а) придумал(а) время* — «помою полы в 12:00». Такие самообещания часто срываются и бьют по самооценке. Всё остальное — в список дел.\n\nОба инструмента проверяй каждый день. Сообщения и задачи из мессенджеров и стикеров — сразу переноси в список дел.\n\n_Список веди отдельно (заметки, блокнот), а сюда каждый день переноси то, что приоритетно именно сегодня._"
+        "instructions": "Веди один большой список — туда попадает вообще всё: срочное и не очень, крупное и мелкое, даже то, что пригодится через месяц. Удобно вести его в заметках телефона, в блокноте — или прямо в боте, в разделе «📥 Список дел» (📋 Задачи → 📥 Список дел). Из этого списка каждый день ты выбираешь несколько дел и превращаешь их в свои A/B/C задачи на сегодня — если вести список в боте, при постановке A/B/C он сам предложит выбрать оттуда, не печатать заново.\n\nКалендарь — только для встреч и событий с реальной договорённостью с другим человеком. *Не вноси в календарь дела, которым ты сам(а) придумал(а) время* — «помою полы в 12:00». Такие самообещания часто срываются и бьют по самооценке. Всё остальное — в список дел.\n\nОба инструмента проверяй каждый день. Сообщения и задачи из мессенджеров и стикеров — сразу переноси в список дел."
     },
     {
         "name": "🔤 Приоритеты A, B, C",
@@ -722,6 +722,27 @@ def get_diary(uid, block, for_date=None):
     row = c.fetchone()
     conn.close()
     return json.loads(row[0]) if row else {}
+
+def add_pool_task(uid, text):
+    """Добавляет дело в «Список дел» — общий накопительный пул, из которого
+    при постановке A/B/C можно выбрать готовую формулировку вместо того,
+    чтобы каждый раз печатать с нуля (идея Виктории)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO tasks(user_id, text, created) VALUES (?, ?, ?)",
+                 (uid, text, datetime.now().isoformat()))
+    conn.commit(); conn.close()
+
+def get_pool_tasks(uid):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, text FROM tasks WHERE user_id=? ORDER BY id", (uid,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def delete_pool_task(uid, task_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
+    conn.commit(); conn.close()
 
 def get_latest_evening_plan(uid):
     """Вчерашний вечерний дневник для переноса плана в утро.
@@ -3481,6 +3502,7 @@ def _tasks_text_and_kb(morning, done_set, gender):
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
     kb_rows = buttons + [
+        [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
         [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ]
@@ -3502,16 +3524,133 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Точечное добавление/правка одной задачи, без полного утреннего
-    ритуала — вход и с пустого, и с уже заполненного слота (см. _tasks_text_and_kb)."""
+    ритуала — вход и с пустого, и с уже заполненного слота (см. _tasks_text_and_kb).
+
+    Если в «Списке дел» (пуле) уже что-то накоплено — сначала предлагаем
+    выбрать готовую формулировку оттуда, а не сразу просить печатать текст."""
     q = update.callback_query; await q.answer()
     key = q.data.replace("edit_task_", "")
     clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    pool = get_pool_tasks(uid)
+    if pool:
+        await q.message.reply_text(
+            f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:",
+            reply_markup=pool_suggestions_kb(key, pool)
+        )
+    else:
+        await ask_task_text(q.message, ctx, key)
+
+async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
     label = TASK_LABELS.get(key, key)
-    await q.message.reply_text(
+    await message.reply_text(
         f"{label}\n\nВведи текст задачи:",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
     )
+
+def pool_suggestions_kb(key, pool, offset=0, limit=3):
+    chunk = pool[offset:offset + limit]
+    rows = [[InlineKeyboardButton(item["text"][:40], callback_data=f"pooluse_{key}_{item['id']}")] for item in chunk]
+    if offset + limit < len(pool):
+        rows.append([InlineKeyboardButton("Показать ещё", callback_data=f"poolmore_{key}_{offset + limit}")])
+    rows.append([InlineKeyboardButton("✍️ Напишу свою", callback_data=f"poolwrite_{key}")])
+    rows.append([InlineKeyboardButton("Отмена", callback_data="go_tasks")])
+    return InlineKeyboardMarkup(rows)
+
+async def pool_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key, offset_s = q.data[len("poolmore_"):].rsplit("_", 1)
+    pool = get_pool_tasks(q.from_user.id)
+    await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
+
+async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("poolwrite_", "")
+    await ask_task_text(q.message, ctx, key)
+
+async def apply_task_edit(message, uid, key, text):
+    """Сохраняет текст задачи в утренний дневник — общая логика и для
+    свободного ввода (handle_text), и для выбора готового дела из пула."""
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    was_filled = bool(morning.get(key))
+    morning[key] = text
+    save_diary(uid, "morning", morning, for_date=today)
+    if was_filled:
+        # Текст задачи поменялся — старая отметка "выполнено" больше не
+        # про эту задачу (иначе новая задача выглядела бы уже сделанной).
+        done_data = get_diary(uid, "tasks_done", today)
+        done_list = [k for k in done_data.get("done", []) if k != key]
+        if len(done_list) != len(done_data.get("done", [])):
+            save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
+    done_data2 = get_diary(uid, "tasks_done", today)
+    done_set = set(done_data2.get("done", []))
+    out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    await message.reply_text(
+        ("✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n") + out_text,
+        parse_mode="Markdown", reply_markup=kb
+    )
+
+async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key, id_s = q.data[len("pooluse_"):].rsplit("_", 1)
+    uid = q.from_user.id
+    pool = get_pool_tasks(uid)
+    item = next((t for t in pool if t["id"] == int(id_s)), None)
+    if item is None:
+        await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
+        return
+    delete_pool_task(uid, item["id"])
+    await apply_task_edit(q.message, uid, key, item["text"])
+
+def task_pool_kb(pool):
+    rows = []
+    if pool:
+        rows.append([InlineKeyboardButton("🗑 Удалить дело", callback_data="pool_del_menu")])
+    rows.append([InlineKeyboardButton("✏️ Добавить дело", callback_data="pool_add")])
+    rows.append([InlineKeyboardButton("◀️ К задачам", callback_data="go_tasks")])
+    return InlineKeyboardMarkup(rows)
+
+def task_pool_text(pool):
+    if not pool:
+        return ("📥 *Список дел*\n\n_Пока пусто — сюда можно скидывать любые дела, "
+                "не только на сегодня, а потом выбирать из них при постановке A/B/C._")
+    lines = [f"{i+1}. {t['text']}" for i, t in enumerate(pool)]
+    return "📥 *Список дел*\n\n" + "\n".join(lines)
+
+async def show_task_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    pool = get_pool_tasks(q.from_user.id)
+    await q.message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
+
+async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    ctx.user_data["awaiting_pool_add"] = True
+    await q.message.reply_text(
+        "Что добавить в список дел?",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
+    )
+
+async def send_pool_delete_menu(message, uid):
+    pool = get_pool_tasks(uid)
+    if not pool:
+        await message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
+        return
+    rows = [[InlineKeyboardButton(f"🗑 {t['text'][:35]}", callback_data=f"pooldel_{t['id']}")] for t in pool]
+    rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_task_pool")])
+    await message.reply_text("Что удалить?", reply_markup=InlineKeyboardMarkup(rows))
+
+async def show_task_pool_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await send_pool_delete_menu(q.message, q.from_user.id)
+
+async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    task_id = int(q.data.replace("pooldel_", ""))
+    delete_pool_task(q.from_user.id, task_id)
+    await send_pool_delete_menu(q.message, q.from_user.id)
 
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Отметить задачу выполненной."""
@@ -3637,6 +3776,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
+    ctx.user_data["awaiting_pool_add"] = False
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
@@ -3812,25 +3952,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     elif ctx.user_data.get("awaiting_task_edit"):
         key = ctx.user_data.pop("awaiting_task_edit")
-        text = update.message.text.strip()
-        today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-        morning = get_diary(uid, "morning", today)
-        was_filled = bool(morning.get(key))
-        morning[key] = text
-        save_diary(uid, "morning", morning, for_date=today)
-        if was_filled:
-            # Текст задачи поменялся — старая отметка "выполнено" больше не
-            # про эту задачу (иначе новая задача выглядела бы уже сделанной).
-            done_data = get_diary(uid, "tasks_done", today)
-            done_list = [k for k in done_data.get("done", []) if k != key]
-            if len(done_list) != len(done_data.get("done", [])):
-                save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
-        done_data2 = get_diary(uid, "tasks_done", today)
-        done_set = set(done_data2.get("done", []))
-        out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+        await apply_task_edit(update.message, uid, key, update.message.text.strip())
+    elif ctx.user_data.get("awaiting_pool_add"):
+        ctx.user_data["awaiting_pool_add"] = False
+        add_pool_task(uid, update.message.text.strip())
+        pool = get_pool_tasks(uid)
         await update.message.reply_text(
-            ("✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n") + out_text,
-            parse_mode="Markdown", reply_markup=kb
+            "✅ Добавил в список дел.\n\n" + task_pool_text(pool),
+            parse_mode="Markdown", reply_markup=task_pool_kb(pool)
         )
     elif ctx.user_data.get("awaiting_work_start"):
         ctx.user_data["awaiting_work_start"] = False
@@ -5913,6 +6042,13 @@ def main():
     app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
     app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
+    app.add_handler(CallbackQueryHandler(show_task_pool,       pattern="^go_task_pool$"))
+    app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
+    app.add_handler(CallbackQueryHandler(show_task_pool_delete, pattern="^pool_del_menu$"))
+    app.add_handler(CallbackQueryHandler(pool_delete_item,     pattern="^pooldel_"))
+    app.add_handler(CallbackQueryHandler(pool_use_item,        pattern="^pooluse_"))
+    app.add_handler(CallbackQueryHandler(pool_show_more,       pattern="^poolmore_"))
+    app.add_handler(CallbackQueryHandler(pool_write_own,       pattern="^poolwrite_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
