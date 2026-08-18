@@ -2655,11 +2655,12 @@ async def parse_reminder_request(text, now_dt):
 async def classify_free_text(text, now_dt):
     """Роутер свободного текста вне какого-либо раздела бота (см.
     route_free_text) — идея Виктории: «через одно окно можно делать почти
-    всё», а не только пересылать сообщение админу. Различает 2 конкретных
+    всё», а не только пересылать сообщение админу. Различает конкретные
     действия, для которых уже есть готовые обработчики (напоминание, дело
-    в список дел); всё остальное — вопрос, растерянность, разговор — не
-    пытается классифицировать точнее и уходит в коуча, который уже умеет
-    отвечать по контексту пользователя (задачи, навык дня, СДВГ)."""
+    в список дел, удаление того или другого); всё остальное — вопрос,
+    растерянность, разговор — не пытается классифицировать точнее и уходит
+    в коуча, который уже умеет отвечать по контексту пользователя (задачи,
+    навык дня, СДВГ)."""
     if not ANTHROPIC_KEY:
         return {"intent": "other"}
     try:
@@ -2677,7 +2678,12 @@ async def classify_free_text(text, now_dt):
                 '«завтра в 10 позвонить...»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть"}\n'
                 '2) Просит добавить дело в общий список дел БЕЗ конкретного времени («добавь в список дел '
                 'купить молоко», «не забыть записаться к врачу»): {"intent": "add_pool", "text": "суть дела"}\n'
-                '3) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
+                '3) Просит удалить/отменить существующее напоминание или дело из списка дел («удали '
+                'напоминание про почту», «убери из списка дел купить молоко», «отмени звонок Джону», «не '
+                'надо больше это дело»): {"intent": "delete", "target": "reminder"|"pool", "query": '
+                '"ключевые слова, по которым искать"}. target — "reminder", если речь явно про напоминание '
+                '(конкретное время), иначе "pool".\n'
+                '4) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
                 'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
                 '{"intent": "other"}\n'
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
@@ -2700,6 +2706,8 @@ async def classify_free_text(text, now_dt):
             data.setdefault("text", text)
             return data
         if intent == "add_pool" and data.get("text"):
+            return data
+        if intent == "delete" and data.get("target") in ("reminder", "pool") and data.get("query"):
             return data
         return {"intent": "other"}
     except Exception:
@@ -3721,6 +3729,52 @@ async def create_reminder_and_reply(message, uid, remind_at_key, rem_text):
         parse_mode="Markdown", reply_markup=kb
     )
 
+def _match_by_text(items, query):
+    """Нестрогий поиск по подстроке для удаления по свободной фразе — items
+    это список словарей с ключом "text" (напоминания или дела из пула)."""
+    q = (query or "").strip().lower()
+    if not q:
+        return []
+    return [it for it in items if q in it["text"].lower() or it["text"].lower() in q]
+
+async def handle_delete_reminder_intent(message, uid, query):
+    """Удаление напоминания по свободной фразе. При точном одном совпадении
+    удаляет сразу; если совпадений 0 или больше 1 — не гадает, а переспрашивает
+    (показывает список с кнопками 🗑) — так попросил Артём."""
+    items = get_reminders(uid)
+    if not items:
+        await message.reply_text("Активных напоминаний нет.", reply_markup=menu_button_kb())
+        return
+    matches = _match_by_text(items, query)
+    if len(matches) == 1:
+        target = matches[0]
+        cancel_reminder(uid, target["id"])
+        remaining = get_reminders(uid)
+        text, kb = reminders_text_and_kb(remaining)
+        await message.reply_text(f"✅ Удалил: {target['text']}\n\n" + text, parse_mode="Markdown", reply_markup=kb)
+        return
+    text, kb = reminders_text_and_kb(items)
+    await message.reply_text("Не понял, какое именно — выбери 🗑 рядом с нужным:\n\n" + text, parse_mode="Markdown", reply_markup=kb)
+
+async def handle_delete_pool_intent(message, uid, query):
+    """Удаление дела из списка дел по свободной фразе — та же логика
+    "переспрашивать при неоднозначности", что и у напоминаний."""
+    items = get_pool_tasks(uid)
+    if not items:
+        await message.reply_text("Список дел пуст.", reply_markup=menu_button_kb())
+        return
+    matches = _match_by_text(items, query)
+    if len(matches) == 1:
+        target = matches[0]
+        delete_pool_task(uid, target["id"])
+        pool = get_pool_tasks(uid)
+        await message.reply_text(
+            f"✅ Удалил из списка дел: {target['text']}\n\n" + task_pool_text(pool),
+            parse_mode="Markdown", reply_markup=task_pool_kb(pool)
+        )
+        return
+    await send_pool_delete_menu(message, uid)
+
 async def apply_task_edit(message, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула."""
@@ -4230,6 +4284,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text)
         elif intent == "add_pool":
             await add_pool_and_reply(update.message, uid, routed.get("text") or text)
+        elif intent == "delete" and routed.get("target") == "reminder":
+            await handle_delete_reminder_intent(update.message, uid, routed.get("query") or text)
+        elif intent == "delete" and routed.get("target") == "pool":
+            await handle_delete_pool_intent(update.message, uid, routed.get("query") or text)
         else:
             ctx.user_data["coach_mode"] = True
             await send_coach(update.message, text, uid, ctx)
