@@ -5721,6 +5721,48 @@ async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Не удалось отправить: `{e}`", parse_mode="Markdown")
 
+async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Разослать сообщение всем зарегистрированным пользователям.
+
+    Текст рассылки берётся из сообщения, на которое отвечаешь (reply) — так
+    сохраняются переносы строк и Markdown-разметка, которые /broadcast текст
+    аргументами команды потерял бы (Telegram схлопывает их в одну строку).
+    Можно и одной строкой: /broadcast текст — тогда без переносов."""
+    uid = update.effective_user.id
+    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+        await update.message.reply_text("⛔ Нет доступа.")
+        return
+    reply = update.message.reply_to_message
+    text = reply.text if (reply and reply.text) else " ".join(ctx.args)
+    if not text:
+        await update.message.reply_text(
+            "Использование: напиши текст рассылки отдельным сообщением боту, "
+            "затем ответь на него командой /broadcast (сохранит форматирование "
+            "и переносы строк). Либо `/broadcast текст` одной строкой.",
+            parse_mode="Markdown"
+        )
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
+    conn.close()
+
+    sent, failed = 0, 0
+    for (target_id,) in rows:
+        try:
+            await ctx.bot.send_message(target_id, text, parse_mode="Markdown")
+            sent += 1
+        except Exception as e:
+            failed += 1
+            print(f"Ошибка рассылки uid={target_id}: {e}")
+        await asyncio.sleep(0.05)  # не упереться в лимиты Telegram на большой базе
+
+    hint = "\n\n_Если 0 доставлено — возможно, проблема в Markdown-разметке текста._" if sent == 0 and failed else ""
+    await update.message.reply_text(
+        f"✅ Разослано: {sent}. Не удалось: {failed}.{hint}",
+        parse_mode="Markdown"
+    )
+
 
 def main():
     init_db()
@@ -5807,6 +5849,7 @@ def main():
     app.add_handler(CommandHandler("research", admin_research), group=-1)
     app.add_handler(CommandHandler("users", admin_users), group=-1)
     app.add_handler(CommandHandler("send", admin_send), group=-1)
+    app.add_handler(CommandHandler("broadcast", admin_broadcast), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(CommandHandler("newpromo", newpromo_command), group=-1)
     app.add_handler(CommandHandler("blogger", blogger_command), group=-1)
