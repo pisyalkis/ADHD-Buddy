@@ -770,6 +770,19 @@ def cancel_reminder(uid, rem_id):
     conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (rem_id, uid))
     conn.commit(); conn.close()
 
+def update_reminder(uid, rem_id, text, remind_at_key):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE reminders SET text=?, remind_at=? WHERE id=? AND user_id=?",
+                 (text, remind_at_key, rem_id, uid))
+    conn.commit(); conn.close()
+
+def get_reminder(uid, rem_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT id, text, remind_at FROM reminders WHERE id=? AND user_id=?", (rem_id, uid)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def get_due_reminders(uid, now_key):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -2683,7 +2696,12 @@ async def classify_free_text(text, now_dt):
                 'надо больше это дело»): {"intent": "delete", "target": "reminder"|"pool", "query": '
                 '"ключевые слова, по которым искать"}. target — "reminder", если речь явно про напоминание '
                 '(конкретное время), иначе "pool".\n'
-                '4) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
+                '4) Просит изменить/перенести уже существующее напоминание («перенеси напоминание про почту '
+                'на завтра в 9», «измени звонок Джону на понедельник», «поставь другое время для...»): '
+                '{"intent": "edit_reminder", "query": "ключевые слова, по которым искать, какое именно"}. '
+                'Здесь НЕ нужно вычислять новое время — только найти, какое напоминание менять, бот '
+                'отдельно спросит новое время и текст.\n'
+                '5) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
                 'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
                 '{"intent": "other"}\n'
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
@@ -2708,6 +2726,8 @@ async def classify_free_text(text, now_dt):
         if intent == "add_pool" and data.get("text"):
             return data
         if intent == "delete" and data.get("target") in ("reminder", "pool") and data.get("query"):
+            return data
+        if intent == "edit_reminder" and data.get("query"):
             return data
         return {"intent": "other"}
     except Exception:
@@ -3906,7 +3926,11 @@ def reminders_text_and_kb(reminders):
                 when_str = r["remind_at"]
             lines.append(f"🔹 {when_str} — {r['text']}")
         text = "⏰ *Напоминания*\n\n" + "\n".join(lines)
-    rows = [[InlineKeyboardButton(f"🗑 {r['text'][:30]}", callback_data=f"remdel_{r['id']}")] for r in reminders]
+    rows = [
+        [InlineKeyboardButton(f"✏️ {r['text'][:25]}", callback_data=f"remedit_{r['id']}"),
+         InlineKeyboardButton("🗑", callback_data=f"remdel_{r['id']}")]
+        for r in reminders
+    ]
     rows.append([InlineKeyboardButton("➕ Новое напоминание", callback_data="rem_add")])
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     return text, InlineKeyboardMarkup(rows)
@@ -3941,6 +3965,53 @@ async def reminder_cancel_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def ask_reminder_edit(message, ctx, rem):
+    """Общий вход в правку напоминания — и с явной кнопки ✏️ на экране
+    ⏰ Напоминания, и из роутера свободного текста (handle_edit_reminder_intent)."""
+    ctx.user_data["awaiting_reminder_edit"] = rem["id"]
+    try:
+        when_str = datetime.fromisoformat(rem["remind_at"]).strftime("%d.%m %H:%M")
+    except Exception:
+        when_str = rem["remind_at"]
+    await message.reply_text(
+        f"✏️ Сейчас: *{rem['text']}* — {when_str}\n\nНапиши новое время и текст, например:\n"
+        "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
+    )
+
+async def reminder_edit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    rem_id = int(q.data.replace("remedit_", ""))
+    rem = get_reminder(q.from_user.id, rem_id)
+    if rem is None:
+        await q.message.reply_text("Это напоминание уже не активно.", reply_markup=menu_button_kb())
+        return
+    await ask_reminder_edit(q.message, ctx, rem)
+
+def reminder_edit_candidates_kb(candidates):
+    rows = [[InlineKeyboardButton(f"✏️ {r['text'][:35]}", callback_data=f"remedit_{r['id']}")] for r in candidates]
+    rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_reminders")])
+    return InlineKeyboardMarkup(rows)
+
+async def handle_edit_reminder_intent(message, ctx, uid, query):
+    """Правка напоминания по свободной фразе — та же логика "переспрашивать
+    при неоднозначности, максимум пара кандидатов", что и у удаления."""
+    items = get_reminders(uid)
+    if not items:
+        await message.reply_text("Активных напоминаний нет.", reply_markup=menu_button_kb())
+        return
+    matches = _match_by_text(items, query)
+    if len(matches) == 1:
+        await ask_reminder_edit(message, ctx, matches[0])
+        return
+    candidates = (matches or items)[:2]
+    await message.reply_text(
+        "Не понял, какое именно — выбери, что изменить:",
+        reply_markup=reminder_edit_candidates_kb(candidates)
+    )
 
 async def send_due_reminders(app, user, now_dt):
     """Часть per-user тика check_notifications — независима от общего
@@ -4060,6 +4131,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data.pop("awaiting_task_edit", None)
     ctx.user_data["awaiting_pool_add"] = False
     ctx.user_data["awaiting_reminder_add"] = False
+    ctx.user_data.pop("awaiting_reminder_edit", None)
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
@@ -4253,6 +4325,27 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             remind_at_key, rem_text = parsed
             await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text)
+    elif ctx.user_data.get("awaiting_reminder_edit"):
+        rem_id = ctx.user_data.pop("awaiting_reminder_edit")
+        now_dt = datetime.now(get_user_tz(get_user(uid)))
+        parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
+        if parsed is None:
+            ctx.user_data["awaiting_reminder_edit"] = rem_id
+            await update.message.reply_text(
+                "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n"
+                "`через 20 минут проверить почту`",
+                parse_mode="Markdown"
+            )
+        else:
+            remind_at_key, rem_text = parsed
+            update_reminder(uid, rem_id, rem_text, remind_at_key)
+            when = datetime.fromisoformat(remind_at_key)
+            reminders = get_reminders(uid)
+            text, kb = reminders_text_and_kb(reminders)
+            await update.message.reply_text(
+                f"✅ Изменил: {rem_text} — {when.strftime('%d.%m в %H:%M')}\n\n" + text,
+                parse_mode="Markdown", reply_markup=kb
+            )
     elif ctx.user_data.get("awaiting_work_start"):
         ctx.user_data["awaiting_work_start"] = False
         text = update.message.text.strip()
@@ -4296,6 +4389,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await handle_delete_reminder_intent(update.message, uid, routed.get("query") or text)
         elif intent == "delete" and routed.get("target") == "pool":
             await handle_delete_pool_intent(update.message, uid, routed.get("query") or text)
+        elif intent == "edit_reminder":
+            await handle_edit_reminder_intent(update.message, ctx, uid, routed.get("query") or text)
         else:
             ctx.user_data["coach_mode"] = True
             await send_coach(update.message, text, uid, ctx)
@@ -6354,6 +6449,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_reminders,       pattern="^go_reminders$"))
     app.add_handler(CallbackQueryHandler(reminder_add_start,   pattern="^rem_add$"))
     app.add_handler(CallbackQueryHandler(reminder_cancel_item, pattern="^remdel_"))
+    app.add_handler(CallbackQueryHandler(reminder_edit_start,  pattern="^remedit_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
