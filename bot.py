@@ -921,7 +921,7 @@ async def maybe_send_skip_nudge(message, uid, key):
             reply_markup=disable_field_kb(key)
         )
 
-TASK_FIELDS = [("focus", "🅰️"), ("b1", "B1"), ("b2", "B2"), ("c1", "C1"), ("c2", "C2"), ("c3", "C3")]
+TASK_FIELDS = [("focus", "🔴"), ("b1", "🟠1"), ("b2", "🟠2"), ("c1", "🟡1"), ("c2", "🟡2"), ("c3", "🟡3")]
 
 def build_tasks_summary(morning_data, done_set=None):
     """Формирует текстовый список задач из утреннего дневника.
@@ -3437,12 +3437,12 @@ async def send_work_start_reminder(app, user):
 
 
 TASK_LABELS = {
-    "focus": "🅰️ Главная задача",
-    "b1":    "🅱️ Задача B1",
-    "b2":    "🅱️ Задача B2",
-    "c1":    "🅲 Задача C1",
-    "c2":    "🅲 Задача C2",
-    "c3":    "🅲 Задача C3",
+    "focus": "🔴 Главная задача",
+    "b1":    "🟠 Задача B1",
+    "b2":    "🟠 Задача B2",
+    "c1":    "🟡 Задача C1",
+    "c2":    "🟡 Задача C2",
+    "c3":    "🟡 Задача C3",
 }
 
 # Короткая форма для кнопок "Выполнено" в 📋 Задачи — раньше там был сам
