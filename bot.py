@@ -511,6 +511,7 @@ def init_db():
         ("beacon_rotation_idx", "'0'"),
         ("promo_extra_days", "0"),
         ("subscription_until", "''"),
+        ("streak_hidden", "0"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1043,17 +1044,24 @@ async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if explanation:
         await q.message.reply_text(f"{explanation}\n\nНу что, заполняем? 🙂")
 
-def main_menu():
+def main_menu(user=None):
     """Верхний уровень меню — только то, к чему обращаются каждый день.
     Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
-    убраны под «🧩 Ещё», см. menu_more_kb()."""
+    убраны под «🧩 Ещё», см. menu_more_kb().
+
+    Кнопка «🔥 Стрик» скрывается, если пользователь отключил её в
+    настройках (см. streak_hidden) — некоторых стрик не мотивирует, а
+    давит, и вместо тумблера-полумеры проще просто убрать его из виду."""
+    streak_hidden = bool(user and int(user.get("streak_hidden") or 0))
+    row3 = [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")]
+    if not streak_hidden:
+        row3.append(InlineKeyboardButton("🔥 Стрик", callback_data="go_streak"))
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
          InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
         [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
          InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
-        [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach"),
-         InlineKeyboardButton("🔥 Стрик", callback_data="go_streak")],
+        row3,
         [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings"),
          InlineKeyboardButton("🧩 Ещё", callback_data="go_menu_more")],
     ])
@@ -2127,14 +2135,17 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for key, _, _ in RESUME_FIELDS_EVENING:
         ctx.user_data.pop(key, None)
 
-    streak = calc_streak(uid)
     morning = get_diary(uid, "morning", today)
     focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
+    streak_line = ""
+    if not int(user.get("streak_hidden") or 0):
+        streak = calc_streak(uid)
+        streak_line = f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
 
     await q.message.reply_text(
         f"🌙 *Хороший был день, {user['name']}!*\n"
         f"_{today_str(get_user_tz(user))}_{focus_recap}\n\n"
-        f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
+        f"{streak_line}"
         "Давай закроем этот день.",
         parse_mode="Markdown"
     )
@@ -2433,6 +2444,7 @@ async def finish_evening(message, uid, ctx):
     add_streak(uid, for_date=today)
     await unpin_today_tasks(ctx, uid)
     streak = calc_streak(uid)
+    streak_hidden = int(user.get("streak_hidden") or 0)
 
     plans = ""
     if data["e_a"]:  plans += f"\n🅰️ {md_escape(data['e_a'])}"
@@ -2468,10 +2480,11 @@ async def finish_evening(message, uid, ctx):
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
+    streak_line = "" if streak_hidden else f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
     try:
         await message.reply_text(
             "✅ *День закрыт!*\n\n"
-            f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
+            f"{streak_line}"
             f"{tasks_summary}"
             f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
             f"{selfcare_summary}"
@@ -2484,8 +2497,9 @@ async def finish_evening(message, uid, ctx):
         # См. комментарий в finish_morning — не даём сбою отправки итога
         # оставить ConversationHandler в подвисшем состоянии.
         print(f"Ошибка отправки итога вечера uid={uid}: {e}")
+        streak_suffix = "" if streak_hidden else f" 🔥 Стрик: {streak}."
         await message.reply_text(
-            f"✅ День закрыт! 🔥 Стрик: {streak}. До завтра, {user['name']} 👋",
+            f"✅ День закрыт!{streak_suffix} До завтра, {user['name']} 👋",
             reply_markup=menu_button_kb()
         )
 
@@ -2744,6 +2758,16 @@ async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    user = get_user(uid)
+    if int(user.get("streak_hidden") or 0):
+        # Кнопка могла остаться в старом сообщении после того, как стрик
+        # уже скрыли в настройках — не показываем его в обход настройки.
+        await q.message.reply_text(
+            "🔥 Стрик сейчас скрыт в настройках.\n\n"
+            "Включить обратно можно в ⚙️ Настройки.",
+            reply_markup=menu_button_kb()
+        )
+        return
     s = calc_streak(uid)
     await q.message.reply_text(
         f"🔥 *Стрик: {s} {'день' if s==1 else 'дня' if s<5 else 'дней'} подряд*\n\n"
@@ -2767,6 +2791,7 @@ def _settings_text_and_kb(user):
     bi = int(user.get("beacon_interval")  or 2)
     bs = user.get("beacon_start") or "09:00"
     bfin = user.get("beacon_end") or "21:00"
+    sh = int(user.get("streak_hidden")    or 0)
 
     status = "✅ включены" if enabled else "❌ выключены"
     beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
@@ -2813,6 +2838,10 @@ def _settings_text_and_kb(user):
         )],
         [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
         [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
+        [InlineKeyboardButton(
+            "🔥 Стрик: скрыт — показать" if sh else "🔥 Стрик: показывается — скрыть",
+            callback_data="toggle_streak_visibility"
+        )],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
@@ -2820,6 +2849,19 @@ def _settings_text_and_kb(user):
 async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
+    text, kb = _settings_text_and_kb(get_user(uid))
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+async def toggle_streak_visibility(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Стрик не всем помогает — кому-то давит и раздражает вместо мотивации
+    (прямой фидбек: «Стрик мне абсолютно не подходит. Злит, бесит»). Прячем
+    его отовсюду — из меню и итоговых сообщений — а не просто разрешаем
+    не смотреть: сам факт присутствия уже ощущается как давление."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+    new_val = 0 if int(user.get("streak_hidden") or 0) else 1
+    update_user(uid, streak_hidden=new_val)
     text, kb = _settings_text_and_kb(get_user(uid))
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -3384,7 +3426,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.reply_text("Главное меню 👇", reply_markup=main_menu())
+    await q.message.reply_text("Главное меню 👇", reply_markup=main_menu(get_user(q.from_user.id)))
 
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4715,7 +4757,8 @@ async def weekly_report(app, uid):
             energy_label = {1:"😴 низкая", 2:"😔 ниже среднего", 3:"😐 средняя", 4:"😊 хорошая", 5:"⚡ отличная"}.get(round(avg_energy), "")
             lines.append(f"🔋 Средний уровень энергии: *{avg_energy}/5* {energy_label}")
 
-        lines.append(f"🔥 Текущий стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*")
+        if not int(user.get("streak_hidden") or 0):
+            lines.append(f"🔥 Текущий стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*")
 
         # Мотивационный вывод
         lines.append("")
@@ -5538,6 +5581,7 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
     app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
+    app.add_handler(CallbackQueryHandler(toggle_streak_visibility, pattern="^toggle_streak_visibility$"))
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
