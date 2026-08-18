@@ -4316,8 +4316,7 @@ def _subscribe_text_and_kb(user):
     text = (
         "💎 *Подписка*\n\n"
         f"{body}\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}.\n"
-        "Есть промокод — можно продлить пробный период бесплатно."
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}."
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
@@ -4545,8 +4544,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _, kb = _subscribe_text_and_kb(user)
     paywall_text = (
         "⌛ *Пробный период закончился*\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}.\n"
-        "Есть промокод — можно продлить пробный период бесплатно."
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars {STARS_PRICE_ANCHOR}."
     )
     target = update.effective_message
     if target:
