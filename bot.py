@@ -921,7 +921,7 @@ async def maybe_send_skip_nudge(message, uid, key):
             reply_markup=disable_field_kb(key)
         )
 
-TASK_FIELDS = [("focus", "🅰️"), ("b1", "🅱️"), ("b2", "🅱️"), ("c1", "🅲"), ("c2", "🅲"), ("c3", "🅲")]
+TASK_FIELDS = [("focus", "🅰️"), ("b1", "B1"), ("b2", "B2"), ("c1", "C1"), ("c2", "C2"), ("c3", "C3")]
 
 def build_tasks_summary(morning_data, done_set=None):
     """Формирует текстовый список задач из утреннего дневника.
@@ -3476,7 +3476,7 @@ def _tasks_text_and_kb(morning, done_set, gender):
         lines.append(f"{prefix} {val}")
         row = []
         if not done:
-            row.append(InlineKeyboardButton(f"✅ Выполнено: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
+            row.append(InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
         row.append(InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_task_{key}"))
         buttons.append(row)
 
