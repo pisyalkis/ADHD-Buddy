@@ -2287,7 +2287,11 @@ async def ask_plan_a(message):
         "📋 *Планы на завтра — задача A*\n\n"
         "Самое важное на завтра. Обязательно сделать.\n"
         "_Утром увидишь первым._",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_a")
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Пропустить →", callback_data="skip_e_a")],
+            [InlineKeyboardButton("Пропустить весь блок целей ▸▸", callback_data="skip_all_goals")],
+        ])
     )
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2300,6 +2304,16 @@ async def skip_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_a"] = ""
     await q.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1"))
     return E_B1
+
+async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Пропустить весь блок постановки целей на завтра (A/B1/B2/C1/C2/C3)
+    одной кнопкой — по просьбе Виктории: иногда вечером совсем не хочется
+    ставить цели, а протыкивать "Пропустить" шесть раз подряд не лучше."""
+    q = update.callback_query; await q.answer()
+    for key in ("e_a", "e_b1", "e_b2", "e_c1", "e_c2", "e_c3"):
+        ctx.user_data.setdefault(key, "")
+    await finish_evening(q.message, q.from_user.id, ctx)
+    return ConversationHandler.END
 
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b1"] = update.message.text
@@ -5455,7 +5469,8 @@ def main():
             E_HIGHLIGHTS:[MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_highlights),CallbackQueryHandler(skip_e_highlights,pattern="^skip_e_highlights$")],
             E_SELFCARE:  [CallbackQueryHandler(selfcare_done,  pattern="^sc_done$"), CallbackQueryHandler(toggle_selfcare, pattern="^sc_")],
             E_ENERGY:    [CallbackQueryHandler(got_energy, pattern="^energy_[1-5]$")],
-            E_A:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_a),        CallbackQueryHandler(skip_e_a,        pattern="^skip_e_a$")],
+            E_A:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_a),        CallbackQueryHandler(skip_e_a,        pattern="^skip_e_a$"),
+                          CallbackQueryHandler(skip_all_goals, pattern="^skip_all_goals$")],
             E_B1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b1),       CallbackQueryHandler(skip_e_b1,       pattern="^skip_e_b1$")],
             E_B2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b2),       CallbackQueryHandler(skip_e_b2,       pattern="^skip_e_b2$")],
             E_C1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c1),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
