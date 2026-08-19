@@ -3596,32 +3596,20 @@ def _tasks_text_and_kb(morning, done_set, gender):
     """
     lines = []
     buttons = []
-    any_empty = False
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
         if not val:
-            any_empty = True
             continue
-        done = key in done_set
         lines.append(f"{icon}: {md_escape(val)}")
-        row = []
-        if not done:
-            row.append(InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
-        # Кнопка правки всегда подписана летерой задачи (не просто "✏️
-        # Изменить") — для уже выполненной задачи это единственная кнопка в
-        # строке, и без подписи невозможно понять, какую именно задачу она
-        # редактирует (особенно когда таких строк подряд несколько).
-        edit_label = "✏️ Изменить" if not done else f"✏️ Изменить: {SHORT_TASK_LABELS[key]}"
-        row.append(InlineKeyboardButton(edit_label, callback_data=f"edit_task_{key}"))
-        buttons.append(row)
+        if key not in done_set:
+            buttons.append([InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}")])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
-    # Одна кнопка «➕ Добавить задачу» вместо отдельной на каждый пустой слот
-    # (A/B1/B2/C1/C2/C3) — раньше пустой день показывал сразу 6 кнопок
-    # добавления и терялся смысл "1-2 главные задачи, остальное по желанию".
-    # Какой слот предложить следующим, решает add_next_task_callback.
-    if any_empty:
-        buttons.append([InlineKeyboardButton("➕ Добавить задачу", callback_data="add_next_task")])
+    # Одна кнопка входа вместо отдельной "✏️ Изменить" на каждой строке —
+    # ведёт в последовательный проход по всем слотам (walk_tasks_start),
+    # где на уже заполненных можно быстро "Пропустить" до нужной, а не
+    # решать сразу по всем шести на одном экране.
+    buttons.append([InlineKeyboardButton("✏️ Поставить/изменить задачи", callback_data="walk_tasks")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
         [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
@@ -3633,6 +3621,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать все задачи на сегодня — с возможностью добавить или
     поменять любую из них прямо здесь, не проходя весь утренний ритуал."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
@@ -3656,8 +3645,9 @@ async def _offer_task_input(message, ctx, uid, key):
         await ask_task_text(message, ctx, key)
 
 async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Правка конкретного слота (кнопка «✏️ Изменить» на уже заполненной
-    задаче) — без полного утреннего ритуала, см. _tasks_text_and_kb."""
+    """Больше не выставляется новыми экранами (см. walk_tasks_start) —
+    оставлена ради уже отправленных старых сообщений с кнопкой «✏️
+    Изменить» на конкретном слоте, чтобы они не переставали работать."""
     q = update.callback_query; await q.answer()
     key = q.data.replace("edit_task_", "")
     clear_awaiting_flags(ctx, update)
@@ -3665,10 +3655,9 @@ async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _offer_task_input(q.message, ctx, uid, key)
 
 async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Единая кнопка «➕ Добавить задачу» — сама решает, какой пустой слот
-    предложить следующим (A → B1 → B2 → C1 → C2 → C3), вместо того чтобы
-    сразу показывать все шесть отдельными кнопками (жалоба: «слишком много
-    тапов, глаза разбегаются»)."""
+    """Больше не выставляется новыми экранами (см. walk_tasks_start) —
+    оставлена ради уже отправленных старых сообщений с кнопкой «➕
+    Добавить задачу», чтобы они не переставали работать."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
@@ -3679,6 +3668,72 @@ async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         await q.message.reply_text("Все задачи на сегодня уже поставлены 🎉", reply_markup=menu_button_kb())
         return
     await _offer_task_input(q.message, ctx, uid, key)
+
+def _next_task_key(key):
+    keys = [k for k, _ in TASK_FIELDS]
+    idx = keys.index(key)
+    return keys[idx + 1] if idx + 1 < len(keys) else None
+
+async def _walk_to_step(message, ctx, uid, key):
+    """Один шаг последовательного прохода по задачам (A → B1 → B2 → C1 →
+    C2 → C3, см. walk_tasks_start) — по просьбе Артёма: «когда ставишь/
+    меняешь задачи, это должно происходить по одной». Пустой слот сразу
+    предлагает ввести текст (как раньше add_next_task); заполненный —
+    показывает текущий текст с «Пропустить»/«Поменять»/«Готово», чтобы
+    можно было быстро долистать до нужной задачи, а не решать сразу
+    по всем шести на одном экране."""
+    if key is None:
+        await message.reply_text("Прошлись по всем задачам ✅", reply_markup=menu_button_kb())
+        return
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    val = morning.get(key)
+    if not val:
+        ctx.user_data["task_walk"] = True
+        await _offer_task_input(message, ctx, uid, key)
+        return
+    label = TASK_LABELS.get(key, key)
+    await message.reply_text(
+        f"{label}\n\n{md_escape(val)}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡️ Пропустить", callback_data=f"walk_skip_{key}")],
+            [InlineKeyboardButton("✏️ Поменять", callback_data=f"walk_edit_{key}")],
+            [InlineKeyboardButton("✅ Готово", callback_data="walk_finish")],
+        ])
+    )
+
+async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«✏️ Поставить/изменить задачи» — единая точка входа вместо отдельной
+    «✏️ Изменить» на каждой строке списка. Ведёт последовательно по всем
+    шести слотам, см. _walk_to_step."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    await _walk_to_step(q.message, ctx, uid, TASK_FIELDS[0][0])
+
+async def walk_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data[len("walk_skip_"):]
+    uid = q.from_user.id
+    await _walk_to_step(q.message, ctx, uid, _next_task_key(key))
+
+async def walk_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key = q.data[len("walk_edit_"):]
+    uid = q.from_user.id
+    ctx.user_data["task_walk"] = True
+    await _offer_task_input(q.message, ctx, uid, key)
+
+async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    ctx.user_data.pop("task_walk", None)
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
@@ -3783,7 +3838,7 @@ async def handle_delete_pool_intent(message, uid, query):
     candidates = (matches or items)[:2]
     await send_pool_delete_menu(message, uid, items=candidates)
 
-async def apply_task_edit(message, uid, key, text):
+async def apply_task_edit(message, ctx, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула."""
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
@@ -3803,20 +3858,12 @@ async def apply_task_edit(message, uid, key, text):
     out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
     prefix = "✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n"
 
-    # Это добавление НОВОЙ задачи (не правка уже существующей) и остались
-    # ещё пустые слоты — спрашиваем "добавить ещё?" одним явным шагом,
-    # а не сразу отдаём полный экран с кнопкой "➕ Добавить задачу" —
-    # так решение "продолжать или нет" за пользователя, а не по умолчанию.
-    next_key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
-    if not was_filled and next_key is not None:
-        await message.reply_text(
-            prefix + out_text + "\n\nДобавить ещё одну?",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Да, ещё", callback_data="add_next_task")],
-                [InlineKeyboardButton("Хватит", callback_data="go_tasks")],
-            ])
-        )
+    if ctx.user_data.pop("task_walk", False):
+        # Идём последовательным проходом по слотам (walk_tasks_start) —
+        # после сохранения сами переходим к следующему, а не возвращаем
+        # на полный список с решением "что дальше" за пользователем.
+        await message.reply_text(prefix + out_text, parse_mode="Markdown")
+        await _walk_to_step(message, ctx, uid, _next_task_key(key))
         return
 
     await message.reply_text(prefix + out_text, parse_mode="Markdown", reply_markup=kb)
@@ -3831,7 +3878,7 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
         return
     delete_pool_task(uid, item["id"])
-    await apply_task_edit(q.message, uid, key, item["text"])
+    await apply_task_edit(q.message, ctx, uid, key, item["text"])
 
 def task_pool_kb(pool):
     rows = []
@@ -4140,6 +4187,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
+    ctx.user_data.pop("task_walk", None)
     ctx.user_data["awaiting_pool_add"] = False
     ctx.user_data["awaiting_reminder_add"] = False
     ctx.user_data.pop("awaiting_reminder_edit", None)
@@ -4333,7 +4381,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     elif ctx.user_data.get("awaiting_task_edit"):
         key = ctx.user_data.pop("awaiting_task_edit")
-        await apply_task_edit(update.message, uid, key, update.message.text.strip())
+        await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
     elif ctx.user_data.get("awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
         await add_pool_and_reply(update.message, uid, update.message.text.strip())
@@ -6491,6 +6539,10 @@ def main():
     app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
     app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
     app.add_handler(CallbackQueryHandler(add_next_task_callback, pattern="^add_next_task$"))
+    app.add_handler(CallbackQueryHandler(walk_tasks_start, pattern="^walk_tasks$"))
+    app.add_handler(CallbackQueryHandler(walk_skip_callback, pattern="^walk_skip_"))
+    app.add_handler(CallbackQueryHandler(walk_edit_callback, pattern="^walk_edit_"))
+    app.add_handler(CallbackQueryHandler(walk_finish_callback, pattern="^walk_finish$"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_task_pool,       pattern="^go_task_pool$"))
     app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
