@@ -3589,11 +3589,11 @@ def _tasks_text_and_kb(morning, done_set, gender):
     блок и карточка дня, чтобы отметки, поставленные днём в этом меню,
     не терялись при вечернем ревью и наоборот.
 
-    Строка задачи всегда показывает буквенную метку (A/B1/B2/C1/C2/C3), даже
-    если задача уже выполнена — без ✅: галочка в списке "что сделать"
-    читается как "уже сделано" (фидбек Виктории). О том, что задача
-    выполнена, говорит исчезновение кнопки "Отметить: ..." под ней.
-    """
+    Строка задачи в тексте всегда показывает буквенную метку (A/B1/B2/C1/
+    C2/C3), даже если задача уже выполнена — без ✅: галочка в самом тексте
+    списка "что сделать" читается как "уже сделано" и сбивает с толку
+    (фидбек Виктории). Выполненность вместо этого — чекбокс на самой
+    кнопке-действии (▫️/✅), который можно тапнуть в обе стороны."""
     lines = []
     buttons = []
     for key, icon in TASK_FIELDS:
@@ -3601,8 +3601,8 @@ def _tasks_text_and_kb(morning, done_set, gender):
         if not val:
             continue
         lines.append(f"{icon}: {md_escape(val)}")
-        if key not in done_set:
-            buttons.append([InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}")])
+        mark = "✅" if key in done_set else "▫️"
+        buttons.append([InlineKeyboardButton(f"{mark} {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}")])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
     # Одна кнопка входа вместо отдельной "✏️ Изменить" на каждой строке —
@@ -3933,7 +3933,9 @@ async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_pool_delete_menu(q.message, q.from_user.id)
 
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Отметить задачу выполненной."""
+    """Чекбокс "▫️/✅" на задаче — тапается в обе стороны (можно снять
+    отметку, если поставил(а) по ошибке), в отличие от прежней кнопки
+    "Отметить", которая просто исчезала после первого тапа."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     key = q.data.replace("task_done_", "")  # focus, b1, b2, c1, c2, c3
@@ -3941,7 +3943,9 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     done_data = get_diary(uid, "tasks_done", today)
     done_list = done_data.get("done", [])
-    if key not in done_list:
+    if key in done_list:
+        done_list.remove(key)
+    else:
         done_list.append(key)
     save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
 
