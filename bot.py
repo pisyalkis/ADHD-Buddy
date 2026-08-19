@@ -497,6 +497,7 @@ def init_db():
         ("morning_sent_date", "''"),
         ("midday_sent_date", "''"),
         ("evening_sent_date", "''"),
+        ("weekly_report_sent_date", "''"),
         ("morning_reminder_sent_date", "''"),
         ("focus_active", "0"),
         ("focus_end_time", "''"),
@@ -1980,7 +1981,7 @@ async def finish_morning(message, uid, ctx):
             f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
             f"{tasks_text}"
             f"{ai_msg}\n\n"
-            f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {md_escape(user['name'])}! 💪",
             parse_mode="Markdown",
             reply_markup=menu_button_kb()
         )
@@ -1989,7 +1990,7 @@ async def finish_morning(message, uid, ctx):
         # спецсимвола, который md_escape не покрыл) — диалог уже должен
         # завершиться штатно, а не зависнуть в последнем ConversationHandler-состоянии.
         print(f"Ошибка отправки итога утра uid={uid}: {e}")
-        await message.reply_text(
+        sent = await message.reply_text(
             f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
             reply_markup=menu_button_kb()
         )
@@ -3634,7 +3635,12 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _offer_task_input(message, ctx, uid, key):
     """Если в «Списке дел» (пуле) уже что-то накоплено — сначала предлагаем
-    выбрать готовую формулировку оттуда, а не сразу просить печатать текст."""
+    выбрать готовую формулировку оттуда, а не сразу просить печатать текст.
+    Приглашение явно разрешает и печатать текст сразу, минуя кнопки —
+    поэтому awaiting_task_edit нужно взводить в обеих ветках, не только
+    в ask_task_text (иначе такой текст улетал не туда, в роутер свободных
+    сообщений)."""
+    ctx.user_data["awaiting_task_edit"] = key
     pool = get_pool_tasks(uid)
     if pool:
         await message.reply_text(
@@ -3682,6 +3688,11 @@ async def _walk_to_step(message, ctx, uid, key):
     показывает текущий текст с «Пропустить»/«Поменять»/«Готово», чтобы
     можно было быстро долистать до нужной задачи, а не решать сразу
     по всем шести на одном экране."""
+    # На случай, если где-то на экране ещё висит незакрытая кнопка другого
+    # флоу (например «✏️ Изменить имя» из Настроек) — не даём её awaiting_*
+    # флагу перехватить следующий текст, который тут явно ждёт от нас
+    # ввод текста задачи.
+    clear_awaiting_flags(ctx)
     if key is None:
         await message.reply_text("Прошлись по всем задачам ✅", reply_markup=menu_button_kb())
         return
@@ -3722,6 +3733,7 @@ async def walk_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     key = q.data[len("walk_edit_"):]
     uid = q.from_user.id
+    clear_awaiting_flags(ctx, update)
     ctx.user_data["task_walk"] = True
     await _offer_task_input(q.message, ctx, uid, key)
 
@@ -4229,6 +4241,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = update.message.text.strip()
         # Validate HH:MM format
         if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
+            # Регулярка выше намеренно разрешает час без ведущего нуля
+            # ("9:30"), но notif_morning/midday/evening потом сравниваются
+            # с now.strftime("%H:%M") ЛЕКСИКОГРАФИЧЕСКИ ("14:00" >= "9:30"
+            # даёт False) — без нормализации к "09:30" уведомление на такое
+            # время почти никогда не срабатывает. Приводим к HH:MM сразу.
+            h, m = map(int, text.split(":"))
+            text = f"{h:02d}:{m:02d}"
             if block in ("beacon_start", "beacon_end"):
                 update_user(uid, **{block: text})
                 beacon_labels = {"beacon_start": "🌅 Начало", "beacon_end": "🌇 Конец"}
@@ -4416,6 +4435,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         else:
             remind_at_key, rem_text, recur = parsed
+            # Если новая фраза не упоминает повтор явно ("перенеси на 20:00"
+            # для напоминания, которое и так было "каждый день") — не молча
+            # понижаем его до разового. Модель просто не увидела повтор в
+            # этой фразе, это не значит, что пользователь хочет его убрать.
+            if not recur:
+                existing_rem = get_reminder(uid, rem_id)
+                if existing_rem:
+                    recur = existing_rem.get("recur") or ""
             update_reminder(uid, rem_id, rem_text, remind_at_key, recur)
             when = datetime.fromisoformat(remind_at_key)
             reminders = get_reminders(uid)
@@ -4431,6 +4458,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_work_start"] = False
         text = update.message.text.strip()
         if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
+            # Нормализация к HH:MM — см. аналогичный комментарий у awaiting_time
+            # выше: send_work_start_reminder сравнивает это лексикографически.
+            h, m = map(int, text.split(":"))
+            text = f"{h:02d}:{m:02d}"
             today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
             update_user(uid, work_start_time=text, work_start_date=today, work_start_sent_date="")
             await update.message.reply_text(
@@ -5669,8 +5700,10 @@ async def weekly_report(app, uid):
                 InlineKeyboardButton("☀️ Начать новую неделю", callback_data="go_morning")
             ]])
         )
+        return True
     except Exception as e:
         print(f"Ошибка еженедельного отчёта: {e}")
+        return False
 
 # ── MAIN ───────────────────────────────────────────────────────────────────
 # ── ADHD GUIDE ─────────────────────────────────────────────────────────────
@@ -5955,8 +5988,14 @@ async def check_notifications(app):
                     # навсегда съедает уведомление на весь день без единой попытки.
                     if await morning_notification(app, uid):
                         update_user(uid, morning_sent_date=day_key)
-                    if is_sunday:
-                        await weekly_report(app, uid)
+                    # Свой собственный маркер "отправлено" — раньше это условие
+                    # держалось на успехе morning_notification выше и ни на чём
+                    # своём, так что при повторных сбоях morning_notification
+                    # (тик за тиком, весь день) weekly_report слался бы заново
+                    # на КАЖДОМ тике, пока morning наконец не пройдёт.
+                    if is_sunday and user.get("weekly_report_sent_date") != day_key:
+                        if await weekly_report(app, uid):
+                            update_user(uid, weekly_report_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
                         and user.get("midday_sent_date") != day_key):
@@ -6135,7 +6174,7 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     answered_set = set(answered)
     skipped_lines = []
     for user_id, name, research_done in users_with_research:
-        label = name or str(user_id)
+        label = md_escape(name) if name else str(user_id)
         for day in (int(d) for d in research_done.split(",") if d):
             rating_key = f"day{day}_rating"
             if (user_id, rating_key) not in answered_set:
