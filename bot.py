@@ -1910,17 +1910,25 @@ async def unpin_today_tasks(ctx, uid):
         pass
     update_user(uid, pinned_msg_id="")
 
+TASK_KEYS = ("focus", "b1", "b2", "c1", "c2", "c3")
+
+def _merged_task_fields(ctx, existing):
+    """focus/b1/b2/c1/c2/c3 — берём из ctx.user_data (m_focus и т.п.), только
+    если там реально что-то есть; иначе сохраняем то, что уже стоит в БД.
+
+    С тех пор как шаги ритуала M_FOCUS/M_B1/... удалены (задачи теперь
+    ставятся отдельно, через 📋 Задачи), эти ключи в ctx.user_data никогда
+    не заполняются — раньше это означало, что finish_morning каждый раз
+    затирал уже поставленные задачи пустыми строками."""
+    return {key: (ctx.user_data.get(f"m_{key}") or existing.get(key, "")) for key in TASK_KEYS}
+
 def checkpoint_morning_progress(ctx, uid, for_date):
     """Сохраняет недописанное утро, прерванное и не продолженное в тот же
     день, в дневник этого дня как есть — без стрика и без сброса tasks_done
     (это не завершение дня, а спасение того, что успели заполнить)."""
+    existing = get_diary(uid, "morning", for_date)
     save_diary(uid, "morning", {
-        "focus":    ctx.user_data.get("m_focus", ""),
-        "b1":       ctx.user_data.get("m_b1", ""),
-        "b2":       ctx.user_data.get("m_b2", ""),
-        "c1":       ctx.user_data.get("m_c1", ""),
-        "c2":       ctx.user_data.get("m_c2", ""),
-        "c3":       ctx.user_data.get("m_c3", ""),
+        **_merged_task_fields(ctx, existing),
         "writing":  ctx.user_data.get("m_writing", ""),
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
@@ -1931,33 +1939,32 @@ async def finish_morning(message, uid, ctx):
     tz = get_user_tz(user)
     now_dt = datetime.now(tz)
     today = now_dt.date().isoformat()
-    focus = ctx.user_data.get("m_focus", "")
+    existing = get_diary(uid, "morning", today)
+    task_fields = _merged_task_fields(ctx, existing)
+    focus = task_fields["focus"]
     if focus: update_user(uid, focus=focus)
     # Момент заполнения утра — нужен маячку задач, чтобы не стрелять сразу
     # вслед, если утро заполнено поздно (см. send_task_beacon).
     update_user(uid, morning_filled_at=now_dt.isoformat())
 
     save_diary(uid, "morning", {
-        "focus":    focus,
-        "b1":       ctx.user_data.get("m_b1", ""),
-        "b2":       ctx.user_data.get("m_b2", ""),
-        "c1":       ctx.user_data.get("m_c1", ""),
-        "c2":       ctx.user_data.get("m_c2", ""),
-        "c3":       ctx.user_data.get("m_c3", ""),
+        **task_fields,
         "writing":  ctx.user_data.get("m_writing", ""),
         "gratitude":ctx.user_data.get("m_gratitude", ""),
         "child":    ctx.user_data.get("m_child", ""),
     }, for_date=today)
-    # Если утро уже заполнялось сегодня и заполняется заново — старые отметки
-    # "выполнено" (по ключам focus/b1/b2/...) больше не про эти задачи,
-    # иначе новая, ещё не начатая задача может показаться уже сделанной.
-    save_diary(uid, "tasks_done", {"done": []}, for_date=today)
+    # Отметки "выполнено" сбрасываем только для полей, текст которых
+    # реально поменялся — иначе стираем честные отметки, поставленные
+    # через 📋 Задачи ещё до прохождения ритуала.
+    changed_keys = {k for k in TASK_KEYS if task_fields[k] != existing.get(k, "")}
+    if changed_keys:
+        done_data = get_diary(uid, "tasks_done", today)
+        done_list = [k for k in done_data.get("done", []) if k not in changed_keys]
+        if len(done_list) != len(done_data.get("done", [])):
+            save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
     add_streak(uid, for_date=today)
 
-    morning_for_summary = {
-        "focus": focus, "b1": ctx.user_data.get("m_b1", ""), "b2": ctx.user_data.get("m_b2", ""),
-        "c1": ctx.user_data.get("m_c1", ""), "c2": ctx.user_data.get("m_c2", ""), "c3": ctx.user_data.get("m_c3", ""),
-    }
+    morning_for_summary = task_fields
     tasks_text = build_tasks_summary(morning_for_summary)
     tasks_text = "\n" + tasks_text if tasks_text != "_задачи не заданы_" else "_(задачи не заданы)_"
 
