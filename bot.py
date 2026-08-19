@@ -570,31 +570,33 @@ def get_access_status(user):
     subscribed — иначе легко случайно выпилить себе доступ во время теста."""
     if NOTIFY_USER_ID and int(user.get("user_id") or 0) == NOTIFY_USER_ID:
         return "subscribed"
+    today = datetime.now(get_user_tz(user)).date()
     sub_until = user.get("subscription_until") or ""
     if sub_until:
         try:
-            if date.fromisoformat(sub_until[:10]) >= date.today():
+            if date.fromisoformat(sub_until[:10]) >= today:
                 return "subscribed"
         except Exception:
             pass
-    created = (user.get("created_at") or date.today().isoformat())[:10]
+    created = (user.get("created_at") or today.isoformat())[:10]
     try:
         created_date = date.fromisoformat(created)
     except Exception:
-        created_date = date.today()
+        created_date = today
     extra_days = int(user.get("promo_extra_days") or 0)
     trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
-    return "trial" if date.today() <= trial_end else "expired"
+    return "trial" if today <= trial_end else "expired"
 
 def get_trial_days_left(user):
-    created = (user.get("created_at") or date.today().isoformat())[:10]
+    today = datetime.now(get_user_tz(user)).date()
+    created = (user.get("created_at") or today.isoformat())[:10]
     try:
         created_date = date.fromisoformat(created)
     except Exception:
-        created_date = date.today()
+        created_date = today
     extra_days = int(user.get("promo_extra_days") or 0)
     trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
-    return max(0, (trial_end - date.today()).days)
+    return max(0, (trial_end - today).days)
 
 def create_promo_code(code, days, max_uses, label=""):
     """max_uses=0 значит без ограничения — так делаются личные коды
@@ -799,10 +801,11 @@ def get_latest_evening_plan(uid):
     не находит, план молча пропадает. Берём непустую запись, отдавая
     приоритет более свежей (сегодняшней), если она есть.
     """
-    today = get_diary(uid, "evening", date.today().isoformat())
+    today_date = datetime.now(get_user_tz(get_user(uid))).date()
+    today = get_diary(uid, "evening", today_date.isoformat())
     if today.get("e_a"):
         return today
-    yesterday = get_diary(uid, "evening", (date.today() - timedelta(days=1)).isoformat())
+    yesterday = get_diary(uid, "evening", (today_date - timedelta(days=1)).isoformat())
     return yesterday
 
 def save_feedback(uid, text):
@@ -2005,7 +2008,11 @@ def tasks_done_kb(morning, done):
     return InlineKeyboardMarkup(rows)
 
 async def ask_tasks_done(message, uid, ctx):
-    today = evening_day(get_user_tz(get_user(uid))).isoformat()
+    # Утро/tasks_done всегда под обычной календарной датой (см.
+    # get_today_context) — evening_day здесь не подходит: в окне 00:00-04:00
+    # он сдвигает "сегодня" на вчера, и только что заполненное утро/отметки
+    # из 📋 Задачи не находились бы.
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     # Подхватываем отметки, уже сделанные днём в меню "📋 Задачи" —
     # иначе вечерний блок затирает их пустым списком.
@@ -2026,7 +2033,7 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         done.remove(key)
     else:
         done.append(key)
-    today = evening_day(get_user_tz(get_user(uid))).isoformat()
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
@@ -2096,20 +2103,33 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # selfcare_kb показывал его уже отмеченным на новый вечер.
     ctx.user_data.pop("e_selfcare", None)
 
-    morning = get_diary(uid, "morning", today)
-    focus_recap = f"\n🎯 Фокус был: _{morning['focus']}_" if morning.get("focus") else ""
+    # Утро всегда пишется/читается под обычной календарной датой (см.
+    # morning_start/finish_morning/get_today_context) — в отличие от
+    # evening_day, который в окне 00:00-04:00 сдвигает "сегодня" на вчера.
+    # Раньше здесь искали утренний дневник по evening_day-дате "today" —
+    # если вечер открывали в этом окне, только что заполненное утро не
+    # находилось (get_diary смотрел не в ту дату).
+    morning_today = datetime.now(get_user_tz(user)).date().isoformat()
+    morning = get_diary(uid, "morning", morning_today)
+    focus_recap = f"\n🎯 Фокус был: _{md_escape(morning['focus'])}_" if morning.get("focus") else ""
     streak_line = ""
     if not int(user.get("streak_hidden") or 0):
         streak = calc_streak(uid)
         streak_line = f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
 
-    await q.message.reply_text(
-        f"🌙 *Хороший был день, {user['name']}!*\n"
+    evening_greeting = (
+        f"🌙 *Хороший был день, {md_escape(user['name'])}!*\n"
         f"_{today_str(get_user_tz(user))}_{focus_recap}\n\n"
         f"{streak_line}"
-        "Давай закроем этот день.",
-        parse_mode="Markdown"
+        "Давай закроем этот день."
     )
+    try:
+        await q.message.reply_text(evening_greeting, parse_mode="Markdown")
+    except Exception as e:
+        # Тот же класс сбоя, что в morning_start/finish_morning/finish_evening —
+        # непарный спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
+        print(f"Ошибка отправки вечернего приветствия uid={uid}: {e}")
+        await q.message.reply_text(f"🌙 Хороший был день, {user['name']}! Давай закроем этот день.")
     await asyncio.sleep(0.5)
 
     if any(morning.get(key) for key, _ in TASK_FIELDS):
@@ -2393,6 +2413,12 @@ async def finish_evening(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
     today = evening_day(tz).isoformat()
+    # tasks_done (и морнинг, который с ним сверяется ниже) всегда живут под
+    # обычной календарной датой — как в get_today_context и 📋 Задачи —
+    # а не под evening_day, который в окне 00:00-04:00 сдвигает "сегодня"
+    # на вчера. Иначе отметки, поставленные здесь, не были бы видны в
+    # дневном меню, и наоборот.
+    morning_today = datetime.now(tz).date().isoformat()
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
@@ -2401,7 +2427,7 @@ async def finish_evening(message, uid, ctx):
     save_diary(uid, "evening", data, for_date=today)
     # Синхронизируем с "tasks_done" — источником для дневного меню "📋 Задачи",
     # чтобы отметки, поставленные здесь вечером, тоже были видны там.
-    save_diary(uid, "tasks_done", {"done": data["e_tasks_done"]}, for_date=today)
+    save_diary(uid, "tasks_done", {"done": data["e_tasks_done"]}, for_date=morning_today)
     add_streak(uid, for_date=today)
     await unpin_today_tasks(ctx, uid)
     streak = calc_streak(uid)
@@ -2414,7 +2440,7 @@ async def finish_evening(message, uid, ctx):
     if data["e_c1"]: plans += f"\n🅲 {md_escape(data['e_c1'])}"
 
     tasks_summary = ""
-    morning_for_summary = get_diary(uid, "morning", today)
+    morning_for_summary = get_diary(uid, "morning", morning_today)
     if any(morning_for_summary.get(k) for k, _ in TASK_FIELDS):
         done = set(data["e_tasks_done"])
         lines = []
@@ -2437,7 +2463,7 @@ async def finish_evening(message, uid, ctx):
     # AI анализ дня
     ai_analysis = ""
     if ANTHROPIC_KEY:
-        morning = get_diary(uid, "morning", today)
+        morning = get_diary(uid, "morning", morning_today)
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
@@ -2876,7 +2902,7 @@ def _settings_text_and_kb(user):
     else:
         skill_label = "каждые 30 мин" if sint == 30 else ("каждый час" if sint == 60 else f"каждые {sint // 60} ч")
     tz_name = user.get("timezone") or USER_TIMEZONE
-    city_name = user.get("city") or ""
+    city_name = md_escape(user.get("city") or "")
     tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
     text = (
         "⚙️ *Настройки уведомлений*\n\n"
@@ -3629,7 +3655,7 @@ async def handle_delete_reminder_intent(message, uid, query):
         cancel_reminder(uid, target["id"])
         remaining = get_reminders(uid)
         text, kb = reminders_text_and_kb(remaining)
-        await message.reply_text(f"✅ Удалил: {target['text']}\n\n" + text, parse_mode="Markdown", reply_markup=kb)
+        await message.reply_text(f"✅ Удалил: {md_escape(target['text'])}\n\n" + text, parse_mode="Markdown", reply_markup=kb)
         return
     candidates = (matches or items)[:2]
     text, kb = reminders_text_and_kb(candidates)
@@ -3649,7 +3675,7 @@ async def handle_delete_pool_intent(message, uid, query):
         delete_pool_task(uid, target["id"])
         pool = get_pool_tasks(uid)
         await message.reply_text(
-            f"✅ Удалил из списка дел: {target['text']}\n\n" + task_pool_text(pool),
+            f"✅ Удалил из списка дел: {md_escape(target['text'])}\n\n" + task_pool_text(pool),
             parse_mode="Markdown", reply_markup=task_pool_kb(pool)
         )
         return
@@ -3880,7 +3906,7 @@ async def send_due_reminders(app, user, now_dt):
         try:
             await app.bot.send_message(
                 chat_id=uid,
-                text=f"⏰ *Напоминание*\n\n{rem['text']}",
+                text=f"⏰ *Напоминание*\n\n{md_escape(rem['text'])}",
                 parse_mode="Markdown",
                 reply_markup=menu_button_kb()
             )
@@ -3940,11 +3966,11 @@ def build_day_card_text(uid, for_date):
 
     return "\n".join(lines)
 
-def day_card_kb(for_date):
+def day_card_kb(for_date, today):
     d = date.fromisoformat(for_date)
     prev_d = (d - timedelta(days=1)).isoformat()
     buttons = [[InlineKeyboardButton("◀️ Пред. день", callback_data=f"daycard_{prev_d}")]]
-    if d < date.today():
+    if d < today:
         next_d = (d + timedelta(days=1)).isoformat()
         buttons[0].append(InlineKeyboardButton("След. день ▶️", callback_data=f"daycard_{next_d}"))
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
@@ -3953,16 +3979,18 @@ def day_card_kb(for_date):
 async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
-    for_date = date.today().isoformat()
+    today = datetime.now(get_user_tz(get_user(uid))).date()
+    for_date = today.isoformat()
     text = build_day_card_text(uid, for_date)
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date))
+    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
 async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     for_date = q.data.replace("daycard_", "")
+    today = datetime.now(get_user_tz(get_user(uid))).date()
     text = build_day_card_text(uid, for_date)
-    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date))
+    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
 def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     """Сбрасывает все "awaiting_*"-флаги, которые направляют следующее
@@ -4096,7 +4124,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             offset = datetime.now(tz_obj).strftime("%z")
             offset_str = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
             await thinking.edit_text(
-                f"📍 *{city}* — записал!\n"
+                f"📍 *{md_escape(city)}* — записал!\n"
                 f"🕐 Твоя таймзона: *{tz_name}* ({offset_str})\n\n"
                 f"Уведомления будут приходить по времени твоего города.",
                 parse_mode="Markdown"
@@ -4141,7 +4169,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 try:
                     await ctx.bot.send_message(
                         NOTIFY_USER_ID,
-                        f"🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n"
+                        f"🔬 *Исследование день {day} от {md_escape(user['name']) or uid}:*\n\n"
                         f"_{q_text}_\n{md_escape(text)}",
                         parse_mode="Markdown"
                     )
@@ -4161,7 +4189,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 await ctx.bot.send_message(
                     NOTIFY_USER_ID,
-                    f"💬 *Обратная связь от {user['name'] or uid}:*\n\n{md_escape(text)}",
+                    f"💬 *Обратная связь от {md_escape(user['name']) or uid}:*\n\n{md_escape(text)}",
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -4582,7 +4610,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             q_text = RESEARCH_QUESTION_LABELS.get(f"day{day}_rating", "")
             await q.message.bot.send_message(
                 NOTIFY_USER_ID,
-                f"{alert}🔬 *Исследование день {day} от {user['name'] or uid}:*\n\n"
+                f"{alert}🔬 *Исследование день {day} от {md_escape(user['name']) or uid}:*\n\n"
                 f"_{q_text}_\nОценка: {answer}{contact}",
                 parse_mode="Markdown"
             )
@@ -5152,7 +5180,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_a_skipped":
-        a_task = morning.get("focus", "А-задача")
+        a_task = md_escape(morning.get("focus", "А-задача"))
         await q.message.reply_text(
             personalize(
                 f"⚠️ *Стоп — А-задача важнее*\n\n"
@@ -5384,7 +5412,7 @@ async def weekly_report(app, uid):
         name = md_escape(user.get("name", ""))
 
         # Собираем данные за последние 7 дней
-        today = date.today()
+        today = datetime.now(get_user_tz(user)).date()
         days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
 
         mornings_done = 0
@@ -5806,7 +5834,16 @@ async def check_notifications(app):
                     try:
                         due_dt = datetime.fromisoformat(due_raw)
                         if now_dt >= due_dt:
-                            if await send_resume_check(app.bot, uid):
+                            # user — снапшот с начала тика; между ним и этой
+                            # строкой прошло время (await на других
+                            # уведомлениях того же пользователя выше). Если
+                            # человек уже сам нажал "Отдыхаю" ещё раз и
+                            # запланировал новую проверку — сверяем со
+                            # свежим значением из БД, иначе затираем её
+                            # пустой строкой прямо под носом (тот же баг
+                            # класс, что чинили в send_focus_end).
+                            fresh_due = get_user(uid).get("resume_check_due") or ""
+                            if fresh_due == due_raw and await send_resume_check(app.bot, uid):
                                 update_user(uid, resume_check_due="")
                     except Exception as e:
                         print(f"Ошибка resume_check_due uid={uid}: {e}")
