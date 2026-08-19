@@ -3367,13 +3367,16 @@ def next_beacon_slot(uid):
 
 async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«✅ Сделал(а)» после техники маячка — сразу следом обычная проверка
-    задач, тот же переход, что и после обычного тика маячка."""
+    задач, тот же переход, что и после обычного тика маячка.
+
+    Раньше при пустом утреннем дневнике (задачи ещё не поставлены) кнопка
+    молча ничего не делала — ни ошибки, ни ответа, просто "не сработала".
+    build_tasks_summary и midday_kb оба прекрасно работают с пустым
+    morning ({}), так что ранний выход был не нужен и только терял тап."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     user = get_user(uid)
     _, morning, done_set = get_today_context(user)
-    if not morning:
-        return
     tasks = build_tasks_summary(morning, done_set)
     beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
     await q.message.reply_text(beacon_text, parse_mode="Markdown", reply_markup=midday_kb(morning, done_set))
@@ -3604,7 +3607,12 @@ def _tasks_text_and_kb(morning, done_set, gender):
         row = []
         if not done:
             row.append(InlineKeyboardButton(f"Отметить: {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}"))
-        row.append(InlineKeyboardButton("✏️ Изменить", callback_data=f"edit_task_{key}"))
+        # Кнопка правки всегда подписана летерой задачи (не просто "✏️
+        # Изменить") — для уже выполненной задачи это единственная кнопка в
+        # строке, и без подписи невозможно понять, какую именно задачу она
+        # редактирует (особенно когда таких строк подряд несколько).
+        edit_label = "✏️ Изменить" if not done else f"✏️ Изменить: {SHORT_TASK_LABELS[key]}"
+        row.append(InlineKeyboardButton(edit_label, callback_data=f"edit_task_{key}"))
         buttons.append(row)
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
