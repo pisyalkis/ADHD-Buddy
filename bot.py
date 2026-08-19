@@ -3593,10 +3593,11 @@ def _tasks_text_and_kb(morning, done_set, gender):
     """
     lines = []
     buttons = []
+    any_empty = False
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
         if not val:
-            buttons.append([InlineKeyboardButton(f"➕ {TASK_LABELS[key]}", callback_data=f"edit_task_{key}")])
+            any_empty = True
             continue
         done = key in done_set
         lines.append(f"{icon}: {md_escape(val)}")
@@ -3607,6 +3608,12 @@ def _tasks_text_and_kb(morning, done_set, gender):
         buttons.append(row)
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
+    # Одна кнопка «➕ Добавить задачу» вместо отдельной на каждый пустой слот
+    # (A/B1/B2/C1/C2/C3) — раньше пустой день показывал сразу 6 кнопок
+    # добавления и терялся смысл "1-2 главные задачи, остальное по желанию".
+    # Какой слот предложить следующим, решает add_next_task_callback.
+    if any_empty:
+        buttons.append([InlineKeyboardButton("➕ Добавить задачу", callback_data="add_next_task")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
         [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
@@ -3628,24 +3635,42 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += "\n\n_Утро ещё не заполнялось — можно поставить задачи прямо тут, или пройти полный утренний ритуал кнопкой ☀️ в меню._"
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
-async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Точечное добавление/правка одной задачи, без полного утреннего
-    ритуала — вход и с пустого, и с уже заполненного слота (см. _tasks_text_and_kb).
-
-    Если в «Списке дел» (пуле) уже что-то накоплено — сначала предлагаем
+async def _offer_task_input(message, ctx, uid, key):
+    """Если в «Списке дел» (пуле) уже что-то накоплено — сначала предлагаем
     выбрать готовую формулировку оттуда, а не сразу просить печатать текст."""
-    q = update.callback_query; await q.answer()
-    key = q.data.replace("edit_task_", "")
-    clear_awaiting_flags(ctx, update)
-    uid = q.from_user.id
     pool = get_pool_tasks(uid)
     if pool:
-        await q.message.reply_text(
+        await message.reply_text(
             f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:",
             reply_markup=pool_suggestions_kb(key, pool)
         )
     else:
-        await ask_task_text(q.message, ctx, key)
+        await ask_task_text(message, ctx, key)
+
+async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Правка конкретного слота (кнопка «✏️ Изменить» на уже заполненной
+    задаче) — без полного утреннего ритуала, см. _tasks_text_and_kb."""
+    q = update.callback_query; await q.answer()
+    key = q.data.replace("edit_task_", "")
+    clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    await _offer_task_input(q.message, ctx, uid, key)
+
+async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Единая кнопка «➕ Добавить задачу» — сама решает, какой пустой слот
+    предложить следующим (A → B1 → B2 → C1 → C2 → C3), вместо того чтобы
+    сразу показывать все шесть отдельными кнопками (жалоба: «слишком много
+    тапов, глаза разбегаются»)."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
+    if key is None:
+        await q.message.reply_text("Все задачи на сегодня уже поставлены 🎉", reply_markup=menu_button_kb())
+        return
+    await _offer_task_input(q.message, ctx, uid, key)
 
 async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
@@ -3768,10 +3793,25 @@ async def apply_task_edit(message, uid, key, text):
     done_data2 = get_diary(uid, "tasks_done", today)
     done_set = set(done_data2.get("done", []))
     out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
-    await message.reply_text(
-        ("✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n") + out_text,
-        parse_mode="Markdown", reply_markup=kb
-    )
+    prefix = "✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n"
+
+    # Это добавление НОВОЙ задачи (не правка уже существующей) и остались
+    # ещё пустые слоты — спрашиваем "добавить ещё?" одним явным шагом,
+    # а не сразу отдаём полный экран с кнопкой "➕ Добавить задачу" —
+    # так решение "продолжать или нет" за пользователя, а не по умолчанию.
+    next_key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
+    if not was_filled and next_key is not None:
+        await message.reply_text(
+            prefix + out_text + "\n\nДобавить ещё одну?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Да, ещё", callback_data="add_next_task")],
+                [InlineKeyboardButton("Хватит", callback_data="go_tasks")],
+            ])
+        )
+        return
+
+    await message.reply_text(prefix + out_text, parse_mode="Markdown", reply_markup=kb)
 
 async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -6442,6 +6482,7 @@ def main():
     app.add_handler(CallbackQueryHandler(morning_task_offer_no,  pattern="^morning_tasks_no$"))
     app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
     app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
+    app.add_handler(CallbackQueryHandler(add_next_task_callback, pattern="^add_next_task$"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_task_pool,       pattern="^go_task_pool$"))
     app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
