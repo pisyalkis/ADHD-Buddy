@@ -3241,7 +3241,7 @@ async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     user = get_user(q.from_user.id)
     await q.message.reply_text(
-        f"✏️ *Как мне тебя называть?*\n\nСейчас: {user['name'] or '—'}\n\nНапиши новое имя:",
+        f"✏️ *Как мне тебя называть?*\n\nСейчас: {md_escape(user['name']) if user['name'] else '—'}\n\nНапиши новое имя:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("Отмена", callback_data="go_settings")
@@ -4218,13 +4218,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif ctx.user_data.get("awaiting_name"):
         ctx.user_data["awaiting_name"] = False
         new_name = update.message.text.strip()
-        if len(new_name) > 30:
+        if not new_name:
+            ctx.user_data["awaiting_name"] = True
+            await update.message.reply_text("Имя не может быть пустым, напиши ещё раз:")
+        elif len(new_name) > 30:
             ctx.user_data["awaiting_name"] = True
             await update.message.reply_text("Имя слишком длинное, напиши покороче:")
         else:
             update_user(uid, name=new_name)
             await update.message.reply_text(
-                f"✅ Готово, буду звать тебя *{new_name}*.",
+                f"✅ Готово, буду звать тебя *{md_escape(new_name)}*.",
                 parse_mode="Markdown", reply_markup=menu_button_kb()
             )
     elif ctx.user_data.get("awaiting_buddy"):
