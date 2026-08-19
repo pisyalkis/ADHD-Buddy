@@ -441,8 +441,12 @@ def init_db():
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS reminders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, text TEXT, remind_at TEXT, created TEXT
+        user_id INTEGER, text TEXT, remind_at TEXT, recur TEXT DEFAULT '', created TEXT
     )""")
+    try:
+        c.execute("ALTER TABLE reminders ADD COLUMN recur TEXT DEFAULT ''")
+    except Exception:
+        pass
     c.execute("""CREATE TABLE IF NOT EXISTS feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, text TEXT, created TEXT
@@ -750,20 +754,24 @@ def delete_pool_task(uid, task_id):
     conn.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
     conn.commit(); conn.close()
 
-def add_reminder(uid, text, remind_at_key):
+def add_reminder(uid, text, remind_at_key, recur=""):
     """remind_at_key — naive 'YYYY-MM-DDTHH:MM:SS' в локальном времени
     пользователя (не UTC) — так же, как day_key/now сравниваются везде
     в check_notifications, лексикографическое сравнение строк работает
-    как сравнение времени благодаря фиксированной ширине полей."""
+    как сравнение времени благодаря фиксированной ширине полей.
+
+    recur — "" (разовое), "daily" (каждый день) или "weekly" (раз в
+    неделю, в тот же день недели, что и remind_at) — конкретный день
+    недели отдельно не хранится, он и так закодирован в remind_at."""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("INSERT INTO reminders(user_id, text, remind_at, created) VALUES (?, ?, ?, ?)",
-                 (uid, text, remind_at_key, datetime.now().isoformat()))
+    conn.execute("INSERT INTO reminders(user_id, text, remind_at, recur, created) VALUES (?, ?, ?, ?, ?)",
+                 (uid, text, remind_at_key, recur, datetime.now().isoformat()))
     conn.commit(); conn.close()
 
 def get_reminders(uid):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT id, text, remind_at FROM reminders WHERE user_id=? ORDER BY remind_at", (uid,)).fetchall()
+    rows = conn.execute("SELECT id, text, remind_at, recur FROM reminders WHERE user_id=? ORDER BY remind_at", (uid,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -772,25 +780,58 @@ def cancel_reminder(uid, rem_id):
     conn.execute("DELETE FROM reminders WHERE id=? AND user_id=?", (rem_id, uid))
     conn.commit(); conn.close()
 
-def update_reminder(uid, rem_id, text, remind_at_key):
+def update_reminder(uid, rem_id, text, remind_at_key, recur=""):
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE reminders SET text=?, remind_at=? WHERE id=? AND user_id=?",
-                 (text, remind_at_key, rem_id, uid))
+    conn.execute("UPDATE reminders SET text=?, remind_at=?, recur=? WHERE id=? AND user_id=?",
+                 (text, remind_at_key, recur, rem_id, uid))
+    conn.commit(); conn.close()
+
+def reschedule_reminder(uid, rem_id, remind_at_key):
+    """Переносит повторяющееся напоминание на следующее срабатывание —
+    в отличие от cancel_reminder, запись не удаляется."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE reminders SET remind_at=? WHERE id=? AND user_id=?",
+                 (remind_at_key, rem_id, uid))
     conn.commit(); conn.close()
 
 def get_reminder(uid, rem_id):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT id, text, remind_at FROM reminders WHERE id=? AND user_id=?", (rem_id, uid)).fetchone()
+    row = conn.execute("SELECT id, text, remind_at, recur FROM reminders WHERE id=? AND user_id=?", (rem_id, uid)).fetchone()
     conn.close()
     return dict(row) if row else None
 
 def get_due_reminders(uid, now_key):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT id, text FROM reminders WHERE user_id=? AND remind_at<=?", (uid, now_key)).fetchall()
+    rows = conn.execute("SELECT id, text, remind_at, recur FROM reminders WHERE user_id=? AND remind_at<=?", (uid, now_key)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def next_recur_time(remind_at_key, recur, now_dt):
+    """Следующее срабатывание повторяющегося напоминания, строго позже
+    now_dt — если бот был офлайн и пропустил несколько срабатываний
+    подряд, отматывает сразу до ближайшего будущего момента, а не
+    присылает пачку пропущенных напоминаний одно за другим."""
+    step = timedelta(days=1) if recur == "daily" else timedelta(days=7)
+    when = datetime.fromisoformat(remind_at_key)
+    while when <= now_dt.replace(tzinfo=None):
+        when += step
+    return when.strftime("%Y-%m-%dT%H:%M:%S")
+
+_WEEKDAY_RECUR_LABELS = ["понедельникам", "вторникам", "средам", "четвергам", "пятницам", "субботам", "воскресеньям"]
+
+def recur_label(remind_at_key, recur):
+    """Короткое описание повтора для сообщений — '' для разового."""
+    if recur == "daily":
+        return "каждый день"
+    if recur == "weekly":
+        try:
+            wd = date.fromisoformat(remind_at_key[:10]).weekday()
+            return f"по {_WEEKDAY_RECUR_LABELS[wd]}"
+        except Exception:
+            return "каждую неделю"
+    return ""
 
 def get_latest_evening_plan(uid):
     """Вчерашний вечерний дневник для переноса плана в утро.
@@ -2493,10 +2534,15 @@ async def finish_evening(message, uid, ctx):
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
 async def parse_reminder_request(text, now_dt):
     """Разбирает свободную фразу («напомни через 20 минут проверить почту»,
-    «завтра в 10 позвонить Джону») в (remind_at_key, короткий_текст) —
+    «завтра в 10 позвонить Джону», «каждый день в 9 пить воду», «каждый
+    вторник звонить маме») в (remind_at_key, короткий_текст, recur) —
     идея Виктории, аналог @SkeddyBot. Ручной regex-парсер русского
     естественного языка — отдельная больная тема, а ANTHROPIC_KEY уже
     подключён (ИИ-коуч), так что разбор поручаем ему.
+
+    recur — "" (разовое), "daily" или "weekly"; remind_at в любом случае
+    задаёт КОНКРЕТНЫЙ первый момент срабатывания (для weekly он же
+    определяет день недели — отдельно не хранится, см. next_recur_time).
     Возвращает None, если ключ не настроен или разбор не удался."""
     if not ANTHROPIC_KEY:
         return None
@@ -2509,14 +2555,18 @@ async def parse_reminder_request(text, now_dt):
             max_tokens=200,
             system=(
                 "Ты парсер напоминаний для Telegram-бота. Пользователь пишет свободным текстом просьбу "
-                "поставить напоминание (например «напомни через 20 минут проверить почту» или "
-                "«завтра в 10 позвонить Джону»). "
+                "поставить напоминание — разовое («напомни через 20 минут проверить почту», «завтра в 10 "
+                "позвонить Джону») или повторяющееся («каждый день в 9 пить воду», «каждый вторник звонить "
+                "маме», «ежедневно в 8 вечера»). "
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
                 "Верни СТРОГО один JSON-объект без пояснений и без markdown-разметки: "
-                '{"remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "короткая суть дела"}. '
-                "remind_at обязательно строго позже текущего времени, в том же часовом поясе, что и текущее "
-                "время пользователя (конвертировать не нужно). Если не удалось понять время или дело — верни "
-                '{"error": "причина"}.'
+                '{"remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "короткая суть дела", "recur": "daily"|"weekly"|""}. '
+                'recur — "daily" для «каждый день»/«ежедневно», "weekly" для «каждый <день недели>»/«по '
+                '<дням недели>», иначе "". remind_at — момент ПЕРВОГО срабатывания: для разового — как обычно; '
+                'для "daily" — ближайшее время из фразы (сегодня, если оно ещё не прошло, иначе завтра); для '
+                '"weekly" — ближайшая дата нужного дня недели. remind_at обязательно строго позже текущего '
+                "времени, в том же часовом поясе, что и текущее время пользователя (конвертировать не нужно). "
+                'Если не удалось понять время или дело — верни {"error": "причина"}.'
             ),
             messages=[{"role": "user", "content": text}]
         )
@@ -2530,7 +2580,10 @@ async def parse_reminder_request(text, now_dt):
         when = datetime.fromisoformat(data["remind_at"])
         if when.replace(tzinfo=None) <= now_dt.replace(tzinfo=None):
             return None
-        return when.strftime("%Y-%m-%dT%H:%M:%S"), (data.get("text") or text).strip()
+        recur = data.get("recur") or ""
+        if recur not in ("daily", "weekly"):
+            recur = ""
+        return when.strftime("%Y-%m-%dT%H:%M:%S"), (data.get("text") or text).strip(), recur
     except Exception:
         return None
 
@@ -2556,8 +2609,11 @@ async def classify_free_text(text, now_dt):
                 "Ты роутер входящих сообщений в Telegram-боте для людей с СДВГ (ADHD Buddy). "
                 "Пользователь написал свободное сообщение вне какого-либо конкретного раздела бота. "
                 "Определи, что он хочет, и верни СТРОГО один JSON-объект без пояснений и без markdown:\n"
-                '1) Просит поставить напоминание на конкретное время («напомни через 20 минут...», '
-                '«завтра в 10 позвонить...»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть"}\n'
+                '1) Просит поставить напоминание — разовое («напомни через 20 минут...», «завтра в 10 '
+                'позвонить...») или повторяющееся («каждый день в 9 пить воду», «каждый вторник звонить '
+                'маме»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть", "recur": '
+                '"daily"|"weekly"|""}. recur — "daily" для «каждый день»/«ежедневно», "weekly" для «каждый '
+                '<день недели>»/«по <дням недели>», иначе "". remind_at — момент первого срабатывания.\n'
                 '2) Просит добавить дело в общий список дел БЕЗ конкретного времени («добавь в список дел '
                 'купить молоко», «не забыть записаться к врачу»): {"intent": "add_pool", "text": "суть дела"}\n'
                 '3) Просит удалить/отменить существующее напоминание или дело из списка дел («удали '
@@ -2591,6 +2647,8 @@ async def classify_free_text(text, now_dt):
                 return {"intent": "other"}
             data["remind_at"] = when.strftime("%Y-%m-%dT%H:%M:%S")
             data.setdefault("text", text)
+            if data.get("recur") not in ("daily", "weekly"):
+                data["recur"] = ""
             return data
         if intent == "add_pool" and data.get("text"):
             return data
@@ -3620,15 +3678,18 @@ async def add_pool_and_reply(message, uid, text):
         parse_mode="Markdown", reply_markup=task_pool_kb(pool)
     )
 
-async def create_reminder_and_reply(message, uid, remind_at_key, rem_text):
+async def create_reminder_and_reply(message, uid, remind_at_key, rem_text, recur=""):
     """Общая логика и для явного экрана «⏰ Напоминания», и для роутера
     свободного текста (route_free_text)."""
-    add_reminder(uid, rem_text, remind_at_key)
+    add_reminder(uid, rem_text, remind_at_key, recur)
     when = datetime.fromisoformat(remind_at_key)
     reminders = get_reminders(uid)
     text, kb = reminders_text_and_kb(reminders)
+    label = recur_label(remind_at_key, recur)
+    when_str = f"{label}, начиная с {when.strftime('%d.%m')}, в {when.strftime('%H:%M')}" if label \
+        else f"{when.strftime('%d.%m в %H:%M')}"
     await message.reply_text(
-        f"✅ Напомню {when.strftime('%d.%m в %H:%M')}: {md_escape(rem_text)}\n\n" + text,
+        f"✅ Напомню {when_str}: {md_escape(rem_text)}\n\n" + text,
         parse_mode="Markdown", reply_markup=kb
     )
 
@@ -3807,7 +3868,9 @@ def reminders_text_and_kb(reminders):
                 when_str = datetime.fromisoformat(r["remind_at"]).strftime("%d.%m %H:%M")
             except Exception:
                 when_str = r["remind_at"]
-            lines.append(f"🔹 {when_str} — {md_escape(r['text'])}")
+            label = recur_label(r["remind_at"], r.get("recur") or "")
+            recur_suffix = f" 🔁 {label}" if label else ""
+            lines.append(f"🔹 {when_str}{recur_suffix} — {md_escape(r['text'])}")
         text = "⏰ *Напоминания*\n\n" + "\n".join(lines)
     rows = [
         [InlineKeyboardButton(f"✏️ {r['text'][:25]}", callback_data=f"remedit_{r['id']}"),
@@ -3836,7 +3899,8 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["awaiting_reminder_add"] = True
     await q.message.reply_text(
         "Когда и о чём напомнить? Напиши свободно, например:\n"
-        "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`",
+        "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`\n"
+        "`каждый день в 9 пить воду`\n`каждый вторник звонить маме`",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
     )
@@ -3857,9 +3921,11 @@ async def ask_reminder_edit(message, ctx, rem):
         when_str = datetime.fromisoformat(rem["remind_at"]).strftime("%d.%m %H:%M")
     except Exception:
         when_str = rem["remind_at"]
+    label = recur_label(rem["remind_at"], rem.get("recur") or "")
+    when_str += f" (🔁 {label})" if label else ""
     await message.reply_text(
         f"✏️ Сейчас: *{md_escape(rem['text'])}* — {when_str}\n\nНапиши новое время и текст, например:\n"
-        "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`",
+        "`через 20 минут проверить почту`\n`каждый день в 9 пить воду`\n`каждый вторник звонить маме`",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
     )
@@ -3898,8 +3964,9 @@ async def handle_edit_reminder_intent(message, ctx, uid, query):
 
 async def send_due_reminders(app, user, now_dt):
     """Часть per-user тика check_notifications — независима от общего
-    тумблера notif_enabled (как маячок и фокус-таймер): это явные разовые
-    напоминания, которые пользователь сам поставил."""
+    тумблера notif_enabled (как маячок и фокус-таймер): это явные
+    напоминания, которые пользователь сам поставил (разовые или
+    повторяющиеся)."""
     uid = user["user_id"]
     now_key = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
     for rem in get_due_reminders(uid, now_key):
@@ -3910,7 +3977,10 @@ async def send_due_reminders(app, user, now_dt):
                 parse_mode="Markdown",
                 reply_markup=menu_button_kb()
             )
-            cancel_reminder(uid, rem["id"])
+            if rem.get("recur"):
+                reschedule_reminder(uid, rem["id"], next_recur_time(rem["remind_at"], rem["recur"], now_dt))
+            else:
+                cancel_reminder(uid, rem["id"])
         except Exception as e:
             print(f"Ошибка reminder uid={uid}: {e}")
 
@@ -4224,8 +4294,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            remind_at_key, rem_text = parsed
-            await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text)
+            remind_at_key, rem_text, recur = parsed
+            await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text, recur)
     elif ctx.user_data.get("awaiting_reminder_edit"):
         rem_id = ctx.user_data.pop("awaiting_reminder_edit")
         now_dt = datetime.now(get_user_tz(get_user(uid)))
@@ -4238,13 +4308,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            remind_at_key, rem_text = parsed
-            update_reminder(uid, rem_id, rem_text, remind_at_key)
+            remind_at_key, rem_text, recur = parsed
+            update_reminder(uid, rem_id, rem_text, remind_at_key, recur)
             when = datetime.fromisoformat(remind_at_key)
             reminders = get_reminders(uid)
             text, kb = reminders_text_and_kb(reminders)
+            label = recur_label(remind_at_key, recur)
+            when_str = f"{label}, начиная с {when.strftime('%d.%m')}, в {when.strftime('%H:%M')}" if label \
+                else f"{when.strftime('%d.%m в %H:%M')}"
             await update.message.reply_text(
-                f"✅ Изменил: {md_escape(rem_text)} — {when.strftime('%d.%m в %H:%M')}\n\n" + text,
+                f"✅ Изменил: {md_escape(rem_text)} — {when_str}\n\n" + text,
                 parse_mode="Markdown", reply_markup=kb
             )
     elif ctx.user_data.get("awaiting_work_start"):
@@ -4283,7 +4356,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         routed = await classify_free_text(text, now_dt)
         intent = routed.get("intent")
         if intent == "reminder":
-            await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text)
+            await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text, routed.get("recur") or "")
         elif intent == "add_pool":
             await add_pool_and_reply(update.message, uid, routed.get("text") or text)
         elif intent == "delete" and routed.get("target") == "reminder":
