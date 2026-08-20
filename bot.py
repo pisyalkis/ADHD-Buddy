@@ -1157,7 +1157,7 @@ async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = q.data.replace("why_", "")
     explanation = WHY_EXPLANATIONS.get(key, "")
     if explanation:
-        await q.message.reply_text(f"{explanation}\n\nНу что, заполняем? 🙂")
+        await q.message.reply_text(f"{explanation}\n\nНу что, делаем? 🙂")
 
 def main_menu(user=None):
     """Верхний уровень меню — только то, к чему обращаются каждый день.
