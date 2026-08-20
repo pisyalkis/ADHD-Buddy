@@ -5244,6 +5244,27 @@ async def _grant_and_notify(ctx, target_uid, days):
     except Exception as e:
         print(f"Не удалось уведомить {target_uid} о выданном доступе: {e}")
 
+# Telegram доставляет обновления как минимум один раз: если процесс
+# перезапускается между получением апдейта и подтверждением offset'а
+# следующим getUpdates, тот же апдейт прилетает повторно. Без защиты
+# повторная доставка одного нажатия кнопки превращается в задвоенный (а то и
+# затроенный) ответ бота — реальный баг: "☕ Отдыхаю 10-15 мин" присылало
+# "Окей, отдыхай!" по два-три раза на одно нажатие.
+_seen_update_ids = {}
+_SEEN_UPDATE_TTL = 600  # секунд — с запасом дольше любого правдоподобного ретрая
+
+async def dedupe_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Group=-3 — раньше вообще всех остальных обработчиков, включая
+    access_gate. Останавливает повторно доставленный апдейт до того, как он
+    успеет вызвать побочные эффекты (сообщения, запись в БД)."""
+    now = time.monotonic()
+    for old_id, ts in list(_seen_update_ids.items()):
+        if now - ts > _SEEN_UPDATE_TTL:
+            _seen_update_ids.pop(old_id, None)
+    if update.update_id in _seen_update_ids:
+        raise ApplicationHandlerStop
+    _seen_update_ids[update.update_id] = now
+
 # Экраны/действия, доступные даже пользователю с истёкшим доступом — иначе
 # он физически не сможет ни оплатить, ни ввести промокод, чтобы выйти из
 # пейволла (см. access_gate).
@@ -6627,6 +6648,7 @@ def main():
     app.add_handler(CommandHandler("promocodes", promocodes_command), group=-1)
     app.add_handler(CommandHandler("grant", grant_command), group=-1)
     app.add_handler(CallbackQueryHandler(grant30_callback, pattern="^grant30_"), group=-1)
+    app.add_handler(TypeHandler(Update, dedupe_updates), group=-3)
     app.add_handler(TypeHandler(Update, access_gate), group=-2)
     app.add_handler(onboard_conv)
     global _morning_conv, _evening_conv
