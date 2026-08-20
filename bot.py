@@ -3355,6 +3355,16 @@ BEACON_TECHNIQUE_PROMPTS = {
     "anchor":    "⚓ *Якорь*\n\nВдави ноги в пол, выпрями спину, сожми пальцы. Найди 5 предметов вокруг, услышь 3-4 звука.",
 }
 
+# Ключи маячка ("breathing"/"grounding") имеют свои подписи в
+# BEACON_TECHNIQUE_TYPES, которые НЕ совпадают дословно с "name" в каталоге
+# SKILLS ("👁 Заземление 5-4-3-2-1" vs "👁 Техника заземления 5-4-3-2-1") —
+# поэтому анимацию ищем через этот явный маппинг на канонические имена
+# навыков, а не сравнением текста подписи.
+BEACON_TECHNIQUE_SKILL_NAMES = {
+    "breathing": "🌬 Дыхание",
+    "grounding": "👁 Техника заземления 5-4-3-2-1",
+}
+
 BEACON_TECHNIQUE_WHY = (
     "Мозг с СДВГ легко теряет связь с телом и текущим моментом — застревает в задаче, "
     "в тревоге или в скролле, и сам этого не замечает. Короткие техники в течение дня — "
@@ -3532,6 +3542,21 @@ async def send_skill_beacon(app, user):
 
         slot = next_beacon_slot(uid)
         if slot is None: return  # ни одна техника не включена
+
+        # Если у техники есть анимация (см. SKILL_ANIMATIONS в 🧠 Навыки) —
+        # присылаем её тоже, отдельным сообщением перед текстом, как и в
+        # каталоге навыков. Раньше маячок слал только текст, даже для
+        # техник вроде дыхания, для которых анимация — часть объяснения.
+        skill_name = BEACON_TECHNIQUE_SKILL_NAMES.get(slot)
+        animation_path = SKILL_ANIMATIONS.get(skill_name) if skill_name else None
+        if animation_path:
+            try:
+                cached_id = _skill_animation_file_ids.get(skill_name)
+                sent_anim = await app.bot.send_animation(chat_id=uid, animation=cached_id or open(animation_path, "rb"))
+                if not cached_id and sent_anim.animation:
+                    _skill_animation_file_ids[skill_name] = sent_anim.animation.file_id
+            except Exception as e:
+                print(f"Ошибка отправки анимации маячка {skill_name}: {e}")
 
         done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
         await app.bot.send_message(
