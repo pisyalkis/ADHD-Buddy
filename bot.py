@@ -3230,6 +3230,7 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     text, kb = _settings_text_and_kb(get_user(uid))
     try:
@@ -3867,7 +3868,13 @@ async def handle_delete_pool_intent(message, uid, query):
 
 async def apply_task_edit(message, ctx, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
-    свободного ввода (handle_text), и для выбора готового дела из пула."""
+    свободного ввода (handle_text), и для выбора готового дела из пула.
+
+    awaiting_task_edit чистим здесь безусловно: путь через handle_text уже
+    сам его снимает перед вызовом, а путь через выбор пункта из пула
+    (pool_use_item) — нет, так что флаг оставался висеть и перехватывал
+    следующее не связанное с задачами сообщение пользователя."""
+    ctx.user_data.pop("awaiting_task_edit", None)
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     was_filled = bool(morning.get(key))
@@ -3924,6 +3931,7 @@ def task_pool_text(pool):
 
 async def show_task_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     pool = get_pool_tasks(q.from_user.id)
     await q.message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
 
@@ -4016,6 +4024,7 @@ def reminders_text_and_kb(reminders):
 
 async def show_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -5017,7 +5026,7 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
     uid = update.effective_user.id
     user = get_user(uid)
     payment = update.message.successful_payment
-    base = date.today()
+    base = datetime.now(get_user_tz(user)).date()
     current_until = (user.get("subscription_until") or "")[:10]
     try:
         existing = date.fromisoformat(current_until)
@@ -6010,14 +6019,19 @@ async def check_notifications(app):
                     # навсегда съедает уведомление на весь день без единой попытки.
                     if await morning_notification(app, uid):
                         update_user(uid, morning_sent_date=day_key)
-                    # Свой собственный маркер "отправлено" — раньше это условие
-                    # держалось на успехе morning_notification выше и ни на чём
-                    # своём, так что при повторных сбоях morning_notification
-                    # (тик за тиком, весь день) weekly_report слался бы заново
-                    # на КАЖДОМ тике, пока morning наконец не пройдёт.
-                    if is_sunday and user.get("weekly_report_sent_date") != day_key:
-                        if await weekly_report(app, uid):
-                            update_user(uid, weekly_report_sent_date=day_key)
+
+                # Воскресный отчёт — независимое условие, не вложенное в блок
+                # утреннего уведомления: раньше он делил с ним внешний if, и
+                # получал ровно одну попытку в тот же тик, что и morning —
+                # если сама эта попытка проваливалась, следующий тик уже не
+                # заходил внутрь (morning_sent_date к тому моменту чаще всего
+                # уже проставлен), и weekly_report больше не пересматривался
+                # до понедельника. Заодно раньше зависел от notif_morning_on,
+                # хотя это разные, независимо переключаемые уведомления.
+                if (notif_master_on and is_sunday and now >= user.get("notif_morning", "09:00")
+                        and user.get("weekly_report_sent_date") != day_key):
+                    if await weekly_report(app, uid):
+                        update_user(uid, weekly_report_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
                         and user.get("midday_sent_date") != day_key):
@@ -6044,7 +6058,10 @@ async def check_notifications(app):
                             and user.get("morning_reminder_sent_date") != day_key
                             and not get_diary(uid, "morning", day_key)
                             and not morning_conv_active):
-                        update_user(uid, morning_reminder_sent_date=day_key)
+                        # Как и остальные уведомления в этом тике — помечаем
+                        # "отправлено" только после реального успеха, а не до
+                        # (раньше было наоборот: временный сбой отправки навсегда
+                        # съедал это напоминание на весь день без единой попытки).
                         await app.bot.send_message(
                             chat_id=uid,
                             text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
@@ -6053,6 +6070,7 @@ async def check_notifications(app):
                                 InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
                             ]])
                         )
+                        update_user(uid, morning_reminder_sent_date=day_key)
                 except Exception:
                     pass
 
