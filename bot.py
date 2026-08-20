@@ -3755,7 +3755,7 @@ async def walk_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data.pop("task_walk", None)
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
@@ -3959,10 +3959,12 @@ async def send_pool_delete_menu(message, uid, items=None):
 
 async def show_task_pool_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await send_pool_delete_menu(q.message, q.from_user.id)
 
 async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     task_id = int(q.data.replace("pooldel_", ""))
     delete_pool_task(q.from_user.id, task_id)
     await send_pool_delete_menu(q.message, q.from_user.id)
@@ -3972,6 +3974,7 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     отметку, если поставил(а) по ошибке), в отличие от прежней кнопки
     "Отметить", которая просто исчезала после первого тапа."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("task_done_", "")  # focus, b1, b2, c1, c2, c3
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
@@ -4049,6 +4052,7 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def reminder_cancel_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     rem_id = int(q.data.replace("remdel_", ""))
     cancel_reminder(q.from_user.id, rem_id)
     reminders = get_reminders(q.from_user.id)
@@ -4139,7 +4143,12 @@ def build_day_card_text(uid, for_date):
 
     if morning:
         lines.append("\n☀️ *Утро*")
-        done = set(evening.get("e_tasks_done", []))
+        # tasks_done — единый live-источник отметок "выполнено" (тот же,
+        # что использует 📋 Задачи); evening["e_tasks_done"] — внутренний
+        # снэпшот вечернего ритуала, появляется только ПОСЛЕ его
+        # прохождения. Раньше карточка дня показывала все задачи
+        # невыполненными до самого вечера, даже если их отметили днём.
+        done = set(get_diary(uid, "tasks_done", for_date).get("done", []))
         tasks = []
         for key, icon in TASK_FIELDS:
             text = morning.get(key)
@@ -4745,13 +4754,6 @@ async def send_research_question(app, uid, day):
 
     if str(day) in research_done.split(","): return  # уже ответил
 
-    # Помечаем как отправленный СРАЗУ — чтобы не слать повторно каждую минуту
-    # пока пользователь не ответит. Ответ всё равно сохранится через research_callback.
-    done_list = [x for x in research_done.split(",") if x]
-    if str(day) not in done_list:
-        done_list.append(str(day))
-        update_user(uid, research_done=",".join(done_list))
-
     if day == 3:
         await app.bot.send_message(
             chat_id=uid,
@@ -4818,6 +4820,17 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton(personalize("😅 Даже рад(а)", user["gender"]), callback_data="research_30_glad")],
             ])
         )
+    else:
+        return  # неизвестный день — ничего не отправили, помечать нечего
+
+    # Помечаем как отправленный только теперь, когда сообщение реально ушло —
+    # раньше это делалось ДО отправки, и временный сбой Telegram навсегда
+    # хоронил этот research-вопрос без единой попытки повтора (та же
+    # ошибка, что уже чинили для утро/день/вечер/+2ч/weekly_report).
+    done_list = [x for x in research_done.split(",") if x]
+    if str(day) not in done_list:
+        done_list.append(str(day))
+        update_user(uid, research_done=",".join(done_list))
 
 async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
