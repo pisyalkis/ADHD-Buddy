@@ -2637,8 +2637,13 @@ async def classify_free_text(text, now_dt):
                 'маме»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть", "recur": '
                 '"daily"|"weekly"|""}. recur — "daily" для «каждый день»/«ежедневно», "weekly" для «каждый '
                 '<день недели>»/«по <дням недели>», иначе "". remind_at — момент первого срабатывания.\n'
-                '2) Просит добавить дело в общий список дел БЕЗ конкретного времени («добавь в список дел '
-                'купить молоко», «не забыть записаться к врачу»): {"intent": "add_pool", "text": "суть дела"}\n'
+                '2) Просит добавить дело(-а) в общий список дел БЕЗ конкретного времени («добавь в список дел '
+                'купить молоко», «не забыть записаться к врачу») — в том числе сразу НЕСКОЛЬКО дел одним '
+                'сообщением (списком, по одному на строку, через запятую и т.п. — «добавь в список дел: '
+                'купить молоко, помыть окна, позвонить маме»): {"intent": "add_pool", "items": ["дело 1", '
+                '"дело 2", ...]}. items — всегда массив, даже если дело одно (тогда из одного элемента). '
+                'Каждый пункт — отдельная, самостоятельная задача, без вводных слов вроде "добавь"/"в список '
+                'дел".\n'
                 '3) Просит удалить/отменить существующее напоминание или дело из списка дел («удали '
                 'напоминание про почту», «убери из списка дел купить молоко», «отмени звонок Джону», «не '
                 'надо больше это дело»): {"intent": "delete", "target": "reminder"|"pool", "query": '
@@ -2673,8 +2678,18 @@ async def classify_free_text(text, now_dt):
             if data.get("recur") not in ("daily", "weekly"):
                 data["recur"] = ""
             return data
-        if intent == "add_pool" and data.get("text"):
-            return data
+        if intent == "add_pool":
+            # items — обычно список; на случай если модель вернула строку
+            # или старое поле "text" — приводим к списку в любом случае.
+            items = data.get("items")
+            if isinstance(items, str):
+                items = [items]
+            if not items and data.get("text"):
+                items = [data["text"]]
+            items = [str(t).strip() for t in (items or []) if str(t).strip()]
+            if items:
+                data["items"] = items
+                return data
         if intent == "delete" and data.get("target") in ("reminder", "pool") and data.get("query"):
             return data
         if intent == "edit_reminder" and data.get("query"):
@@ -3791,13 +3806,21 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = q.data.replace("poolwrite_", "")
     await ask_task_text(q.message, ctx, key)
 
-async def add_pool_and_reply(message, uid, text):
+async def add_pool_and_reply(message, uid, items):
     """Общая логика и для явного экрана «📥 Список дел», и для роутера
-    свободного текста (route_free_text)."""
-    add_pool_task(uid, text)
+    свободного текста (route_free_text). items — одна строка или список
+    строк: одним сообщением можно закинуть сразу несколько дел (например
+    списком, по одному на строку), каждое становится отдельным пунктом,
+    а не одним пунктом со всем текстом целиком."""
+    if isinstance(items, str):
+        items = [items]
+    items = [t.strip() for t in items if t and t.strip()]
+    for text in items:
+        add_pool_task(uid, text)
     pool = get_pool_tasks(uid)
+    prefix = "✅ Добавил в список дел.\n\n" if len(items) <= 1 else f"✅ Добавил {len(items)} дел в список.\n\n"
     await message.reply_text(
-        "✅ Добавил в список дел.\n\n" + task_pool_text(pool),
+        prefix + task_pool_text(pool),
         parse_mode="Markdown", reply_markup=task_pool_kb(pool)
     )
 
@@ -4431,7 +4454,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
     elif ctx.user_data.get("awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
-        await add_pool_and_reply(update.message, uid, update.message.text.strip())
+        # Каждая непустая строка — отдельное дело, а не один пункт со всем
+        # вставленным текстом целиком (удобно, если вставляешь список).
+        items = update.message.text.strip().split("\n")
+        await add_pool_and_reply(update.message, uid, items)
     elif ctx.user_data.get("awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
         now_dt = datetime.now(get_user_tz(get_user(uid)))
@@ -4520,7 +4546,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if intent == "reminder":
             await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text, routed.get("recur") or "")
         elif intent == "add_pool":
-            await add_pool_and_reply(update.message, uid, routed.get("text") or text)
+            await add_pool_and_reply(update.message, uid, routed.get("items") or [text])
         elif intent == "delete" and routed.get("target") == "reminder":
             await handle_delete_reminder_intent(update.message, uid, routed.get("query") or text)
         elif intent == "delete" and routed.get("target") == "pool":
