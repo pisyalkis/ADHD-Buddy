@@ -2474,12 +2474,18 @@ async def finish_evening(message, uid, ctx):
     user = get_user(uid)
     tz = get_user_tz(user)
     today = evening_day(tz).isoformat()
-    # tasks_done (и морнинг, который с ним сверяется ниже) всегда живут под
-    # обычной календарной датой — как в get_today_context и 📋 Задачи —
-    # а не под evening_day, который в окне 00:00-04:00 сдвигает "сегодня"
-    # на вчера. Иначе отметки, поставленные здесь, не были бы видны в
-    # дневном меню, и наоборот.
-    morning_today = datetime.now(tz).date().isoformat()
+    # Реальный баг (репорт от Артёма): в окне 00:00-04:00 morning_today
+    # раньше вычислялся свежим календарным "сейчас", а не через evening_day
+    # — то есть расходился с "today" именно тогда, когда вечерний ритуал
+    # запущен за полночь и по смыслу всё ещё review ВЧЕРАШНЕГО дня. Из-за
+    # этого get_diary(uid, "morning", morning_today) искал утро уже в НОВОМ,
+    # ещё пустом дне (не находил — блок "📋 Задачи дня:" молча пропадал из
+    # отчёта), а save_diary(..., "tasks_done", ...) писал вчерашние отметки
+    # под НОВЫЙ день — свежее 📋 Задачи назавтра открывалось уже с чужими
+    # галочками. И морнинг, и tasks_done должны жить под тем же днём, что и
+    # сам вечерний блок/стрик — под today (evening_day), а не отдельно
+    # вычисленной календарной датой.
+    morning_today = today
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
