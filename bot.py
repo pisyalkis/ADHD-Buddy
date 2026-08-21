@@ -1090,38 +1090,19 @@ def midday_kb(morning=None, done_set=None):
     """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
     и в маячке, и в повторной проверке после отдыха.
 
-    Показывает только ту кнопку прогресса (A / A и B / A, B и C), которая
-    ещё актуальна — если бот уже знает что A и B сделаны (через 📋 Задачи,
-    маячок или чекин), незачем снова предлагать прогресс по уже пройденным
-    этапам — это выглядит будто бот забыл.
-    """
+    Чекбокс ▫️/✅ на каждой задаче — тот же _task_checkbox_rows и тот же
+    task_done_callback, что и в 📋 Задачи: можно отметить любую конкретную
+    задачу прямо отсюда, не только последовательно A→B→C (фидбек Виктории —
+    раньше здесь была только одна кнопка прогресса, без возможности
+    отметить, что уже сделано именно сейчас)."""
     morning = morning or {}
     done_set = done_set or set()
 
-    def has(k): return bool(morning.get(k))
-    def is_done(k): return k in done_set
+    rows = _task_checkbox_rows(morning, done_set)
+    existing_keys = [key for key, _ in TASK_FIELDS if morning.get(key)]
+    all_done = bool(existing_keys) and all(key in done_set for key in existing_keys)
 
-    a_exists = has("focus")
-    a_done = (not a_exists) or is_done("focus")
-    b_keys = [k for k in ("b1", "b2") if has(k)]
-    b_done = all(is_done(k) for k in b_keys)
-    c_keys = [k for k in ("c1", "c2", "c3") if has(k)]
-    c_done = all(is_done(k) for k in c_keys)
-
-    rows = []
-    if not a_done:
-        # Не "Работаю над A" — бот не знает, что человек делает именно A
-        # (он мог отметить B/C сделанными раньше и сейчас быть на них),
-        # а не пометить это явной кнопкой "mid_a_done_b" ниже.
-        rows.append([InlineKeyboardButton("✅ Работаю над задачами", callback_data="mid_ok")])
-    elif not b_done:
-        label = "✅ Сделал A, работаю над B" if a_exists else "Работаю над B"
-        rows.append([InlineKeyboardButton(label, callback_data="mid_a_done_b")])
-    elif not c_done:
-        label = "✅✅ Сделал A и B, работаю над C" if (a_exists or b_keys) else "Работаю над C"
-        rows.append([InlineKeyboardButton(label, callback_data="mid_ab_done_c")])
-
-    if not (a_done and b_done and c_done):
+    if not all_done:
         rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
     rows.append([InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")])
     rows.append([InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")])
@@ -3665,6 +3646,23 @@ def _short_button_text(text, limit=28):
         cut = text[:limit].strip()
     return cut + "…"
 
+def _task_checkbox_rows(morning, done_set):
+    """Строки-кнопки ▫️/✅ по каждой задаче A/B1/B2/C1/C2/C3 — общие для
+    📋 Задачи (_tasks_text_and_kb) и для дневного чекина/маячка (midday_kb),
+    чтобы отметка конкретной задачи работала одинаково в обоих местах, а не
+    жила в двух независимых кусках кода, которые легко рассинхронизировать.
+    callback_data (task_done_{key}) ведёт в тот же task_done_callback —
+    тап засчитывается независимо от того, с какого экрана он сделан."""
+    rows = []
+    for key, icon in TASK_FIELDS:
+        val = morning.get(key, "")
+        if not val:
+            continue
+        mark = "✅" if key in done_set else "▫️"
+        button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
+        rows.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
+    return rows
+
 def _tasks_text_and_kb(morning, done_set, gender):
     """Строит текст и клавиатуру задач с отметками выполнения, добавлением
     и правкой — без прохождения полного утреннего ритуала. См. фидбек
@@ -3682,15 +3680,11 @@ def _tasks_text_and_kb(morning, done_set, gender):
     (фидбек Виктории). Выполненность вместо этого — чекбокс на самой
     кнопке-действии (▫️/✅), который можно тапнуть в обе стороны."""
     lines = []
-    buttons = []
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
-        if not val:
-            continue
-        lines.append(f"{icon}: {md_escape(val)}")
-        mark = "✅" if key in done_set else "▫️"
-        button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
-        buttons.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
+        if val:
+            lines.append(f"{icon}: {md_escape(val)}")
+    buttons = _task_checkbox_rows(morning, done_set)
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
     # Одна кнопка входа вместо отдельной "✏️ Изменить" на каждой строке —
