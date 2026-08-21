@@ -5091,10 +5091,24 @@ async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── ПОДПИСКА ───────────────────────────────────────────────────────────────
 def _subscribe_text_and_kb(user):
+    """Реальный баг: для уже подписанного (и тем более для "постоянного
+    доступа" — владелец/выданный без даты) пользователя экран всё равно
+    показывал цену подписки и предложение промокода "продлить пробный
+    период" — бессмысленно и сбивает с толку, когда триал давно позади
+    и платить/продлевать пробный период уже нечего."""
     status = get_access_status(user)
     if status == "subscribed":
         sub_until = (user.get("subscription_until") or "")[:10]
-        body = f"✅ Подписка активна до *{sub_until}*." if sub_until else "✅ У тебя постоянный доступ."
+        if sub_until:
+            text = f"💎 *Подписка*\n\n✅ Подписка активна до *{sub_until}*."
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"⭐ Продлить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+            ])
+        else:
+            text = "💎 *Подписка*\n\n✅ У тебя постоянный доступ."
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
+        return text, kb
     elif status == "trial":
         left = get_trial_days_left(user)
         body = f"🎁 Пробный период — осталось *{left} {'день' if left == 1 else 'дня' if 1 < left < 5 else 'дней'}*."
@@ -5103,12 +5117,10 @@ def _subscribe_text_and_kb(user):
     text = (
         "💎 *Подписка*\n\n"
         f"{body}\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
-        "Есть промокод — можно продлить пробный период бесплатно."
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars — примерно как одна чашка кофе."
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
-        [InlineKeyboardButton("🎁 У меня промокод", callback_data="go_promo")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
