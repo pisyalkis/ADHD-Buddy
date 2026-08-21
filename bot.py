@@ -2482,7 +2482,19 @@ async def finish_evening(message, uid, ctx):
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
-    data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
+    # Реальный баг (репорт от Артёма: "в течение дня отмечал выполненные
+    # задачи, в вечернем отчёте неправильно было отмечено, что сделано").
+    # ctx.user_data["e_tasks_done"] — снимок, сделанный один раз в момент
+    # шага "Что получилось?" (ask_tasks_done). Он не входит в
+    # RESUME_FIELDS_EVENING, поэтому если вечерний ритуал прерывали ПОСЛЕ
+    # этого шага и продолжали позже, снимок не обновлялся — а если в
+    # промежутке человек отмечал что-то ещё через 📋 Задачи, эти отметки
+    # были только в БД, не в устаревшем ctx.user_data. Ниже вслепую
+    # перезаписывал "tasks_done" этим снимком и стирал их. Берём объединение
+    # снимка с тем, что реально сейчас в БД — так отметка через 📋 Задачи
+    # не теряется, даже если её поставили уже после начала вечернего шага.
+    live_done = set(get_diary(uid, "tasks_done", morning_today).get("done", []))
+    data["e_tasks_done"] = list(set(ctx.user_data.get("e_tasks_done", [])) | live_done)
     save_diary(uid, "evening", data, for_date=today)
     # Синхронизируем с "tasks_done" — источником для дневного меню "📋 Задачи",
     # чтобы отметки, поставленные здесь вечером, тоже были видны там.
