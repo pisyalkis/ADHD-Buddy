@@ -5313,15 +5313,17 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     if get_access_status(user) != "expired":
         return
-    _, kb = _subscribe_text_and_kb(user)
     paywall_text = (
         "⌛ *Пробный период закончился*\n\n"
-        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars.\n"
-        "Есть промокод — можно продлить пробный период бесплатно."
+        f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars — примерно как одна чашка кофе."
     )
+    paywall_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
     target = update.effective_message
     if target:
-        await target.reply_text(paywall_text, parse_mode="Markdown", reply_markup=kb)
+        await target.reply_text(paywall_text, parse_mode="Markdown", reply_markup=paywall_kb)
     raise ApplicationHandlerStop
 
 
