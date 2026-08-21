@@ -2452,14 +2452,20 @@ def checkpoint_evening_progress(ctx, uid, for_date):
     """Сохраняет недописанный вечер, прерванный и не продолженный в тот же
     день, в дневник этого дня как есть — без стрика и без побочных эффектов
     finish_evening (это не завершение дня, а спасение того, что успели
-    заполнить). tasks_done намеренно не трогаем: список того, что реально
-    делали, мог наполниться отдельно (дневной чекин), и его нельзя молча
-    затирать пустым."""
+    заполнить). "tasks_done" (общий, живой источник для 📋 Задачи) намеренно
+    не трогаем — но e_tasks_done в самом вечернем блоке (используется потом
+    в ai_day_analysis и в статистике /admin по прошлым дням) тот же снимок,
+    что и в finish_evening: сделан один раз в ask_tasks_done, не входит в
+    RESUME_FIELDS_EVENING, и мог устареть, если после этого шага человек
+    отметил что-то ещё через 📋 Задачи, а вечер так и не дозаполнил. Тот же
+    фикс, что и в finish_evening — объединяем с тем, что реально сейчас в
+    БД, а не пишем устаревший снимок как есть."""
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
-    data["e_tasks_done"] = ctx.user_data.get("e_tasks_done", [])
+    live_done = set(get_diary(uid, "tasks_done", for_date).get("done", []))
+    data["e_tasks_done"] = list(set(ctx.user_data.get("e_tasks_done", [])) | live_done)
     save_diary(uid, "evening", data, for_date=for_date)
 
 async def finish_evening(message, uid, ctx):
