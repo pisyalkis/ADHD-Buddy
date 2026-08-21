@@ -667,10 +667,21 @@ def redeem_promo_code(uid, code):
 def grant_access_days(uid, days):
     """Прямая выдача доступа конкретному аккаунту, без промокода — для
     случаев когда уже точно знаешь, кому дать (см. /grant и кнопку
-    «🎁 +30» в /users)."""
+    «🎁 +30» в /users). Продлевает subscription_until от максимума из
+    "сегодня" и уже имеющейся подписки — так же, как реальная оплата
+    (successful_payment_callback). Раньше это добавлялось к
+    promo_extra_days, который отсчитывается от даты РЕГИСТРАЦИИ — для
+    аккаунта, чей триал истёк давно, это не давало вообще никакого
+    доступа прямо сейчас, хотя и админу, и пользователю бот отвечал, что
+    доступ продлён."""
     user = get_user(uid)
-    new_extra = int(user.get("promo_extra_days") or 0) + days
-    update_user(uid, promo_extra_days=new_extra)
+    today = datetime.now(get_user_tz(user)).date()
+    current_until = user.get("subscription_until") or ""
+    try:
+        base = max(today, date.fromisoformat(current_until[:10]))
+    except Exception:
+        base = today
+    update_user(uid, subscription_until=(base + timedelta(days=days)).isoformat())
 
 def save_payment(uid, stars, days, charge_id):
     """Отдельный лог реальных оплат Stars — источник для /admin ("сколько
@@ -1653,13 +1664,13 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = user["gender"]
     motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)
 
-    # Показать вчерашние планы если есть и сохранить их для предзаполнения задач A/B/C
+    # Показать вчерашние планы, если есть (только для приветственного текста —
+    # постановка задач A/B/C сейчас идёт отдельно через 📋 Задачи/пул).
     ev = get_latest_evening_plan(uid)
     y_plan = {
         "a":  ev.get("e_a", ""),  "b1": ev.get("e_b1", ""), "b2": ev.get("e_b2", ""),
         "c1": ev.get("e_c1", ""), "c2": ev.get("e_c2", ""), "c3": ev.get("e_c3", ""),
     }
-    ctx.user_data["y_plan"] = y_plan
     plans_text = ""
     if y_plan["a"]:
         plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {md_escape(y_plan['a'])}"
@@ -2854,10 +2865,11 @@ def skills_list_kb():
 
 async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     daily = get_daily_skill(uid)
-    kb = skills_list_kb()
-    kb.inline_keyboard = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + kb.inline_keyboard
+    rows = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + list(skills_list_kb().inline_keyboard)
+    kb = InlineKeyboardMarkup(rows)
     await q.message.reply_text(
         "🧠 *Навыки*\n\n"
         f"💡 *Навык дня:* {daily['name']}\n"
@@ -2948,6 +2960,7 @@ async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── STREAK ─────────────────────────────────────────────────────────────────
 async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     if int(user.get("streak_hidden") or 0):
@@ -4244,6 +4257,7 @@ def day_card_kb(for_date, today):
 
 async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date()
     for_date = today.isoformat()
@@ -4252,6 +4266,7 @@ async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     for_date = q.data.replace("daycard_", "")
     today = datetime.now(get_user_tz(get_user(uid))).date()
@@ -4309,6 +4324,7 @@ async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await q.message.reply_text("🧩 Ещё 👇", reply_markup=menu_more_kb())
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4592,6 +4608,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
 async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
 
@@ -6474,6 +6491,7 @@ async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     admin_uid = q.from_user.id
     if NOTIFY_USER_ID and admin_uid != NOTIFY_USER_ID:
         return
+    clear_awaiting_flags(ctx, update)
     target_id = int(q.data.split("_")[2])
     # Найдём имя
     conn = sqlite3.connect(DB_PATH)
