@@ -3911,19 +3911,32 @@ async def handle_delete_pool_intent(message, uid, query):
     candidates = (matches or items)[:2]
     await send_pool_delete_menu(message, uid, items=candidates)
 
-async def apply_task_edit(message, ctx, uid, key, text):
+async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула.
 
     awaiting_task_edit чистим здесь безусловно: путь через handle_text уже
     сам его снимает перед вызовом, а путь через выбор пункта из пула
     (pool_use_item) — нет, так что флаг оставался висеть и перехватывал
-    следующее не связанное с задачами сообщение пользователя."""
+    следующее не связанное с задачами сообщение пользователя.
+
+    pool_item_id (по фидбеку Виктории) — если задача пришла из «Список
+    дел», запоминаем связь со слотом, а не удаляем пункт сразу при выборе:
+    он пропадёт из пула только когда эту задачу реально отметят ✅ (см.
+    task_done_callback). Если слот потом перезаписывают — вручную набранным
+    текстом или другим пунктом пула — старая связь тут же затирается,
+    иначе отметка "выполнено" по новому тексту задачи удалила бы чужой,
+    больше не связанный с ней пункт списка дел."""
     ctx.user_data.pop("awaiting_task_edit", None)
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     was_filled = bool(morning.get(key))
     morning[key] = text
+    link_key = f"_pool_link_{key}"
+    if pool_item_id is not None:
+        morning[link_key] = pool_item_id
+    else:
+        morning.pop(link_key, None)
     save_diary(uid, "morning", morning, for_date=today)
     if was_filled:
         # Текст задачи поменялся — старая отметка "выполнено" больше не
@@ -3956,8 +3969,7 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if item is None:
         await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
         return
-    delete_pool_task(uid, item["id"])
-    await apply_task_edit(q.message, ctx, uid, key, item["text"])
+    await apply_task_edit(q.message, ctx, uid, key, item["text"], pool_item_id=item["id"])
 
 def task_pool_kb(pool):
     rows = []
@@ -4026,13 +4038,23 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     done_data = get_diary(uid, "tasks_done", today)
     done_list = done_data.get("done", [])
-    if key in done_list:
-        done_list.remove(key)
-    else:
+    just_completed = key not in done_list
+    if just_completed:
         done_list.append(key)
+    else:
+        done_list.remove(key)
     save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
 
     morning = get_diary(uid, "morning", today)
+    # Если задача пришла из «Список дел» (см. apply_task_edit/pool_use_item),
+    # пункт пула пропадает из списка только сейчас — в момент, когда задачу
+    # реально отметили выполненной, а не сразу при выборе формулировки.
+    if just_completed:
+        link_key = f"_pool_link_{key}"
+        linked_pool_id = morning.pop(link_key, None)
+        if linked_pool_id is not None:
+            delete_pool_task(uid, linked_pool_id)
+            save_diary(uid, "morning", morning, for_date=today)
     done_set = set(done_list)
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
 
