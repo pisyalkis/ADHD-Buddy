@@ -3647,9 +3647,23 @@ TASK_LABELS = {
 # текст задачи (обрезанный до 24 символов), но Telegram всё равно резал
 # длинную подпись кнопки в произвольном месте, получалось нечитаемо.
 SHORT_TASK_LABELS = {
-    "focus": "Задача A", "b1": "Задача B1", "b2": "Задача B2",
-    "c1": "Задача C1", "c2": "Задача C2", "c3": "Задача C3",
+    "focus": "A", "b1": "B1", "b2": "B2",
+    "c1": "C1", "c2": "C2", "c3": "C3",
 }
+
+def _short_button_text(text, limit=28):
+    """Сокращает текст задачи для кнопки, обрезая по границе слова и
+    добавляя "…" — если отдать длинный текст как есть, Telegram сам режет
+    кнопку посередине ("начало...конец"), и это нечитаемо (фидбек
+    Виктории/Артёма). Обрезаем сами, по словам, чтобы остались первые —
+    обычно главные — слова целиком, без обрыва на середине слова."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].strip()
+    if not cut:
+        cut = text[:limit].strip()
+    return cut + "…"
 
 def _tasks_text_and_kb(morning, done_set, gender):
     """Строит текст и клавиатуру задач с отметками выполнения, добавлением
@@ -3675,7 +3689,8 @@ def _tasks_text_and_kb(morning, done_set, gender):
             continue
         lines.append(f"{icon}: {md_escape(val)}")
         mark = "✅" if key in done_set else "▫️"
-        buttons.append([InlineKeyboardButton(f"{mark} {SHORT_TASK_LABELS[key]}", callback_data=f"task_done_{key}")])
+        button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
+        buttons.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
     # Одна кнопка входа вместо отдельной "✏️ Изменить" на каждой строке —
