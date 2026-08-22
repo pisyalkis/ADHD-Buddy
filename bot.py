@@ -2060,17 +2060,19 @@ def tasks_done_kb(morning, done):
     rows.append([InlineKeyboardButton("Готово ✅", callback_data="td_done")])
     return InlineKeyboardMarkup(rows)
 
-async def ask_tasks_done(message, uid, ctx):
-    # Утро/tasks_done всегда под обычной календарной датой (см.
-    # get_today_context) — evening_day здесь не подходит: в окне 00:00-04:00
-    # он сдвигает "сегодня" на вчера, и только что заполненное утро/отметки
-    # из 📋 Задачи не находились бы.
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-    morning = get_diary(uid, "morning", today)
+async def ask_tasks_done(message, uid, ctx, for_date):
+    # for_date приходит от evening_start, который уже разобрался, под какой
+    # датой реально лежит утро (evening_day или, реже, обычная календарная —
+    # см. комментарий там). Раньше этот же выбор дублировался здесь заново
+    # и всегда брал только календарную дату — расходился с evening_start
+    # в самом обычном случае (вечер открыт после полуночи) и получал пустой
+    # morning, из-за чего этот экран вообще не показывался.
+    morning = get_diary(uid, "morning", for_date)
     # Подхватываем отметки, уже сделанные днём в меню "📋 Задачи" —
     # иначе вечерний блок затирает их пустым списком.
-    already_done = list(get_diary(uid, "tasks_done", today).get("done", []))
+    already_done = list(get_diary(uid, "tasks_done", for_date).get("done", []))
     ctx.user_data["e_tasks_done"] = already_done
+    ctx.user_data["e_morning_date"] = for_date
     await message.reply_text(
         "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
         parse_mode="Markdown",
@@ -2086,8 +2088,11 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         done.remove(key)
     else:
         done.append(key)
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-    morning = get_diary(uid, "morning", today)
+    # Та же дата, что уже разобрал ask_tasks_done — не пересчитываем заново
+    # календарной датой, иначе клавиатура может разойтись с тем, что
+    # реально показывалось (см. комментарий в ask_tasks_done).
+    for_date = ctx.user_data.get("e_morning_date") or datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", for_date)
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
 
@@ -2156,14 +2161,21 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # selfcare_kb показывал его уже отмеченным на новый вечер.
     ctx.user_data.pop("e_selfcare", None)
 
-    # Утро всегда пишется/читается под обычной календарной датой (см.
-    # morning_start/finish_morning/get_today_context) — в отличие от
-    # evening_day, который в окне 00:00-04:00 сдвигает "сегодня" на вчера.
-    # Раньше здесь искали утренний дневник по evening_day-дате "today" —
-    # если вечер открывали в этом окне, только что заполненное утро не
-    # находилось (get_diary смотрел не в ту дату).
-    morning_today = datetime.now(get_user_tz(user)).date().isoformat()
+    # Под какой датой реально лежит утро — не всегда однозначно. Обычный
+    # случай: утро прошло днём, а вечер открывают уже за полночь (частый
+    # паттерн при СДВГ) — тогда утро лежит под evening_day-датой "today"
+    # (вчера по календарю). Реже — сам утренний ритуал прошёл прямо перед
+    # полуночью того же вечера — тогда утро лежит под обычной календарной
+    # датой, а evening_day уже смотрит на день раньше и не находит его.
+    # Раньше здесь была жёстко зашита только календарная дата — из-за этого
+    # в обычном случае (вечер за полночь) утро не находилось вообще: и
+    # "🎯 Фокус был" в приветствии молчал, и весь экран "Что получилось?"
+    # (ask_tasks_done) пропускался целиком, будто задач на день не было.
+    morning_today = today
     morning = get_diary(uid, "morning", morning_today)
+    if not morning:
+        morning_today = datetime.now(get_user_tz(user)).date().isoformat()
+        morning = get_diary(uid, "morning", morning_today)
     focus_recap = f"\n🎯 Фокус был: _{md_escape(morning['focus'])}_" if morning.get("focus") else ""
     streak_line = ""
     if not int(user.get("streak_hidden") or 0):
@@ -2186,7 +2198,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(0.5)
 
     if any(morning.get(key) for key, _ in TASK_FIELDS):
-        await ask_tasks_done(q.message, uid, ctx)
+        await ask_tasks_done(q.message, uid, ctx, morning_today)
         return E_TASKS_DONE
     else:
         if is_field_disabled(user, "e_ach"):
@@ -2482,8 +2494,11 @@ async def finish_evening(message, uid, ctx):
     # под НОВЫЙ день — свежее 📋 Задачи назавтра открывалось уже с чужими
     # галочками. И морнинг, и tasks_done должны жить под тем же днём, что и
     # сам вечерний блок/стрик — под today (evening_day), а не отдельно
-    # вычисленной календарной датой.
-    morning_today = today
+    # вычисленной календарной датой. Если evening_start/ask_tasks_done уже
+    # разобрались, под какой датой реально лежит утро (e_morning_date —
+    # обычно совпадает с today, но не всегда, если сам утренний ритуал
+    # прошёл прямо перед полуночью того же вечера), используем именно её.
+    morning_today = ctx.user_data.get("e_morning_date") or today
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
@@ -5380,6 +5395,15 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     if get_access_status(user) != "expired":
         return
+    # Реальный баг: сообщение, заблокированное пейволлом, никогда не
+    # доходит до handle_text/morning_conv/evening_conv — а без
+    # clear_awaiting_flags любой awaiting_*-флаг или активная
+    # morning/evening conversation, что стояли в момент истечения доступа,
+    # остаются висеть и перехватывают первое же обычное сообщение
+    # пользователя ПОСЛЕ того, как он оформит подписку (например, ответ на
+    # достижения из E_ACH молча съедает следующее сообщение уже после
+    # оплаты, вместо того чтобы дойти до нужного экрана).
+    clear_awaiting_flags(ctx, update)
     paywall_text = (
         "⌛ *Пробный период закончился*\n\n"
         f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars — примерно как одна чашка кофе."
