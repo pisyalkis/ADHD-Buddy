@@ -4650,12 +4650,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Отправлено {name}.")
         except Exception as e:
             await update.message.reply_text(f"❌ Не удалось: `{e}`", parse_mode="Markdown")
-    elif ctx.user_data.get("coach_mode"):
-        await send_coach(update.message, update.message.text, uid, ctx)
     else:
-        # Свободный текст вне какого-либо раздела — вместо пересылки
-        # администратору бот сам разбирает намерение (см. classify_free_text):
-        # напоминание, дело в список дел, или разговор/вопрос — с коучем.
+        # Свободный текст вне какого-либо раздела — сначала всегда пробуем
+        # распознать конкретное намерение (см. classify_free_text), даже
+        # если человек уже в разговоре с коучем (coach_mode). Реальный баг
+        # (репорт от Артёма, со скриншотом): "Напомни написать Марике через
+        # минуту" тонуло в болтовне с коучем — coach_mode, однажды
+        # включённый прошлым неоднозначным сообщением, стоит до явного
+        # clear_awaiting_flags и перехватывал вообще любое следующее
+        # сообщение РАНЬШЕ классификатора. Коуч вежливо отвечал "Хорошо,
+        # напомню через минуту" собственным связным текстом — а реальное
+        # напоминание при этом не создавалось вообще, ни разу.
         text = update.message.text.strip()
         now_dt = datetime.now(get_user_tz(get_user(uid)))
         routed = await classify_free_text(text, now_dt)
