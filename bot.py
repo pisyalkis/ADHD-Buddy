@@ -4338,8 +4338,16 @@ async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
-    today = datetime.now(get_user_tz(get_user(uid))).date()
-    for_date = today.isoformat()
+    tz = get_user_tz(get_user(uid))
+    today = datetime.now(tz).date()
+    # По умолчанию открываем evening_day(tz), а не календарную дату: до 4
+    # утра это ещё "вчера" (см. evening_day) — тот же день, под которым
+    # finish_evening только что сохранил вечерний ритуал. Иначе карточка
+    # дня сразу после ночного закрытия вечера показывала "Пока пусто" для
+    # уже наступившей календарной даты, хотя всё было записано под
+    # предыдущим (логическим) днём. После 4 утра evening_day == today,
+    # так что вне этого окна поведение не меняется.
+    for_date = evening_day(tz).isoformat()
     text = build_day_card_text(uid, for_date)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
