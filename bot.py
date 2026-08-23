@@ -1967,7 +1967,16 @@ async def finish_morning(message, uid, ctx):
         done_list = [k for k in done_data.get("done", []) if k not in changed_keys]
         if len(done_list) != len(done_data.get("done", [])):
             save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
-    add_streak(uid, for_date=today)
+    # Стрик читается calc_streak() по evening_day(tz), а не по обычной
+    # календарной дате (см. add_streak/calc_streak) — здесь НЕ передаём
+    # for_date=today явно, чтобы использовать собственный evening_day-
+    # дефолт add_streak. Раньше передавали календарную today: если утро
+    # заполняли между полуночью и 4 утра, запись стрика оказывалась на
+    # день "впереди" того, что в этот момент считает today calc_streak
+    # (calc_streak() требует (today - d).days == i для самой свежей
+    # записи) — стрик показывал 0 сразу после утреннего ритуала, пока
+    # часы не перевалят за 4 утра.
+    add_streak(uid)
 
     morning_for_summary = task_fields
     tasks_text = build_tasks_summary(morning_for_summary)
