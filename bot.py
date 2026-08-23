@@ -526,6 +526,7 @@ def init_db():
         ("work_start_time", "''"),
         ("work_start_date", "''"),
         ("work_start_sent_date", "''"),
+        ("privacy_hint_shown", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1148,6 +1149,49 @@ async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if explanation:
         await q.message.reply_text(f"{explanation}\n\nНу что, делаем? 🙂")
 
+# Подсказка про приватность у "уязвимых" текстовых полей — реальный отзыв
+# тестировщицы: заполняя свободное письмо, "подумала, что кто-то это
+# прочитает" (и не первый такой отзыв). Экран с честным объяснением уже
+# есть (go_privacy, доступен из "О боте"), но его никто не находит именно
+# в момент, когда рука зависла над полем — подсказку показываем прямо
+# там. Текст различается по факту, а не единообразно: m_writing/
+# m_gratitude/m_child/e_praise нигде кроме БД не всплывают, а e_ach/
+# e_highlights реально уходят в Claude для ai_day_analysis вечером — там
+# нельзя честно писать "видишь только ты".
+PRIVACY_HINT_LOCAL = "🔒 Эту запись никто не видит и никуда не отправляет — она остаётся только у тебя."
+PRIVACY_HINT_AI = "🤖 Эту запись использует ИИ, чтобы дать совет вечером — как и «AI-анализ дня»."
+PRIVACY_HINT_FIELDS = {
+    "m_writing":    PRIVACY_HINT_LOCAL,
+    "m_gratitude":  PRIVACY_HINT_LOCAL,
+    "m_child":      PRIVACY_HINT_LOCAL,
+    "e_praise":     PRIVACY_HINT_LOCAL,
+    "e_ach":        PRIVACY_HINT_AI,
+    "e_highlights": PRIVACY_HINT_AI,
+}
+
+def _mark_privacy_hint_seen(uid, key, user=None):
+    user = user or get_user(uid)
+    shown = [k for k in (user.get("privacy_hint_shown") or "").split(",") if k]
+    if key not in shown:
+        shown.append(key)
+        update_user(uid, privacy_hint_shown=",".join(shown))
+
+def with_privacy_hint(text, kb, uid, key):
+    """Добавляет строку про приватность к тексту вопроса и кнопку "🔒
+    Приватность" в клавиатуру — но только при первом обращении
+    пользователя к этому полю за всё время (privacy_hint_shown). Дальше
+    поле выглядит как обычно: напоминание на каждом ритуале выглядело бы
+    навязчиво и подрывало доверие вместо того чтобы его укреплять."""
+    hint = PRIVACY_HINT_FIELDS.get(key)
+    user = get_user(uid)
+    shown = key in (user.get("privacy_hint_shown") or "").split(",")
+    if not hint or shown:
+        return text, kb
+    _mark_privacy_hint_seen(uid, key, user)
+    text = f"{text}\n\n_{hint}_"
+    rows = [[InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")]] + list(kb.inline_keyboard)
+    return text, InlineKeyboardMarkup(rows)
+
 def main_menu(user=None):
     """Верхний уровень меню — только то, к чему обращаются каждый день.
     Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
@@ -1485,6 +1529,12 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
                 "🌙 *Вечером* — вспоминаем день, присваиваем себе свои победы (даже маленькие — это "
                 "важно), и ставим план на завтра."
             )
+        # Мельком, не отдельным экраном — подробности только по ссылке.
+        # Полноценная подсказка с кнопкой ещё раз всплывёт у самих полей
+        # при первом обращении к ним (см. with_privacy_hint) — здесь
+        # достаточно, чтобы человек знал заранее, что вопрос об этом
+        # уместен и на него есть ответ.
+        text += "\n\n_🔒 Всё, что пишешь, — приватно. Подробнее: «О боте → Приватность»._"
         await q.message.reply_text(
             personalize(text, gender), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ясно", callback_data=f"expl_3_{then}")]])
@@ -1616,7 +1666,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
                 await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
-                await ask_fn(q.message, ctx, user["gender"])
+                await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Все шаги уже пройдены (крайний случай — finish_morning не успел
         # отработать) — начинаем заново, ниже.
@@ -1780,11 +1830,12 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_morning_task_offer(q.message, q.from_user.id)
     return ConversationHandler.END
 
-async def ask_writing(message):
-    await message.reply_text(
+async def ask_writing(message, uid):
+    text, kb = with_privacy_hint(
         "📝 *Свободное письмо*\n\nВсё что есть в голове — без фильтра. Мысли, сны, тревоги, идеи.",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_m_writing")
+        skip_kb("skip_m_writing"), uid, "m_writing"
     )
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = update.message.text
@@ -1800,12 +1851,13 @@ async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "m_writing")
     return result
 
-async def ask_gratitude(message, gender):
+async def ask_gratitude(message, gender, uid):
     thankful = g(gender, "благодарен", "благодарна")
-    await message.reply_text(
+    text, kb = with_privacy_hint(
         f"🙏 *Благодарность*\n\nЗа что {thankful} сегодня? Большое или маленькое — всё считается.",
-        parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_gratitude", "m_gratitude")
+        skip_why_kb("skip_m_gratitude", "m_gratitude"), uid, "m_gratitude"
     )
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = update.message.text
@@ -1821,12 +1873,13 @@ async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "m_gratitude")
     return result
 
-async def ask_child(message, gender):
+async def ask_child(message, gender, uid):
     talked = g(gender, "поговорил", "поговорила")
-    await message.reply_text(
+    text, kb = with_privacy_hint(
         f"💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты {talked} с лучшим другом?",
-        parse_mode="Markdown", reply_markup=skip_why_kb("skip_m_child", "m_child")
+        skip_why_kb("skip_m_child", "m_child"), uid, "m_child"
     )
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
@@ -1853,9 +1906,9 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # задачки отдельно". Постановка задач теперь идёт через 📋 Задачи, которую
 # после ритуала предлагает открыть отдельное сообщение, а не встроенный шаг.
 RESUME_FIELDS = [
-    ("m_writing",   M_WRITING,   lambda msg, ctx, gender: ask_writing(msg)),
-    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender: ask_gratitude(msg, gender)),
-    ("m_child",     M_CHILD,     lambda msg, ctx, gender: ask_child(msg, gender)),
+    ("m_writing",   M_WRITING,   lambda msg, ctx, gender, uid: ask_writing(msg, uid)),
+    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender, uid: ask_gratitude(msg, gender, uid)),
+    ("m_child",     M_CHILD,     lambda msg, ctx, gender, uid: ask_child(msg, gender, uid)),
 ]
 
 async def advance_morning(ctx, message, gender, uid, from_key=None):
@@ -1873,7 +1926,7 @@ async def advance_morning(ctx, message, gender, uid, from_key=None):
         if is_field_disabled(user, key):
             ctx.user_data[key] = ""
             continue
-        await ask_fn(message, ctx, gender)
+        await ask_fn(message, ctx, gender, uid)
         return state
     await finish_morning(message, uid, ctx)
     await send_morning_task_offer(message, uid)
@@ -2112,10 +2165,10 @@ async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_field_disabled(user, "e_ach"):
         ctx.user_data["e_ach"] = ""
         return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
-    await ask_achievements(q.message, user["gender"], had_checklist=True)
+    await ask_achievements(q.message, user["gender"], uid, had_checklist=True)
     return E_ACH
 
-async def ask_achievements(message, gender, had_checklist=False):
+async def ask_achievements(message, gender, uid, had_checklist=False):
     if had_checklist:
         text = (
             "⭐ *Достижения дня*\n\n"
@@ -2124,7 +2177,8 @@ async def ask_achievements(message, gender, had_checklist=False):
         )
     else:
         text = f"⭐ *Достижения дня*\n\n{g(gender, 'Чего достиг', 'Чего достигла')} сегодня? Большое или маленькое — всё считается."
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=skip_kb("skip_e_ach"))
+    text, kb = with_privacy_hint(text, skip_kb("skip_e_ach"), uid, "e_ach")
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2147,7 +2201,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
                 await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
-                await ask_fn(q.message, ctx, user["gender"])
+                await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Все шаги уже пройдены (крайний случай — finish_evening не успел
         # отработать) — начинаем заново, ниже.
@@ -2213,7 +2267,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if is_field_disabled(user, "e_ach"):
             ctx.user_data["e_ach"] = ""
             return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
-        await ask_achievements(q.message, user["gender"])
+        await ask_achievements(q.message, user["gender"], uid)
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2230,13 +2284,14 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "e_ach")
     return result
 
-async def ask_praise(message):
-    await message.reply_text(
+async def ask_praise(message, uid):
+    text, kb = with_privacy_hint(
         "🎉 *Похвали себя*\n\n"
         "Просто скажи себе 'молодец' — своими словами, без 'но' и оговорок.\n"
         "_Даже маленькая победа заслуживает признания._",
-        parse_mode="Markdown", reply_markup=skip_why_kb("skip_e_praise", "e_praise")
+        skip_why_kb("skip_e_praise", "e_praise"), uid, "e_praise"
     )
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_praise"] = update.message.text
@@ -2252,11 +2307,12 @@ async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "e_praise")
     return result
 
-async def ask_highlights(message):
-    await message.reply_text(
+async def ask_highlights(message, uid):
+    text, kb = with_privacy_hint(
         "✨ *Яркие моменты дня*\n\nЧто сегодня заставило улыбнуться? Или какой инсайт пришёл?",
-        parse_mode="Markdown", reply_markup=skip_kb("skip_e_highlights")
+        skip_kb("skip_e_highlights"), uid, "e_highlights"
     )
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
@@ -2433,17 +2489,17 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # e_selfcare_done — отдельный маркер завершения (не сам "e_selfcare", он
 # устанавливается уже при ВХОДЕ в шаг, до того как человек что-то отметил).
 RESUME_FIELDS_EVENING = [
-    ("e_ach",           E_ACH,        lambda msg, ctx, gender: ask_achievements(msg, gender)),
-    ("e_praise",        E_PRAISE,     lambda msg, ctx, gender: ask_praise(msg)),
-    ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender: ask_highlights(msg)),
-    ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender: ask_selfcare(msg, ctx, gender)),
-    ("e_energy",        E_ENERGY,     lambda msg, ctx, gender: ask_energy(msg, gender)),
-    ("e_a",             E_A,          lambda msg, ctx, gender: ask_plan_a(msg)),
-    ("e_b1",            E_B1,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))),
-    ("e_b2",            E_B2,         lambda msg, ctx, gender: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))),
-    ("e_c1",            E_C1,         lambda msg, ctx, gender: ask_e_c1(msg)),
-    ("e_c2",            E_C2,         lambda msg, ctx, gender: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
-    ("e_c3",            E_C3,         lambda msg, ctx, gender: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
+    ("e_ach",           E_ACH,        lambda msg, ctx, gender, uid: ask_achievements(msg, gender, uid)),
+    ("e_praise",        E_PRAISE,     lambda msg, ctx, gender, uid: ask_praise(msg, uid)),
+    ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender, uid: ask_highlights(msg, uid)),
+    ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender, uid: ask_selfcare(msg, ctx, gender)),
+    ("e_energy",        E_ENERGY,     lambda msg, ctx, gender, uid: ask_energy(msg, gender)),
+    ("e_a",             E_A,          lambda msg, ctx, gender, uid: ask_plan_a(msg)),
+    ("e_b1",            E_B1,         lambda msg, ctx, gender, uid: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))),
+    ("e_b2",            E_B2,         lambda msg, ctx, gender, uid: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))),
+    ("e_c1",            E_C1,         lambda msg, ctx, gender, uid: ask_e_c1(msg)),
+    ("e_c2",            E_C2,         lambda msg, ctx, gender, uid: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
+    ("e_c3",            E_C3,         lambda msg, ctx, gender, uid: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
 ]
 
 async def advance_evening(ctx, message, gender, uid, from_key=None):
@@ -2464,7 +2520,7 @@ async def advance_evening(ctx, message, gender, uid, from_key=None):
         if is_field_disabled(user, toggle_name):
             ctx.user_data[key] = True if key == "e_selfcare_done" else ""
             continue
-        await ask_fn(message, ctx, gender)
+        await ask_fn(message, ctx, gender, uid)
         return state
     await finish_evening(message, uid, ctx)
     return ConversationHandler.END
