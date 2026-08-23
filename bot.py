@@ -5845,14 +5845,18 @@ async def evening_notification(app, uid):
         return False
 
 async def weekly_report(app, uid):
-    """Воскресный личный отчёт пользователю."""
+    """Отчёт по итогам недели — шлётся утром в понедельник, про уже
+    закончившуюся неделю."""
     try:
         user = get_user(uid)
         name = md_escape(user.get("name", ""))
 
-        # Собираем данные за последние 7 дней
+        # Окно — последние 7 дней, НЕ включая сегодня (реальный баг: раньше
+        # включало сегодняшний, ещё не прожитый день, и отчёт по понедельникам
+        # никогда не мог показать честные 7 из 7 за только что закончившуюся
+        # неделю). При отправке в понедельник это ровно прошлые пн-вс.
         today = datetime.now(get_user_tz(user)).date()
-        days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+        days = [(today - timedelta(days=i)).isoformat() for i in range(7, 0, -1)]
 
         mornings_done = 0
         evenings_done = 0
@@ -6195,7 +6199,7 @@ async def check_notifications(app):
             tz = get_user_tz(user)
             now_dt = datetime.now(tz)
             now = now_dt.strftime("%H:%M")
-            is_sunday = now_dt.weekday() == 6
+            is_monday = now_dt.weekday() == 0
             try:
                 day_key = now_dt.strftime("%Y-%m-%d")
 
@@ -6217,15 +6221,25 @@ async def check_notifications(app):
                     if await morning_notification(app, uid):
                         update_user(uid, morning_sent_date=day_key)
 
-                # Воскресный отчёт — независимое условие, не вложенное в блок
-                # утреннего уведомления: раньше он делил с ним внешний if, и
-                # получал ровно одну попытку в тот же тик, что и morning —
+                # Отчёт по итогам недели — независимое условие, не вложенное в
+                # блок утреннего уведомления: раньше он делил с ним внешний if,
+                # и получал ровно одну попытку в тот же тик, что и morning —
                 # если сама эта попытка проваливалась, следующий тик уже не
                 # заходил внутрь (morning_sent_date к тому моменту чаще всего
                 # уже проставлен), и weekly_report больше не пересматривался
-                # до понедельника. Заодно раньше зависел от notif_morning_on,
+                # целую неделю. Заодно раньше зависел от notif_morning_on,
                 # хотя это разные, независимо переключаемые уведомления.
-                if (notif_master_on and is_sunday and now >= user.get("notif_morning", "09:00")
+                #
+                # Шлём утром в ПОНЕДЕЛЬНИК, а не в воскресенье (реальный баг,
+                # репорт от Артёма): при отправке в воскресенье утром окно
+                # "последние 7 дней" включало ещё не начатое воскресенье —
+                # отчёт показывал 5 из 7, даже если человек закрывал оба
+                # блока в тот же день позже. Заодно текст отчёта и так уже
+                # обращён к следующей неделе ("Следующая неделя начинается
+                # с одной задачи A" + кнопка "☀️ Начать новую неделю") —
+                # на утро понедельника это звучит естественно, а на утро
+                # воскресенья, до конца недели, нет.
+                if (notif_master_on and is_monday and now >= user.get("notif_morning", "09:00")
                         and user.get("weekly_report_sent_date") != day_key):
                     if await weekly_report(app, uid):
                         update_user(uid, weekly_report_sent_date=day_key)
