@@ -6282,7 +6282,13 @@ async def check_notifications(app):
                     # утро" ведёт на entry point с allow_reentry=True и перезапускает
                     # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
                     morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
-                    if (notif_master_on and now >= reminder_time.strftime("%H:%M") and int(user.get("notif_morning_on") or 1)
+                    # Сравниваем полными datetime, а не строками "HH:MM" — если
+                    # notif_morning стоит в пределах 2 часов до полуночи (напр.
+                    # 22:30), reminder_time уходит на следующий календарный день
+                    # (00:30), а now.strftime("%H:%M") этого не знает: сравнение
+                    # "08:00" >= "00:30" истинно почти весь день, и напоминание
+                    # срывается на много часов раньше нужного (реальный баг).
+                    if (notif_master_on and now_dt >= reminder_time and int(user.get("notif_morning_on") or 1)
                             and user.get("morning_reminder_sent_date") != day_key
                             and not get_diary(uid, "morning", day_key)
                             and not morning_conv_active):
@@ -6477,8 +6483,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         total = cur.execute("SELECT COUNT(*) FROM users WHERE name != ''").fetchone()[0]
-        week_ago  = (date.today() - timedelta(days=7)).isoformat()
-        month_ago = (date.today() - timedelta(days=30)).isoformat()
+        # date.today() — наивная серверная дата, а diary.date у каждого
+        # пользователя пишется в его собственной таймзоне (get_user_tz).
+        # Берём таймзону админа, вызвавшего /admin, а не сервера — иначе
+        # у пользователей восточнее сервера граница "7/30 дней" в
+        # /admin съезжает на день (реальный класс бага, уже чинили в
+        # платежах/access_gate).
+        admin_today = datetime.now(get_user_tz(get_user(uid))).date()
+        week_ago  = (admin_today - timedelta(days=7)).isoformat()
+        month_ago = (admin_today - timedelta(days=30)).isoformat()
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
 
