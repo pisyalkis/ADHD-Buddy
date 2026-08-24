@@ -2763,16 +2763,21 @@ async def finish_evening(message, uid, ctx):
     streak = calc_streak(uid)
     streak_hidden = int(user.get("streak_hidden") or 0)
 
+    # Реальный баг (скриншот от Артёма): C2/C3 тут никогда не выводились —
+    # эта сводка дублирует то же самое, что build_day_card_text уже строит
+    # правильно (все 6 полей), а тут кто-то в прошлом остановился на C1.
     plans = ""
     if data["e_a"]:  plans += f"\n🅰️ {md_escape(data['e_a'])}"
     if data["e_b1"]: plans += f"\n🅱️ {md_escape(data['e_b1'])}"
     if data["e_b2"]: plans += f"\n🅱️ {md_escape(data['e_b2'])}"
     if data["e_c1"]: plans += f"\n🅲 {md_escape(data['e_c1'])}"
+    if data["e_c2"]: plans += f"\n🅲 {md_escape(data['e_c2'])}"
+    if data["e_c3"]: plans += f"\n🅲 {md_escape(data['e_c3'])}"
 
     tasks_summary = ""
     morning_for_summary = get_diary(uid, "morning", morning_today)
+    done = set(data["e_tasks_done"])
     if any(morning_for_summary.get(k) for k, _ in TASK_FIELDS):
-        done = set(data["e_tasks_done"])
         lines = []
         for key, icon in TASK_FIELDS:
             text = morning_for_summary.get(key)
@@ -2781,6 +2786,25 @@ async def finish_evening(message, uid, ctx):
             lines.append(f"{mark} {icon}: {md_escape(text)}")
         if lines:
             tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
+
+    # Незавершённые задачи дня — обратно в 📥 Список дел, чтобы не
+    # потерялись (реальный запрос: "чтобы задачи, которые не сделаны,
+    # попадали в список дел"). Пропускаем те, что и так уже выбраны ИЗ
+    # пула (_pool_link_{key}) — pool_use_item не удаляет исходную запись
+    # из пула при выборе, удаляет только task_done_callback при отметке
+    # "сделано" (см. apply_task_edit/pool_use_item) — она там и так лежит,
+    # повторное добавление создало бы дубль.
+    existing_pool_texts = {t["text"] for t in get_pool_tasks(uid)}
+    for key, _ in TASK_FIELDS:
+        text = morning_for_summary.get(key)
+        if not text or key in done:
+            continue
+        if morning_for_summary.get(f"_pool_link_{key}"):
+            continue
+        if text in existing_pool_texts:
+            continue
+        add_pool_task(uid, text)
+        existing_pool_texts.add(text)
 
     selfcare_summary = ""
     if data["e_selfcare"]:
