@@ -2073,11 +2073,58 @@ async def unpin_today_tasks(ctx, uid):
     old_id = user.get("pinned_msg_id") or ""
     if not old_id:
         return
+    # Помечаем закреплённое сообщение как закрытое, а не просто молча
+    # снимаем пин — иначе закрытие дня никак не ощущается: было
+    # закреплённое сообщение с планом, и оно просто исчезает без следа.
+    try:
+        await ctx.bot.edit_message_text(
+            chat_id=uid, message_id=int(old_id),
+            text="✅ *День закрыт*\n\n_Новый день начнётся с ☀️ Утро_",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
     try:
         await ctx.bot.unpin_chat_message(chat_id=uid, message_id=int(old_id))
     except Exception:
         pass
     update_user(uid, pinned_msg_id="")
+
+def daily_prefs_kb(user):
+    """Быстрые переключатели напоминаний прямо на закреплённом сообщении
+    дня — реальный запрос: "чтобы это был осознанный выбор", не молчаливый
+    тумблер, включённый когда-то и забытый. Отдельные callback'и от
+    toggle_beacon/toggle_skill_beacon (те перерисовывают экран настроек
+    целиком текстом — на закреплённом сообщении это стёрло бы итог утра)."""
+    be = int(user.get("beacon_enabled") or 0)
+    se = int(user.get("skill_beacon_enabled") or 0)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Напоминания о задачах", callback_data="quick_toggle_beacon"),
+         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Напоминания с навыками", callback_data="quick_toggle_skill")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
+async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    cur = int(get_user(uid).get("beacon_enabled") or 0)
+    update_user(uid, beacon_enabled=0 if cur else 1)
+    await q.answer("🔕 Напоминания о задачах выключены" if cur else "🔔 Напоминания о задачах включены")
+    try:
+        await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
+    except Exception:
+        pass
+
+async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    cur = int(get_user(uid).get("skill_beacon_enabled") or 0)
+    update_user(uid, skill_beacon_enabled=0 if cur else 1)
+    await q.answer("🔕 Напоминания с навыками выключены" if cur else "🧠 Напоминания с навыками включены")
+    try:
+        await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
+    except Exception:
+        pass
 
 TASK_KEYS = ("focus", "b1", "b2", "c1", "c2", "c3")
 
@@ -2160,15 +2207,22 @@ async def finish_morning(message, uid, ctx):
         ai_msg = await ai_morning_boost(user["name"], user["gender"], focus)
         if ai_msg: ai_msg = f"\n\n🤖 _{ai_msg}_"
 
+    # Решаем заранее, будем ли пинить — чтобы упомянуть это прямо в самом
+    # сообщении (реальный запрос: "писать, что мы его запинили, чтобы было
+    # удобно возвращаться"), а не редактировать текст вторым проходом.
+    will_pin = any(morning_for_summary.values())
+    pin_note = "\n\n📌 _Закрепил это сообщение — будет перед глазами весь день._" if will_pin else ""
+
     sent = None
     try:
         sent = await message.reply_text(
-            f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!*\n"
+            f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
             f"{tasks_text}"
-            f"{ai_msg}\n\n"
+            f"{ai_msg}"
+            f"{pin_note}\n\n"
             f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {md_escape(user['name'])}! 💪",
             parse_mode="Markdown",
-            reply_markup=menu_button_kb()
+            reply_markup=daily_prefs_kb(user)
         )
     except Exception as e:
         # Даже если сборка Markdown-сообщения не удалась (например из-за
@@ -2181,7 +2235,7 @@ async def finish_morning(message, uid, ctx):
         )
 
     # Пиним, только если реально есть что закреплять — не пустое "задачи не заданы".
-    if sent is not None and any(morning_for_summary.values()):
+    if sent is not None and will_pin:
         await pin_today_tasks(ctx, uid, sent)
 
 async def send_morning_task_offer(message, uid):
@@ -3582,6 +3636,38 @@ BEACON_TEXTS = [
     "🔔 *Маячок* — короткая пауза\n\nЗадачи дня:\n{tasks}\n\nНа чём сосредоточен(а) прямо сейчас?",
 ]
 
+# Реальный запрос: "на уведомлениях была возможность их выключить, если
+# бесят" — раньше единственный путь был идти в ⚙️ Настройки, а раздражение
+# сильнее всего именно в момент получения сообщения, не когда потом
+# заходишь в другой экран. Каждое уведомление (утро/день/вечер/оба
+# маячка) получает свою кнопку "🔕 Выключить это уведомление" — один общий
+# обработчик, тип определяется суффиксом callback_data.
+DISABLE_NOTIF_TARGETS = {
+    "morning":     ("notif_morning_on", "Утренние уведомления"),
+    "midday":      ("notif_midday_on", "Дневные уведомления"),
+    "evening":     ("notif_evening_on", "Вечерние уведомления"),
+    "beacon":      ("beacon_enabled", "Маячок задач"),
+    "skillbeacon": ("skill_beacon_enabled", "Маячок навыков"),
+}
+
+def _append_row(kb, row):
+    return InlineKeyboardMarkup(list(kb.inline_keyboard) + [row])
+
+def disable_notif_row(kind):
+    return [InlineKeyboardButton("🔕 Выключить это уведомление", callback_data=f"disable_notif_{kind}")]
+
+async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    kind = q.data.replace("disable_notif_", "")
+    target = DISABLE_NOTIF_TARGETS.get(kind)
+    if not target:
+        await q.answer()
+        return
+    column, label = target
+    update_user(uid, **{column: 0})
+    await q.answer(f"🔕 {label} выключены. Включить снова — ⚙️ Настройки", show_alert=True)
+
 # ── ТИПЫ МАЯЧКА ──────────────────────────────────────────────────────────────
 # Маячок по умолчанию — просто проверка задач (как раньше). Пользователь может
 # дополнительно включить короткие техники, которые иногда встают в тот же
@@ -3594,11 +3680,15 @@ BEACON_TECHNIQUE_TYPES = [
     ("anchor",    "⚓ Якорь"),
 ]
 
+# Тот же класс правки, что уже сделали для BEACON_TEXTS (PR #118) — эти
+# сообщения тоже никак не подписывались "маячком" (только название техники),
+# хотя используются ИСКЛЮЧИТЕЛЬНО в send_skill_beacon, нигде больше — можно
+# безопасно унифицировать заголовок, не задевая каталог навыков.
 BEACON_TECHNIQUE_PROMPTS = {
-    "stop":      "🛑 *СТОП*\n\nЗамри на секунду. Оглянись — что вообще сейчас происходит вокруг и внутри тебя? Дальше продолжай осознанно, не на автомате.",
-    "breathing": "🌬 *Дыхание*\n\nВдох на 4 счёта — выдох на 8. Повтори 5-6 раз подряд.",
-    "grounding": "👁 *Заземление*\n\n5 предметов, которые видишь. 4 вещи, которые можешь потрогать. 3 звука, которые слышишь.",
-    "anchor":    "⚓ *Якорь*\n\nВдави ноги в пол, выпрями спину, сожми пальцы. Найди 5 предметов вокруг, услышь 3-4 звука.",
+    "stop":      "🔔 *Маячок* — 🛑 СТОП\n\nЗамри на секунду. Оглянись — что вообще сейчас происходит вокруг и внутри тебя? Дальше продолжай осознанно, не на автомате.",
+    "breathing": "🔔 *Маячок* — 🌬 Дыхание\n\nВдох на 4 счёта — выдох на 8. Повтори 5-6 раз подряд.",
+    "grounding": "🔔 *Маячок* — 👁 Заземление\n\n5 предметов, которые видишь. 4 вещи, которые можешь потрогать. 3 звука, которые слышишь.",
+    "anchor":    "🔔 *Маячок* — ⚓ Якорь\n\nВдави ноги в пол, выпрями спину, сожми пальцы. Найди 5 предметов вокруг, услышь 3-4 звука.",
 }
 
 # Ключи маячка ("breathing"/"grounding") имеют свои подписи в
@@ -3727,7 +3817,7 @@ async def send_task_beacon(app, user):
             chat_id=uid,
             text=beacon_text,
             parse_mode="Markdown",
-            reply_markup=midday_kb(morning, done_set)
+            reply_markup=_append_row(midday_kb(morning, done_set), disable_notif_row("beacon"))
         )
         # Отмечаем как отправленный только после успешной отправки — иначе
         # временный сбой навсегда "съедает" этот тик маячка.
@@ -3817,6 +3907,7 @@ async def send_skill_beacon(app, user):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(done_label, callback_data="beacon_technique_done")],
                 [InlineKeyboardButton("❓ Зачем это?", callback_data="why_beacon_technique")],
+                disable_notif_row("skillbeacon"),
             ])
         )
         update_user(uid, skill_beacon_last_sent=now.isoformat())
@@ -5731,6 +5822,7 @@ async def midday_notification(app, uid):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Всё хорошо", callback_data="mid_ok")],
                     [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
+                    disable_notif_row("midday"),
                 ])
             )
             return True
@@ -5742,7 +5834,7 @@ async def midday_notification(app, uid):
             f"Над чем работаешь сейчас?\n\n"
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
             parse_mode="Markdown",
-            reply_markup=midday_kb(morning, done_set)
+            reply_markup=_append_row(midday_kb(morning, done_set), disable_notif_row("midday"))
         )
         return True
     except Exception as e:
@@ -6025,6 +6117,7 @@ async def morning_notification(app, uid):
             [InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning"),
              InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")],
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
+            disable_notif_row("morning"),
         ])
         await app.bot.send_message(
             uid,
@@ -6051,7 +6144,7 @@ async def evening_notification(app, uid):
             "День заканчивается. Время закрыть его и поставить планы на завтра.\n\n"
             "5 минут — и голова свободна 👇",
             parse_mode="Markdown",
-            reply_markup=evening_cta_kb()
+            reply_markup=_append_row(evening_cta_kb(), disable_notif_row("evening"))
         )
         return True
     except Exception as e:
@@ -7059,6 +7152,9 @@ def main():
     app.add_handler(CallbackQueryHandler(set_skill_beacon_interval, pattern="^skill_int_\\d+$"))
     app.add_handler(CallbackQueryHandler(set_skill_beacon_count, pattern="^skill_count_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
+    app.add_handler(CallbackQueryHandler(disable_notification_type, pattern="^disable_notif_"))
+    app.add_handler(CallbackQueryHandler(quick_toggle_beacon, pattern="^quick_toggle_beacon$"))
+    app.add_handler(CallbackQueryHandler(quick_toggle_skill,  pattern="^quick_toggle_skill$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(morning_task_offer_yes, pattern="^morning_tasks_yes$"))
