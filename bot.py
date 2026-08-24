@@ -2576,27 +2576,54 @@ async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await ask_plan_a(q.message)
     return E_A
 
-async def ask_plan_a(message):
-    await message.reply_text(
-        "📋 *Планы на завтра — задача A*\n\n"
-        "Самое важное на завтра. Обязательно сделать.\n"
-        "_Утром увидишь первым._",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Пропустить задачу А →", callback_data="skip_e_a")],
-            [InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")],
-        ])
-    )
+# Текст + skip-кнопка для каждого шага постановки планов на завтра —
+# раньше продублировано по 3-4 раза на каждый шаг (got_*, skip_*,
+# ask_e_c1, RESUME_FIELDS_EVENING), из-за чего добавить предложения из
+# 📥 Список дел (реальный запрос — тем более сразу после PR #120, который
+# начал складывать туда незавершённые задачи дня) значило бы либо
+# продублировать правку 4 раза и рисковать забыть одно место, либо
+# централизовать один раз. Централизовано.
+EVENING_PLAN_STEPS = {
+    "e_a":  ("📋 *Планы на завтра — задача A*\n\nСамое важное на завтра. Обязательно сделать.\n_Утром увидишь первым._", "skip_e_a", "Пропустить задачу А →"),
+    "e_b1": ("🅱️ *Задача B1 на завтра:*", "skip_e_b1", "Пропустить задачу B1 →"),
+    "e_b2": ("🅱️ *Задача B2:*", "skip_e_b2", "Пропустить задачу B2 →"),
+    "e_c1": ("🅲 *Задача C1 (по возможности):*", "skip_e_c_all", "Пропустить задачи C →"),
+    "e_c2": ("🅲 *C2:*", "skip_e_c_all", "Пропустить задачи C →"),
+    "e_c3": ("🅲 *C3:*", "skip_e_c_all", "Пропустить задачи C →"),
+}
+
+def evening_plan_kb(key, uid, offset=0, limit=3, extra_rows=None):
+    _, skip_cb, skip_label = EVENING_PLAN_STEPS[key]
+    pool = get_pool_tasks(uid)
+    chunk = pool[offset:offset + limit]
+    rows = [[InlineKeyboardButton(item["text"][:40], callback_data=f"eplanuse_{key}_{item['id']}")] for item in chunk]
+    if offset + limit < len(pool):
+        rows.append([InlineKeyboardButton("Показать ещё", callback_data=f"eplanmore_{key}_{offset + limit}")])
+    rows.append([InlineKeyboardButton(skip_label, callback_data=skip_cb)])
+    if extra_rows:
+        rows.extend(extra_rows)
+    return InlineKeyboardMarkup(rows)
+
+async def ask_evening_plan_step(message, uid, key):
+    text, _, _ = EVENING_PLAN_STEPS[key]
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
+
+async def ask_plan_a(message, uid):
+    text, _, _ = EVENING_PLAN_STEPS["e_a"]
+    kb = evening_plan_kb("e_a", uid, extra_rows=[
+        [InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")],
+    ])
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_a"] = update.message.text
-    await update.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))
+    await ask_evening_plan_step(update.message, update.effective_user.id, "e_b1")
     return E_B1
 
 async def skip_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_a"] = ""
-    await q.message.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))
+    await ask_evening_plan_step(q.message, q.from_user.id, "e_b1")
     return E_B1
 
 async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2611,34 +2638,34 @@ async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b1"] = update.message.text
-    await update.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))
+    await ask_evening_plan_step(update.message, update.effective_user.id, "e_b2")
     return E_B2
 
 async def skip_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_b1"] = ""
-    await q.message.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))
+    await ask_evening_plan_step(q.message, q.from_user.id, "e_b2")
     return E_B2
 
 async def got_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_b2"] = update.message.text
-    await ask_e_c1(update.message); return E_C1
+    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c1")
+    return E_C1
 
 async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    ctx.user_data["e_b2"] = ""; await ask_e_c1(q.message); return E_C1
-
-async def ask_e_c1(message):
-    await message.reply_text("🅲 *Задача C1 (по возможности):*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
+    ctx.user_data["e_b2"] = ""
+    await ask_evening_plan_step(q.message, q.from_user.id, "e_c1")
+    return E_C1
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c1"] = update.message.text
-    await update.message.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
+    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c2")
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_c2"] = update.message.text
-    await update.message.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))
+    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c3")
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2666,12 +2693,12 @@ RESUME_FIELDS_EVENING = [
     ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender, uid: ask_highlights(msg, uid)),
     ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender, uid: ask_selfcare(msg, ctx, gender)),
     ("e_energy",        E_ENERGY,     lambda msg, ctx, gender, uid: ask_energy(msg, gender)),
-    ("e_a",             E_A,          lambda msg, ctx, gender, uid: ask_plan_a(msg)),
-    ("e_b1",            E_B1,         lambda msg, ctx, gender, uid: msg.reply_text("🅱️ *Задача B1 на завтра:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b1", "Пропустить задачу B1 →"))),
-    ("e_b2",            E_B2,         lambda msg, ctx, gender, uid: msg.reply_text("🅱️ *Задача B2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_b2", "Пропустить задачу B2 →"))),
-    ("e_c1",            E_C1,         lambda msg, ctx, gender, uid: ask_e_c1(msg)),
-    ("e_c2",            E_C2,         lambda msg, ctx, gender, uid: msg.reply_text("🅲 *C2:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
-    ("e_c3",            E_C3,         lambda msg, ctx, gender, uid: msg.reply_text("🅲 *C3:*", parse_mode="Markdown", reply_markup=skip_kb("skip_e_c_all", "Пропустить задачи C →"))),
+    ("e_a",             E_A,          lambda msg, ctx, gender, uid: ask_plan_a(msg, uid)),
+    ("e_b1",            E_B1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_b1")),
+    ("e_b2",            E_B2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_b2")),
+    ("e_c1",            E_C1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c1")),
+    ("e_c2",            E_C2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c2")),
+    ("e_c3",            E_C3,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c3")),
 ]
 
 async def advance_evening(ctx, message, gender, uid, from_key=None):
@@ -2696,6 +2723,40 @@ async def advance_evening(ctx, message, gender, uid, from_key=None):
         return state
     await finish_evening(message, uid, ctx)
     return ConversationHandler.END
+
+# key -> ConversationHandler-состояние соответствующего шага постановки
+# планов на завтра — нужно, чтобы обработчики выбора из пула (ниже) могли
+# вернуть правильное состояние и остаться в вечернем диалоге, а не выпасть
+# из него молча.
+EVENING_STEP_STATE = {k: s for k, s, _ in RESUME_FIELDS_EVENING if k in EVENING_PLAN_STEPS}
+
+async def evening_plan_use_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Выбор готового дела из 📥 Список дел вместо печати с нуля — та же
+    идея, что уже работает в 📋 Задачи (pool_use_item), но встроена прямо
+    в вечерний ConversationHandler: набор дел тут отдельный (планы на
+    завтра, не сегодняшние task-поля), поэтому и переход к следующему шагу
+    свой — через advance_evening, как got_e_a/skip_e_a и т.д. Пункт пула
+    НЕ удаляется при выборе (тот же принцип, что и в pool_use_item) — он
+    остаётся доступен, пока реальную задачу на его основе не отметят
+    выполненной уже в 📋 Задачи."""
+    q = update.callback_query; await q.answer()
+    key, id_s = q.data[len("eplanuse_"):].rsplit("_", 1)
+    uid = q.from_user.id
+    pool = get_pool_tasks(uid)
+    item = next((t for t in pool if t["id"] == int(id_s)), None)
+    if item is None:
+        await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
+        return EVENING_STEP_STATE[key]
+    ctx.user_data[key] = item["text"]
+    user = get_user(uid)
+    return await advance_evening(ctx, q.message, user["gender"], uid, from_key=key)
+
+async def evening_plan_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    key, offset_s = q.data[len("eplanmore_"):].rsplit("_", 1)
+    uid = q.from_user.id
+    await q.message.edit_reply_markup(reply_markup=evening_plan_kb(key, uid, offset=int(offset_s)))
+    return EVENING_STEP_STATE[key]
 
 def checkpoint_evening_progress(ctx, uid, for_date):
     """Сохраняет недописанный вечер, прерванный и не продолженный в тот же
@@ -7096,12 +7157,18 @@ def main():
             E_SELFCARE:  [CallbackQueryHandler(selfcare_done,  pattern="^sc_done$"), CallbackQueryHandler(toggle_selfcare, pattern="^sc_")],
             E_ENERGY:    [CallbackQueryHandler(got_energy, pattern="^energy_[1-5]$")],
             E_A:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_a),        CallbackQueryHandler(skip_e_a,        pattern="^skip_e_a$"),
-                          CallbackQueryHandler(skip_all_goals, pattern="^skip_all_goals$")],
-            E_B1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b1),       CallbackQueryHandler(skip_e_b1,       pattern="^skip_e_b1$")],
-            E_B2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b2),       CallbackQueryHandler(skip_e_b2,       pattern="^skip_e_b2$")],
-            E_C1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c1),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
-            E_C2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c2),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
-            E_C3:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c3),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$")],
+                          CallbackQueryHandler(skip_all_goals, pattern="^skip_all_goals$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
+            E_B1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b1),       CallbackQueryHandler(skip_e_b1,       pattern="^skip_e_b1$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
+            E_B2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_b2),       CallbackQueryHandler(skip_e_b2,       pattern="^skip_e_b2$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
+            E_C1:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c1),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
+            E_C2:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c2),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
+            E_C3:        [MessageHandler(filters.TEXT & ~filters.COMMAND, got_e_c3),       CallbackQueryHandler(skip_e_c_all,    pattern="^skip_e_c_all$"),
+                          CallbackQueryHandler(evening_plan_use_pool, pattern="^eplanuse_"), CallbackQueryHandler(evening_plan_show_more, pattern="^eplanmore_")],
         },
         fallbacks=[CommandHandler("start", start)],
         allow_reentry=True,
