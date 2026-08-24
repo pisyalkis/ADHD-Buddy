@@ -224,6 +224,15 @@ PROBLEM_ITEMS = [
     ("memory",      "🧠 Забываю дела и идеи"),
     ("bedstuck",    "🛏 Трудно начать день"),
     ("emotions",    "🎢 Эмоции мешают делать дела"),
+    # Группа "Отношение к себе" — раньше в чек-листе не было ни одного пункта
+    # про самооценку/самокритику, хотя фичи под это давно есть (Внутренний
+    # ребёнок, Похвали себя, Достижения дня) — просто на них никто не попадал
+    # через онбординг. memory_yesterday — не то же самое, что memory (тот
+    # "вперёд": забываю дела/идеи; этот "назад": не помню, что было).
+    ("self_esteem",      "🪞 Низкая самооценка из-за СДВГ"),
+    ("self_talk",        "😔 Постоянно критикую себя"),
+    ("unfinished_shame", "😞 Ругаю себя, если не всё доделал(а)"),
+    ("memory_yesterday", "🌫 Не помню, что делал(а) вчера"),
 ]
 PROBLEM_LABELS = dict(PROBLEM_ITEMS)
 
@@ -233,8 +242,9 @@ PROBLEM_GROUPS = [
     ("🚀 Начать и сделать", ["resist", "scary", "decompose", "unfinished"]),
     ("🗂️ Разобраться",      ["notasks", "overload", "nostructure"]),
     ("👀 Удержаться",        ["phone", "time", "hyperfocus", "taskswitch"]),
-    ("🧠 Не забыть",         ["memory"]),
+    ("🧠 Не забыть",         ["memory", "memory_yesterday"]),
     ("🎢 Состояние",         ["bedstuck", "emotions"]),
+    ("🪞 Отношение к себе",  ["self_esteem", "self_talk", "unfinished_shame"]),
 ]
 
 PROBLEM_TO_MID = {
@@ -292,6 +302,10 @@ PROBLEM_HELP_TEXT = {
     "memory":      "🧠 *Забываю дела и договорённости* — всё, что вводишь за день, сохраняется и не теряется — можно вернуться и посмотреть в любой момент.",
     "bedstuck":    "🛏 *Трудно начать день* — есть двухминутная разминка, которая будит тело перед тем как садиться за дела — не нужно ждать, пока появится желание встать.",
     "emotions":    "🎢 *Сильные эмоции мешают* — есть быстрые техники снижения напряжения: дыхание, холодная вода, заземление через тело — подскажу их именно в моменте, когда трудно.",
+    "self_esteem":      "🪞 *Низкая самооценка* — вечером есть ⭐ Достижения дня и 🎉 Похвали себя: место специально для того, чтобы замечать, что получилось, а не только то, что нет.",
+    "self_talk":        "😔 *Внутренний критик не затыкается* — в утреннем ритуале есть 💛 Внутренний ребёнок: разорвать цикл «стыд → избегание → новая неудача» помогает доброе слово себе каждый день, а не только когда получилось.",
+    "unfinished_shame": "😞 *Ругаешь себя за недоделанное* — на дне засчитывается любой прогресс, а не только стопроцентно выполненный план: ⭐ Достижения дня и 🗂 Карточка дня показывают, что реально было сделано.",
+    "memory_yesterday": "🌫 *Не помнишь, что было вчера* — всё, что пишешь утром и вечером, сохраняется: 🗂 Карточка дня открывает любой день заново, не нужно полагаться на память.",
 }
 
 # Короткие фразы для итогового «а чему в итоге научимся» — не тактика на
@@ -313,6 +327,10 @@ PROBLEM_GOAL = {
     "memory":      "не держать всё в голове и не терять важное",
     "bedstuck":    "вставать и запускать тело без ожидания мотивации",
     "emotions":    "быстрее возвращаться в равновесие, когда накрыло",
+    "self_esteem":      "видеть, что получается, а не только то, что не вышло",
+    "self_talk":        "разговаривать с собой мягче",
+    "unfinished_shame": "видеть прогресс, а не только недоделанное",
+    "memory_yesterday": "видеть свои дни, а не терять их из виду",
 }
 
 # Вопрос-рамка для каждой группы — задаётся отдельным сообщением на группу,
@@ -324,7 +342,8 @@ PROBLEM_GROUP_INTRO = {
     1: "А с этим бывает трудно?",
     2: "Как насчёт этого?",
     3: "И ещё один момент.",
-    4: "Последнее — как у тебя с этим?",
+    4: "И ещё кое-что.",
+    5: "Последнее — как у тебя с этим?",
 }
 
 def problem_group_kb(group_idx, selected):
@@ -527,6 +546,7 @@ def init_db():
         ("work_start_date", "''"),
         ("work_start_sent_date", "''"),
         ("privacy_hint_shown", "''"),
+        ("skills_trained", "''"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1412,14 +1432,111 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
     await asyncio.sleep(0.4)
-    ctx.user_data["onboard_problems"] = []
+    # Дальше — развилка по факту знакомства с ДБТ/тренингом навыков, а не по
+    # диагнозу самому по себе: диагноз ни на что в онбординге не влияет,
+    # влияет только то, знает ли человек матчасть. Прошедшим тренинг не
+    # нужно объяснять СДВГ и ДБТ — сразу к делу; не проходившим — сначала
+    # ввести в курс через 4 отобранных секции гайда (см. onboard_trained_no).
     await q.message.reply_text(
+        "Ты уже проходил(а) тренинг навыков для СДВГ (ДБТ или похожую программу) — "
+        "или пока не сталкивался(-лась) с этим?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(g(gender, "Да, проходил — сразу к делу", "Да, проходила — сразу к делу"), callback_data="ob_trained_yes")],
+            [InlineKeyboardButton("Нет, хочу разобраться", callback_data="ob_trained_no")],
+        ])
+    )
+    return ConversationHandler.END
+
+async def start_problem_checklist(message, ctx):
+    """Общий хвост обеих онбординг-веток (проходил/не проходил тренинг) —
+    чек-лист trudnosti нужен обеим одинаково, он про персонализацию, а не
+    про объяснение матчасти."""
+    ctx.user_data["onboard_problems"] = []
+    await message.reply_text(
         "С чем тебе труднее всего? Пройдёмся по нескольким темам, отметь то, что откликается — "
         "по этому я подскажу конкретные вещи под тебя, а не буду грузить всем подряд.",
     )
     await asyncio.sleep(0.3)
-    await send_problem_group(q.message, ctx, 0)
-    return ConversationHandler.END
+    await send_problem_group(message, ctx, 0)
+
+async def onboard_trained_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, skills_trained="1")
+    await q.message.reply_text(
+        "Отлично, тогда СДВГ и ДБТ объяснять не буду — сразу к сути.\n\n"
+        "Моя задача — помочь внедрить то, что ты уже знаешь, в привычку: не разовое применение "
+        "навыка, когда вспомнил, а структура дня, в которую он встроен сам собой.\n\n"
+        "*Без бота:* знаешь техники, но применяешь от случая к случаю — сегодня вспомнил, завтра "
+        "нет, день каждый раз собирается заново.\n"
+        "*С ботом:* утро/день/вечер задают ритм, в который навык уже встроен — не нужно каждый раз "
+        "решать, применять его или нет.\n\n"
+        "Дальше — пара вопросов, чтобы понять, где тебе сложнее всего, и настроить бота под это.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.3)
+    await start_problem_checklist(q.message, ctx)
+
+async def onboard_trained_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, skills_trained="0")
+    await q.message.reply_text(
+        "Тогда сначала коротко объясню, что вообще происходит и почему это работает — а дальше "
+        "сам(а) решишь, что читать, можно пролистать не всё.\n\n"
+        "Ниже — темы: что такое СДВГ и почему сила воли тут ни при чём, почему так происходит, что "
+        "реально помогает, и каким может стать твой день с ботом. Листай стрелкой или точками, можно "
+        "пропустить.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.3)
+    await send_onboarding_guide_section(q.message, "what")
+
+# Curated-подмножество полного гайда GUIDE_SECTIONS (там 8 секций) — для
+# онбординга нарочно только 4: что происходит → почему → что помогает →
+# как именно поможет бот. Все 8 подряд на самом старте противоречили бы
+# тому же принципу "без воды", который мы вписали в промпт коуча — именно
+# в онбординге самый высокий риск потерять человека. Остальные 4 секции
+# никуда не пропадают — доступны позже через 📖 О СДВГ (🧩 Ещё) целиком.
+ONBOARD_GUIDE_ORDER = ["what", "why", "fixes", "bot"]
+
+async def send_onboarding_guide_section(message, section_id):
+    section = GUIDE_SECTIONS.get(section_id)
+    if not section or section_id not in ONBOARD_GUIDE_ORDER:
+        return
+    idx = ONBOARD_GUIDE_ORDER.index(section_id)
+
+    buttons = [[
+        InlineKeyboardButton("●" if key == section_id else "○", callback_data=f"obguide_{key}")
+        for key in ONBOARD_GUIDE_ORDER
+    ]]
+    if idx < len(ONBOARD_GUIDE_ORDER) - 1:
+        next_id = ONBOARD_GUIDE_ORDER[idx + 1]
+        buttons.append([InlineKeyboardButton(f"Далее: {GUIDE_SECTIONS[next_id]['title']} →", callback_data=f"obguide_{next_id}")])
+        buttons.append([InlineKeyboardButton("Пропустить объяснение →", callback_data="obguide_done")])
+    else:
+        buttons.append([InlineKeyboardButton("Дальше →", callback_data="obguide_done")])
+
+    await message.reply_text(section["text"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def onboard_guide_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    section_id = q.data.replace("obguide_", "")
+    await send_onboarding_guide_section(q.message, section_id)
+
+async def onboard_guide_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await q.message.reply_text(
+        "Вот теперь на одном языке.\n\n"
+        "*До бота:* трудности списывались на характер — казалось, дело в лени или недостатке "
+        "дисциплины, хотя просто не было подходящего метода.\n"
+        "*После:* появляется структура — понимаешь, что происходит, и практикуешь навыки каждый "
+        "день, а не пытаешься «просто стараться сильнее».\n\n"
+        "Дальше — пара вопросов, чтобы понять, где тебе сложнее всего, и настроить бота под это.",
+        parse_mode="Markdown"
+    )
+    await asyncio.sleep(0.3)
+    await start_problem_checklist(q.message, ctx)
 
 async def toggle_problem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -6898,6 +7015,10 @@ def main():
     app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
+    app.add_handler(CallbackQueryHandler(onboard_trained_yes, pattern="^ob_trained_yes$"))
+    app.add_handler(CallbackQueryHandler(onboard_trained_no,  pattern="^ob_trained_no$"))
+    app.add_handler(CallbackQueryHandler(onboard_guide_done,  pattern="^obguide_done$"))
+    app.add_handler(CallbackQueryHandler(onboard_guide_section, pattern="^obguide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(edit_reports_menu, pattern="^edit_reports$"))
     app.add_handler(CallbackQueryHandler(toggle_field_callback, pattern="^toggle_field_"))
