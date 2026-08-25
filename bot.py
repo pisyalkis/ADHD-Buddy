@@ -285,6 +285,16 @@ PROBLEM_TO_SKILLS = {
     "memory":      ["Список дел", "Бумажка гениальных мыслей"],
     "bedstuck":    ["Активация", "Холодная вода", "Готовность и полуулыбка"],
     "emotions":    ["Бросить якорь", "Аптечка самоуспокоения", "заземления", "Дыхание", "Холодная вода"],
+    # Реальный баг (12-й чекап): группа "🪞 Отношение к себе" (PR #117) получила
+    # свой PROBLEM_HELP_TEXT/PROBLEM_GOAL, но не эти записи — без них
+    # _daily_skill_indices() для пользователя, отметившего только эти
+    # трудности, получал пустой pool и молча откатывался на ВЕСЬ каталог
+    # навыков без фильтрации, вопреки собственной документированной цели
+    # механизма (см. docstring get_daily_skill).
+    "self_esteem":      ["Подкрепление"],
+    "self_talk":        ["Подкрепление"],
+    "unfinished_shame": ["Подкрепление"],
+    "memory_yesterday": ["Список дел", "Бумажка гениальных мыслей"],
 }
 
 PROBLEM_HELP_TEXT = {
@@ -2806,12 +2816,22 @@ def checkpoint_evening_progress(ctx, uid, for_date):
     RESUME_FIELDS_EVENING, и мог устареть, если после этого шага человек
     отметил что-то ещё через 📋 Задачи, а вечер так и не дозаполнил. Тот же
     фикс, что и в finish_evening — объединяем с тем, что реально сейчас в
-    БД, а не пишем устаревший снимок как есть."""
+    БД, а не пишем устаревший снимок как есть.
+
+    Реальный баг (12-й чекап): "тем же" фикс тут был применён лишь
+    наполовину — брали tasks_done не под днём, где реально лежит утро
+    (e_morning_date), а под for_date (evening_day прерванной сессии). Эти
+    даты расходятся ровно в том же краевом случае, что и в finish_evening
+    — утро прошло между 00:00 и 04:00 своей календарной датой, а
+    evening_day ещё "вчера". На момент вызова отсюда (см. evening_start)
+    e_morning_date ещё хранит правильное значение той прерванной сессии —
+    им и пользуемся, как и finish_evening."""
     data = {k: ctx.user_data.get(k, "") for k in
             ["e_ach","e_praise","e_highlights","e_a","e_b1","e_b2","e_c1","e_c2","e_c3"]}
     data["e_selfcare"] = ctx.user_data.get("e_selfcare", [])
     data["e_energy"] = ctx.user_data.get("e_energy", 0)
-    live_done = set(get_diary(uid, "tasks_done", for_date).get("done", []))
+    tasks_done_date = ctx.user_data.get("e_morning_date") or for_date
+    live_done = set(get_diary(uid, "tasks_done", tasks_done_date).get("done", []))
     data["e_tasks_done"] = list(set(ctx.user_data.get("e_tasks_done", [])) | live_done)
     save_diary(uid, "evening", data, for_date=for_date)
 
@@ -3843,14 +3863,22 @@ def next_beacon_slot(uid):
     """Круговая ротация типов маячка — что выпадет в этот тик. Индекс
     хранится в БД (а не в памяти планировщика), чтобы не сбрасывался при
     рестарте процесса и не совпадал у всех пользователей одновременно.
-    None, если ни одна техника не включена в "🎯 Типы маячка"."""
+    (None, None), если ни одна техника не включена в "🎯 Типы маячка".
+
+    Реальный баг (12-й чекап): раньше advance индекса писался в БД прямо
+    здесь, до попытки отправки — если send_message/send_animation в
+    send_skill_beacon падал (сетевой сбой), техника, которая так и не
+    дошла до пользователя, всё равно молча исключалась из ротации: со
+    следующего тика выпадала уже СЛЕДУЮЩАЯ техника, а не повторная попытка
+    отправить эту же. Теперь только вычисляем и отдаём кандидата на
+    advance — пишем его в БД в вызывающем коде, после успешной отправки."""
     user = get_user(uid)
     pool = _beacon_rotation_pool(user)
     if not pool:
-        return None
+        return None, None
     idx = int(user.get("beacon_rotation_idx") or "0") % len(pool)
-    update_user(uid, beacon_rotation_idx=str((idx + 1) % len(pool)))
-    return pool[idx]
+    next_idx = (idx + 1) % len(pool)
+    return pool[idx], next_idx
 
 async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«✅ Сделал(а)» после техники маячка — сразу следом обычная проверка
@@ -4005,7 +4033,7 @@ async def send_skill_beacon(app, user):
         if not _in_beacon_hours(user, now): return
         if not _skill_beacon_due(user, now): return
 
-        slot = next_beacon_slot(uid)
+        slot, next_rotation_idx = next_beacon_slot(uid)
         if slot is None: return  # ни одна техника не включена
 
         # Если у техники есть анимация (см. SKILL_ANIMATIONS в 🧠 Навыки) —
@@ -4034,7 +4062,7 @@ async def send_skill_beacon(app, user):
                 disable_notif_row("skillbeacon"),
             ])
         )
-        update_user(uid, skill_beacon_last_sent=now.isoformat())
+        update_user(uid, skill_beacon_last_sent=now.isoformat(), beacon_rotation_idx=str(next_rotation_idx))
     except Exception as e:
         print(f"Ошибка маячка навыков uid={user.get('user_id')}: {e}")
 
@@ -4942,33 +4970,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ])
         )
         return
-    elif (ru := get_user(uid)) and ru.get("research_awaiting") and str(ru.get("research_awaiting")) != "0":
-        user = ru
-        awaiting = str(user.get("research_awaiting", ""))
-        text = update.message.text.strip()
-        # format: "DAY_open" или "DAY_open:вопрос", напр. "3_open:Что было полезным?"
-        day_part, _, embedded_q = awaiting.partition(":")
-        day = int(day_part.split("_")[0]) if "_" in day_part else 0
-        if day:
-            save_research(uid, day, f"day{day}_text", text)
-            update_user(uid, research_awaiting=0)
-            user = get_user(uid)
-            if NOTIFY_USER_ID:
-                q_text = embedded_q or RESEARCH_QUESTION_LABELS.get(f"day{day}_text", "")
-                try:
-                    await ctx.bot.send_message(
-                        NOTIFY_USER_ID,
-                        f"🔬 *Исследование день {day} от {md_escape(user['name']) or uid}:*\n\n"
-                        f"_{q_text}_\n{md_escape(text)}",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    print(f"Не удалось переслать ответ исследования: {e}")
-            await update.message.reply_text(
-                "Спасибо! Твой ответ очень важен 🙏",
-                reply_markup=menu_button_kb()
-            )
-        return
     elif ctx.user_data.get("awaiting_feedback"):
         ctx.user_data["awaiting_feedback"] = False
         text = update.message.text.strip()
@@ -5105,6 +5106,42 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif intent == "edit_reminder":
             await handle_edit_reminder_intent(update.message, ctx, uid, routed.get("query") or text)
         else:
+            # Реальный баг (12-й чекап, тот же класс, что и coach_mode выше):
+            # research_awaiting — флаг в БД, а не сиюминутный ctx.user_data,
+            # выставляется исследовательским уведомлением и висит НЕОПРЕДЕЛЁННО
+            # долго (пока не ответят текстом или не нажмут другую кнопку). Раньше
+            # он проверялся отдельной веткой ДО classify_free_text и перехватывал
+            # вообще любое следующее сообщение — например, обычную просьбу
+            # напомнить о чём-то — молча записывал его как ответ на исследование
+            # и отвечал "Спасибо! Твой ответ очень важен", а реальное намерение
+            # никогда не обрабатывалось. Теперь, как и с coach_mode, сначала
+            # пробуем классифицировать, и только если это НЕ более конкретное
+            # намерение — считаем свободным ответом на исследование.
+            ru = get_user(uid)
+            awaiting = str(ru.get("research_awaiting") or "")
+            if awaiting and awaiting != "0":
+                day_part, _, embedded_q = awaiting.partition(":")
+                day = int(day_part.split("_")[0]) if "_" in day_part else 0
+                if day:
+                    save_research(uid, day, f"day{day}_text", text)
+                    update_user(uid, research_awaiting=0)
+                    ru = get_user(uid)
+                    if NOTIFY_USER_ID:
+                        q_text = embedded_q or RESEARCH_QUESTION_LABELS.get(f"day{day}_text", "")
+                        try:
+                            await ctx.bot.send_message(
+                                NOTIFY_USER_ID,
+                                f"🔬 *Исследование день {day} от {md_escape(ru['name']) or uid}:*\n\n"
+                                f"_{q_text}_\n{md_escape(text)}",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            print(f"Не удалось переслать ответ исследования: {e}")
+                    await update.message.reply_text(
+                        "Спасибо! Твой ответ очень важен 🙏",
+                        reply_markup=menu_button_kb()
+                    )
+                    return
             ctx.user_data["coach_mode"] = True
             await send_coach(update.message, text, uid, ctx)
 
