@@ -693,6 +693,16 @@ def redeem_promo_code(uid, code):
     user = get_user(uid)
     new_extra = int(user.get("promo_extra_days") or 0) + days
     update_user(uid, promo_extra_days=new_extra)
+    # Реальный баг (18-й чекап): promo_extra_days влияет только на конец
+    # ТРИАЛА (get_access_status), а если у пользователя уже есть активная
+    # подписка (subscription_until в будущем), статус доступа всегда
+    # "subscribed" — триал вообще не смотрится, пока подписка активна. Код
+    # безусловно писал "пробный период продлён" — вводя в заблуждение
+    # подписчика, реально не получившего от кода никакой пользы прямо
+    # сейчас (а к моменту, когда подписка закончится, триал-окно от старой
+    # created_at почти наверняка уже давно истекло).
+    if get_access_status(user) == "subscribed":
+        return True, "Промокод принят — но у тебя уже есть полный доступ по подписке, продление пробного периода сейчас не требуется. 🎉"
     return True, f"Промокод принят — пробный период продлён на {days} дн. 🎉"
 
 def grant_access_days(uid, days):
@@ -1169,7 +1179,12 @@ def midday_kb(morning=None, done_set=None):
     existing_keys = [key for key, _ in TASK_FIELDS if morning.get(key)]
     all_done = bool(existing_keys) and all(key in done_set for key in existing_keys)
 
-    if not all_done:
+    # Реальный баг (18-й чекап): при existing_keys=[] (утро вообще без задач)
+    # all_done = False (из-за bool(existing_keys)) — кнопка "Все задачи
+    # сделаны" показывалась и для дня без единой задачи, а mid_all_done
+    # честно шлёт "🎉 Все задачи дня выполнены — отличная работа!" про
+    # задачи, которых не существовало.
+    if existing_keys and not all_done:
         rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
     rows.append([InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")])
     rows.append([InlineKeyboardButton("😬 Прокрастинирую", callback_data="mid_procr")])
@@ -1386,7 +1401,17 @@ def _daily_skill_indices(user):
         pool = [i for i, sk in enumerate(SKILLS) if any(kw in sk["name"] for kw in keywords)]
 
     indices = pool or list(range(len(SKILLS)))
-    indices = [i for i in indices if not any(ex in SKILLS[i]["name"] for ex in DAILY_SKILL_EXCLUDE)] or indices
+    # Реальный баг (18-й чекап): для некоторых struggles (например "notasks")
+    # PROBLEM_TO_SKILLS почти целиком состоит из "Список дел"/"Приоритеты" —
+    # ровно тех навыков, что режет DAILY_SKILL_EXCLUDE. Старое `or indices`
+    # срабатывало только если исключение опустошало пул ПОЛНОСТЬЮ — а если
+    # оставался ровно 1 навык, он и становился "навыком дня" навсегда:
+    # get_daily_skill всегда возвращал один и тот же, а кнопка "🔄 Поменять
+    # навык" превращалась в видимую бутафорию (единственный элемент в пуле
+    # длины 1 — это всегда он же). Не даём исключению схлопывать пул меньше
+    # чем до 2 вариантов — иначе откатываемся к пулу ДО исключения.
+    excluded = [i for i in indices if not any(ex in SKILLS[i]["name"] for ex in DAILY_SKILL_EXCLUDE)]
+    indices = excluded if len(excluded) >= 2 else indices
     return indices
 
 def get_daily_skill(uid):
@@ -2867,6 +2892,22 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await finish_evening(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
 
+async def _resume_ask_achievements(msg, ctx, gender, uid):
+    """Реальный баг (18-й чекап): резюме прерванного вечера на шаге e_ach
+    всегда звало ask_achievements() без had_checklist=True — хотя обычный
+    (не прерванный) путь к этому шагу почти всегда идёт через
+    tasks_done_finish, который явно передаёт had_checklist=True ("Помимо
+    запланированного — что ещё получилось?"). Из-за этого при резюме (шаг
+    не отвечен сразу, человек вернулся позже или бот перезапустился)
+    текст молча подменялся на общий "Чего достиг(-ла) сегодня?" — не
+    ссылаясь на уже пройденный чек-лист задач. e_morning_date переживает
+    резюме (выставляется безусловно в evening_start и не входит в
+    RESUME_FIELDS_EVENING), так что можно восстановить тот же критерий
+    (были ли вообще задачи в это утро), что и в evening_start."""
+    morning = get_diary(uid, "morning", ctx.user_data.get("e_morning_date", ""))
+    had_checklist = any(morning.get(k) for k, _ in TASK_FIELDS)
+    await ask_achievements(msg, gender, uid, had_checklist=had_checklist)
+
 # Шаги вечернего диалога по порядку, для резюме прерванного вечера — тот же
 # принцип, что и RESUME_FIELDS для утра (см. комментарий там). Чек-лист задач
 # (E_TASKS_DONE) сюда не входит — как и утренняя разминка, при прерывании на
@@ -2874,7 +2915,7 @@ async def skip_e_c_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # e_selfcare_done — отдельный маркер завершения (не сам "e_selfcare", он
 # устанавливается уже при ВХОДЕ в шаг, до того как человек что-то отметил).
 RESUME_FIELDS_EVENING = [
-    ("e_ach",           E_ACH,        lambda msg, ctx, gender, uid: ask_achievements(msg, gender, uid)),
+    ("e_ach",           E_ACH,        _resume_ask_achievements),
     ("e_praise",        E_PRAISE,     lambda msg, ctx, gender, uid: ask_praise(msg, uid)),
     ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender, uid: ask_highlights(msg, uid)),
     ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender, uid: ask_selfcare(msg, ctx, gender)),
@@ -3685,10 +3726,17 @@ async def toggle_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     disabled = [k for k in (user.get("disabled_fields") or "").split(",") if k]
     if key in disabled:
+        # Реальный баг (18-й чекап): reset_skip_streak стоял в ПРОТИВОПОЛОЖНОЙ
+        # ветке — срабатывал при ВЫКЛЮЧЕНИИ поля, а не при обратном включении
+        # (как явно говорит сам комментарий). Из-за этого при включении назад
+        # старый skip_streaks-счётчик переживал сброс, и после всего ОДНОГО
+        # пропуска подряд (streak долетал 2→3=SKIP_STREAK_NUDGE_THRESHOLD)
+        # снова вылезал "хочешь отключить этот вопрос?" — сразу после того,
+        # как человек только что вручную включил его обратно.
         disabled.remove(key)
+        reset_skip_streak(uid, key)  # включил обратно вручную — счётчик подсказки не нужен
     else:
         disabled.append(key)
-        reset_skip_streak(uid, key)  # включил обратно вручную — счётчик подсказки не нужен
     update_user(uid, disabled_fields=",".join(disabled))
     await q.message.edit_reply_markup(reply_markup=_edit_reports_kb(get_user(uid)))
 
@@ -5644,7 +5692,17 @@ async def send_research_question(app, uid, day):
                  InlineKeyboardButton("5 🤩", callback_data="research_3_5")],
             ])
         )
-        update_user(uid, research_awaiting=f"3_open:{RESEARCH_OPEN_Q_DAY3_OK}")
+        # Реальный баг (18-й чекап): research_awaiting выставлялся уже
+        # здесь — сразу при отправке уведомления с кнопками оценки, ДО
+        # того как пользователь вообще на что-то нажал. handle_text
+        # проверяет research_awaiting раньше всех остальных awaiting_*
+        # и intent-классификатора — значит любое обычное сообщение,
+        # отправленное в промежутке между этим уведомлением и нажатием
+        # кнопки (например "напомни в 18:00 позвонить маме"), молча
+        # проглатывалось как ответ на открытый вопрос исследования,
+        # которого пользователю ещё даже не задавали текстом. Флаг
+        # корректно выставляется позже, в research_callback — уже
+        # после реального нажатия кнопки оценки.
 
     elif day == 7:
         thought = g(user["gender"], "подумал", "подумала")
@@ -5676,7 +5734,10 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(6, 11)],
             ])
         )
-        update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
+        # Реальный баг (18-й чекап, тот же класс что и в ветке day==3 выше):
+        # research_awaiting не должен выставляться до реального нажатия
+        # кнопки — см. комментарий там. Флаг корректно ставится позже, в
+        # research_callback, уже после клика.
 
     elif day == 30:
         await app.bot.send_message(
@@ -6627,19 +6688,25 @@ async def morning_notification(app, uid):
         gender = user.get("gender", "M")
 
         ev = get_latest_evening_plan(uid)
+        last_energy = int(ev.get("e_energy", 0) or 0)
+        low_energy = last_energy in (1, 2)
         plan_text = ""
         if ev.get("e_a"):
             plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {md_escape(ev['e_a'])}"
-            if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
-            if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
+            # Реальный баг (18-й чекап): при низкой энергии текст ниже прямо
+            # говорит "только одна задача A" — но сюда же безусловно
+            # подставлялись и B1/B2, если они были поставлены. Получалось
+            # противоречиво: список из 3 задач, а следом "достаточно одной".
+            if not low_energy:
+                if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
+                if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
 
         skill = get_daily_skill(uid)
         skill_idx = SKILLS.index(skill)
         motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
 
-        last_energy = int(ev.get("e_energy", 0) or 0)
         energy_note = ""
-        if last_energy in (1, 2):
+        if low_energy:
             energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
 
         kb = InlineKeyboardMarkup([
