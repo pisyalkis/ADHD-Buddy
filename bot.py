@@ -1202,21 +1202,29 @@ def _mark_privacy_hint_seen(uid, key, user=None):
         shown.append(key)
         update_user(uid, privacy_hint_shown=",".join(shown))
 
-def with_privacy_hint(text, kb, uid, key):
-    """Добавляет строку про приватность к тексту вопроса и кнопку "🔒
+async def send_with_privacy_hint(message, text, kb, uid, key):
+    """Отправляет вопрос, добавляя строку про приватность и кнопку "🔒
     Приватность" в клавиатуру — но только при первом обращении
     пользователя к этому полю за всё время (privacy_hint_shown). Дальше
     поле выглядит как обычно: напоминание на каждом ритуале выглядело бы
-    навязчиво и подрывало доверие вместо того чтобы его укреплять."""
+    навязчиво и подрывало доверие вместо того чтобы его укреплять.
+
+    Реальный баг (16-й чекап): раньше privacy_hint_shown писался в БД ДО
+    отправки сообщения (в этой позиции), а не после — временный сбой
+    reply_text (таймаут/сеть) навсегда терял пользователю этот
+    одноразовый показ подсказки о приватности, хотя он её так и не увидел.
+    Пишем в БД только после успешной отправки."""
     hint = PRIVACY_HINT_FIELDS.get(key)
     user = get_user(uid)
-    shown = key in (user.get("privacy_hint_shown") or "").split(",")
-    if not hint or shown:
-        return text, kb
-    _mark_privacy_hint_seen(uid, key, user)
-    text = f"{text}\n\n_{hint}_"
-    rows = [[InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")]] + list(kb.inline_keyboard)
-    return text, InlineKeyboardMarkup(rows)
+    already_shown = key in (user.get("privacy_hint_shown") or "").split(",")
+    show_hint = bool(hint) and not already_shown
+    if show_hint:
+        text = f"{text}\n\n_{hint}_"
+        rows = [[InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")]] + list(kb.inline_keyboard)
+        kb = InlineKeyboardMarkup(rows)
+    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    if show_hint:
+        _mark_privacy_hint_seen(uid, key, user)
 
 def main_menu(user=None):
     """Верхний уровень меню — только то, к чему обращаются каждый день.
@@ -1655,7 +1663,7 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
             )
         # Мельком, не отдельным экраном — подробности только по ссылке.
         # Полноценная подсказка с кнопкой ещё раз всплывёт у самих полей
-        # при первом обращении к ним (см. with_privacy_hint) — здесь
+        # при первом обращении к ним (см. send_with_privacy_hint) — здесь
         # достаточно, чтобы человек знал заранее, что вопрос об этом
         # уместен и на него есть ответ.
         text += "\n\n_🔒 Всё, что пишешь, — приватно. Подробнее: «О боте → Приватность»._"
@@ -1955,11 +1963,11 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def ask_writing(message, uid):
-    text, kb = with_privacy_hint(
+    await send_with_privacy_hint(
+        message,
         "📝 *Свободное письмо*\n\nВсё что есть в голове — без фильтра. Мысли, сны, тревоги, идеи.",
         skip_kb("skip_m_writing"), uid, "m_writing"
     )
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_writing"] = update.message.text
@@ -1977,11 +1985,11 @@ async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_gratitude(message, gender, uid):
     thankful = g(gender, "благодарен", "благодарна")
-    text, kb = with_privacy_hint(
+    await send_with_privacy_hint(
+        message,
         f"🙏 *Благодарность*\n\nЗа что {thankful} сегодня? Большое или маленькое — всё считается.",
         skip_why_kb("skip_m_gratitude", "m_gratitude"), uid, "m_gratitude"
     )
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = update.message.text
@@ -1999,11 +2007,11 @@ async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_child(message, gender, uid):
     talked = g(gender, "поговорил", "поговорила")
-    text, kb = with_privacy_hint(
+    await send_with_privacy_hint(
+        message,
         f"💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты {talked} с лучшим другом?",
         skip_why_kb("skip_m_child", "m_child"), uid, "m_child"
     )
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_child"] = update.message.text
@@ -2118,6 +2126,12 @@ def daily_prefs_kb(user):
 
 async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    # Реальный баг (16-й чекап, тот же класс, что чинили в 14-м/15-м):
+    # эта кнопка живёт на закреплённом сообщении дня (daily_prefs_kb),
+    # которое висит перед глазами весь день независимо от того, в каком
+    # awaiting_*-сценарии сейчас пользователь — тап по ней вместо ответа
+    # на уже открытый запрос (например смену города) оставлял флаг висеть.
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     cur = int(get_user(uid).get("beacon_enabled") or 0)
     update_user(uid, beacon_enabled=0 if cur else 1)
@@ -2129,6 +2143,7 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     cur = int(get_user(uid).get("skill_beacon_enabled") or 0)
     update_user(uid, skill_beacon_enabled=0 if cur else 1)
@@ -2362,8 +2377,7 @@ async def ask_achievements(message, gender, uid, had_checklist=False):
         )
     else:
         text = f"⭐ *Достижения дня*\n\n{g(gender, 'Чего достиг', 'Чего достигла')} сегодня? Большое или маленькое — всё считается."
-    text, kb = with_privacy_hint(text, skip_kb("skip_e_ach"), uid, "e_ach")
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await send_with_privacy_hint(message, text, skip_kb("skip_e_ach"), uid, "e_ach")
 
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2487,13 +2501,13 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return result
 
 async def ask_praise(message, uid):
-    text, kb = with_privacy_hint(
+    await send_with_privacy_hint(
+        message,
         "🎉 *Похвали себя*\n\n"
         "Просто скажи себе 'молодец' — своими словами, без 'но' и оговорок.\n"
         "_Даже маленькая победа заслуживает признания._",
         skip_why_kb("skip_e_praise", "e_praise"), uid, "e_praise"
     )
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_praise"] = update.message.text
@@ -2510,11 +2524,11 @@ async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return result
 
 async def ask_highlights(message, uid):
-    text, kb = with_privacy_hint(
+    await send_with_privacy_hint(
+        message,
         "✨ *Яркие моменты дня*\n\nЧто сегодня заставило улыбнуться? Или какой инсайт пришёл?",
         skip_kb("skip_e_highlights"), uid, "e_highlights"
     )
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_highlights"] = update.message.text
@@ -3859,8 +3873,14 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Раньше при пустом утреннем дневнике (задачи ещё не поставлены) кнопка
     молча ничего не делала — ни ошибки, ни ответа, просто "не сработала".
     build_tasks_summary и midday_kb оба прекрасно работают с пустым
-    morning ({}), так что ранний выход был не нужен и только терял тап."""
+    morning ({}), так что ранний выход был не нужен и только терял тап.
+
+    Реальный баг (16-й чекап, тот же класс, что чинили в 14-м/15-м):
+    маячок приходит своим сообщением от фонового планировщика, не через
+    постоянное меню — тап по "✅ Сделал(а)" вместо ответа на уже открытый
+    awaiting_* оставлял флаг висеть."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     _, morning, done_set = get_today_context(user)
@@ -4260,6 +4280,15 @@ async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def walk_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг (16-й чекап): в отличие от соседних walk_tasks_start/
+    # walk_edit_callback/walk_finish_callback, эта кнопка полагалась только
+    # на частичный clear_awaiting_flags(ctx) внутри _walk_to_step (без
+    # update) — DB-флаг research_awaiting и активный morning/evening
+    # ConversationHandler не гасились. Кнопка "➡️ Пропустить" висит на уже
+    # отправленном сообщении сколь угодно долго — повторный тап по ней
+    # после того как где-то в другом месте открыли другой awaiting_*,
+    # оставлял его перехватывать следующий текст.
+    clear_awaiting_flags(ctx, update)
     key = q.data[len("walk_skip_"):]
     uid = q.from_user.id
     await _walk_to_step(q.message, ctx, uid, _next_task_key(key))
@@ -4307,6 +4336,12 @@ async def pool_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг (16-й чекап): эта кнопка (как и pool_use_item рядом)
+    # живёт на уже отправленном экране выбора дела из пула — обычно он
+    # появляется сразу после чужого clear_awaiting_flags, но если сначала
+    # открыть какой-то другой awaiting_* и вернуться к старой кнопке,
+    # ask_task_text выставляет awaiting_task_edit НЕ гася остальные флаги.
+    clear_awaiting_flags(ctx, update)
     key = q.data.replace("poolwrite_", "")
     await ask_task_text(q.message, ctx, key)
 
@@ -4444,6 +4479,7 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
 
 async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     key, id_s = q.data[len("pooluse_"):].rsplit("_", 1)
     uid = q.from_user.id
     pool = get_pool_tasks(uid)
@@ -5463,25 +5499,32 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"И ещё один вопрос — ответь текстом:\n\n"
                 f"*{open_q}*"
             )
-        update_user(uid, research_awaiting=f"3_open:{open_q}")
+        # Реальный баг (16-й чекап, тот же класс, что уже чинили несколькими
+        # строками выше в этой же функции и в send_focus_end): пишем
+        # research_awaiting в БД только ПОСЛЕ того как реально отправили
+        # сам открытый вопрос — иначе сбой отправки (таймаут/сеть) оставлял
+        # флаг взведённым, а пользователь так и не увидел, на какой вопрос
+        # отвечает; его следующее обычное сообщение молча уходило бы как
+        # "ответ" на вопрос, которого он не видел.
         await q.message.reply_text(followup, parse_mode="Markdown")
+        update_user(uid, research_awaiting=f"3_open:{open_q}")
     elif day == 7:
         await q.message.reply_text(
             "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
             reply_markup=menu_button_kb()
         )
-        update_user(uid, research_awaiting=f"7_open:{RESEARCH_OPEN_Q_DAY7}")
         await q.message.reply_text(
             f"*И ещё:* {RESEARCH_OPEN_Q_DAY7}\n\nОтветь текстом.",
             parse_mode="Markdown"
         )
+        update_user(uid, research_awaiting=f"7_open:{RESEARCH_OPEN_Q_DAY7}")
     elif day == 14:
-        update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
         await q.message.reply_text(
             f"NPS {value} — записал!\n\n"
             f"*И последнее — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY14}",
             parse_mode="Markdown"
         )
+        update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
     elif day == 30:
         await q.message.reply_text(
             "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
@@ -5667,6 +5710,12 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_promo_code"] = True
         await update.message.reply_text("🎁 Введи промокод текстом:")
         return
+    # Реальный баг (16-й чекап): ветка с аргументом (/promo CODE — именно
+    # так советует вводить код /blogger) не гасила awaiting_*, в отличие
+    # от ветки без аргумента. Нажатие "🎁 Промокод" (awaiting_promo_code)
+    # с последующим вводом команды /promo CODE вместо голого текста
+    # оставляло флаг висеть и подставляло под него следующее сообщение.
+    clear_awaiting_flags(ctx, update)
     ok, msg = redeem_promo_code(uid, ctx.args[0].strip().upper())
     await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
 
@@ -6658,6 +6707,19 @@ async def check_notifications(app):
             is_monday = now_dt.weekday() == 0
             try:
                 day_key = now_dt.strftime("%Y-%m-%d")
+
+                # Реальный баг (16-й чекап, шире, чем фикс 15-го раунда):
+                # user тут раньше был снимком из ЕДИНОГО запроса get_all_notif_users()
+                # в начале ВСЕГО тика, взятым до единого await — а весь тик
+                # обрабатывает всех пользователей последовательно, каждый со
+                # своими await на отправку. К моменту, когда очередь доходит
+                # до конкретного uid, могли пройти секунды (и много чужих
+                # await) — и даже morning/weekly/midday/evening/+2ч-проверки
+                # НИЖЕ (не только маячок/research, что чинили в 15-м раунде)
+                # читали этот же устаревший снимок notif_enabled. Если человек
+                # выключил уведомления, пока сидел в очереди этого тика,
+                # уведомление всё равно уходило. Перечитываем свежим здесь же.
+                user = get_user(uid)
 
                 # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
                 # в БД, и триггер — "время уже наступило и сегодня ещё не
