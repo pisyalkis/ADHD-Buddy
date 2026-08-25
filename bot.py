@@ -3797,11 +3797,18 @@ async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TY
 # дополнительно включить короткие техники, которые иногда встают в тот же
 # слот вместо обычной проверки — не отдельным напоминанием (это удвоило бы
 # число прерываний за день), а ротацией внутри одного и того же тика.
+# Реальный баг (13-й чекап, тот же класс, что уже чинили для "маячок" в PR
+# #118): "stop"/"anchor" тут назывались иначе, чем то же самое в каталоге
+# SKILLS ("🛑 Навык СТОП"/"⚓ Бросить якорь") и в вечернем чек-листе
+# SELFCARE_ITEMS — пользователь видел "Техника СТОП"/"Якорь" в настройках
+# "Типы маячка", а потом "Навык СТОП"/"Бросить якорь" для той же самой
+# техники на вечернем экране и в 🧠 Навыки. breathing/grounding это не
+# задевало — у них имена уже совпадали дословно.
 BEACON_TECHNIQUE_TYPES = [
-    ("stop",      "🛑 Техника СТОП"),
+    ("stop",      "🛑 Навык СТОП"),
     ("breathing", "🌬 Дыхание"),
     ("grounding", "👁 Заземление 5-4-3-2-1"),
-    ("anchor",    "⚓ Якорь"),
+    ("anchor",    "⚓ Бросить якорь"),
 ]
 
 # Тот же класс правки, что уже сделали для BEACON_TEXTS (PR #118) — эти
@@ -5680,8 +5687,16 @@ async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Использование: /newpromo CODE [дней=30] [активаций=1, 0=без лимита] [метка]")
         return
     code = ctx.args[0].strip().upper()
-    days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
-    max_uses = int(ctx.args[2]) if len(ctx.args) > 2 else 1
+    # Реальный баг (13-й чекап): нечисловой аргумент (опечатка) падал
+    # необработанным ValueError — команда молча не отвечала админу вообще,
+    # вместо явной подсказки, как у соседнего /grant (target_uid) и /blogger
+    # (days, через args[-1].isdigit()).
+    try:
+        days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
+        max_uses = int(ctx.args[2]) if len(ctx.args) > 2 else 1
+    except ValueError:
+        await update.message.reply_text("Дни и активации должны быть числами (см. /newpromo без аргументов).")
+        return
     label = " ".join(ctx.args[3:]).strip()
     create_promo_code(code, days, max_uses, label)
     limit_str = "без ограничения" if max_uses <= 0 else f"{max_uses} активаций"
@@ -5755,7 +5770,14 @@ async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("USER_ID должен быть числом (см. /users).")
         return
-    days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
+    # Реальный баг (13-й чекап): та же незащищённая парсинг-ошибка, что уже
+    # огорожена выше для target_uid, была всё ещё открыта для days —
+    # опечатка тут падала необработанным ValueError без единого ответа.
+    try:
+        days = int(ctx.args[1]) if len(ctx.args) > 1 else 30
+    except ValueError:
+        await update.message.reply_text("Число дней должно быть числом (см. /grant без аргументов).")
+        return
     await _grant_and_notify(ctx, target_uid, days)
     target = get_user(target_uid)
     await update.message.reply_text(f"✅ {target.get('name') or target_uid}: +{days} дн.")
@@ -6322,14 +6344,25 @@ async def weekly_report(app, uid):
             m = get_diary(uid, "morning", d)
             e = get_diary(uid, "evening", d)
 
-            if m.get("focus"):
+            # Реальный баг (13-й чекап, тот же класс, что get_latest_evening_plan):
+            # "сделано ли утро/вечер" проверялось по ОДНОМУ полю (focus/e_ach/e_a)
+            # вместо факта существования записи. focus — это же поле задачи A
+            # (TASK_FIELDS), которое ставится ОТДЕЛЬНО через 📋 Задачи, не только
+            # утренним ритуалом — значит, ритуал без задачи A в тот день молча не
+            # засчитывался. e_ach ("⭐ Достижения дня") — переключаемое в
+            # настройках поле (TOGGLEABLE_FIELDS): у отключившего его пользователя
+            # оно всегда пустое, и evenings_done занижался каждую неделю навсегда,
+            # даже если весь остальной вечер заполнялся исправно. Верный идиом
+            # (факт записи, а не конкретное поле) уже используется чуть ниже в
+            # этой же функции для morning_reminder — просто не был применён тут.
+            if m:
                 mornings_done += 1
                 # Считаем задачи из утра
                 for key, _ in TASK_FIELDS:
                     if m.get(key):
                         tasks_total += 1
 
-            if e.get("e_ach") or e.get("e_a"):
+            if e:
                 evenings_done += 1
                 done_set = set(e.get("e_tasks_done") or [])
                 tasks_done += len(done_set)
