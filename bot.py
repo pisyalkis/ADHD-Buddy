@@ -2592,7 +2592,7 @@ EVENING_PLAN_STEPS = {
     "e_c3": ("🅲 *C3:*", "skip_e_c_all", "Пропустить задачи C →"),
 }
 
-def evening_plan_kb(key, uid, offset=0, limit=3, extra_rows=None):
+def evening_plan_kb(key, uid, offset=0, limit=3):
     _, skip_cb, skip_label = EVENING_PLAN_STEPS[key]
     pool = get_pool_tasks(uid)
     chunk = pool[offset:offset + limit]
@@ -2600,8 +2600,15 @@ def evening_plan_kb(key, uid, offset=0, limit=3, extra_rows=None):
     if offset + limit < len(pool):
         rows.append([InlineKeyboardButton("Показать ещё", callback_data=f"eplanmore_{key}_{offset + limit}")])
     rows.append([InlineKeyboardButton(skip_label, callback_data=skip_cb)])
-    if extra_rows:
-        rows.extend(extra_rows)
+    # "Поставлю цели завтра" — только у задачи A, единственного шага, откуда
+    # можно пропустить весь блок A/B1/B2/C1/C2/C3 одним тапом. Раньше это
+    # добавлял только вызывающий (ask_plan_a) через extra_rows — а
+    # evening_plan_show_more ("Показать ещё" при пагинации пула) строил
+    # клавиатуру без него, и кнопка пропадала после первого же "Показать
+    # ещё" на экране задачи A (реальный баг, 9-й чекап). Теперь это здесь,
+    # в одном месте — оба вызывающих получают её одинаково.
+    if key == "e_a":
+        rows.append([InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")])
     return InlineKeyboardMarkup(rows)
 
 async def ask_evening_plan_step(message, uid, key):
@@ -2609,11 +2616,7 @@ async def ask_evening_plan_step(message, uid, key):
     await message.reply_text(text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
 
 async def ask_plan_a(message, uid):
-    text, _, _ = EVENING_PLAN_STEPS["e_a"]
-    kb = evening_plan_kb("e_a", uid, extra_rows=[
-        [InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")],
-    ])
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await ask_evening_plan_step(message, uid, "e_a")
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["e_a"] = update.message.text
@@ -2854,17 +2857,20 @@ async def finish_evening(message, uid, ctx):
     # из пула при выборе, удаляет только task_done_callback при отметке
     # "сделано" (см. apply_task_edit/pool_use_item) — она там и так лежит,
     # повторное добавление создало бы дубль.
-    existing_pool_texts = {t["text"] for t in get_pool_tasks(uid)}
+    # Сравниваем без учёта регистра — иначе "Позвонить маме" и "позвонить
+    # маме" (та же задача, просто набрана иначе на следующий день) считались
+    # бы разными и дублировались в пуле.
+    existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
     for key, _ in TASK_FIELDS:
         text = morning_for_summary.get(key)
         if not text or key in done:
             continue
         if morning_for_summary.get(f"_pool_link_{key}"):
             continue
-        if text in existing_pool_texts:
+        if text.lower() in existing_pool_texts:
             continue
         add_pool_task(uid, text)
-        existing_pool_texts.add(text)
+        existing_pool_texts.add(text.lower())
 
     selfcare_summary = ""
     if data["e_selfcare"]:
