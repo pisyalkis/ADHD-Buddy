@@ -880,7 +880,17 @@ def get_latest_evening_plan(uid):
     # остальные поля заполнены), но today.get("e_a") ложно считает её
     # непригодной и откатывается на позавчерашний день. Проверяем сам факт
     # наличия записи, а не конкретное поле в ней.
-    if today:
+    # Реальный баг (20-й чекап, тот же класс бага, но в обратную сторону):
+    # голая проверка "есть ли запись" снова сломалась — checkpoint_evening_progress
+    # (прерванный, недописанный вечер) всегда пишет строку со ВСЕМИ ключами
+    # e_a/e_b1/.../e_energy, даже если ничего реального не заполнено (все
+    # значения "" или 0). today = {} никогда не бывает — bool(today) всегда
+    # True, и функция никогда не откатывалась на вчера, даже когда сегодняшняя
+    # запись объективно пустая, а у вчерашнего вечера есть настоящий план.
+    # any(today.values()) верно и для 11-го чекапа (e_energy=3 остаётся
+    # truthy, даже если e_a осознанно пропущен), и для этого случая (все
+    # значения falsy по умолчанию — "", [], 0).
+    if any(today.values()):
         return today
     yesterday = get_diary(uid, "evening", (today_date - timedelta(days=1)).isoformat())
     return yesterday
@@ -3927,8 +3937,15 @@ async def send_task_beacon(app, user):
         # Маячок спрашивает "что сейчас делаешь?" по задачам дня — бессмысленно
         # (и раздражает), пока эти задачи ещё не поставлены утром, даже если
         # рабочие часы маячка уже наступили
+        # Реальный баг (20-й чекап): "if not morning" проверяло сам факт
+        # наличия строки дневника — а finish_morning/checkpoint_morning_progress
+        # всегда пишут непустую строку (ключи focus/b1/.../c3 присутствуют,
+        # даже если все значения ""), как только утренний ритуал вообще
+        # начат. Именно поэтому маячок мог спрашивать "что сейчас делаешь?"
+        # про пустой список задач — ровно то, что этот код должен был
+        # предотвращать по собственному комментарию выше.
         today_iso, morning, done_set = get_today_context(user)
-        if not morning: return
+        if not any(morning.get(k) for k, _ in TASK_FIELDS): return
         tasks = build_tasks_summary(morning, done_set)
 
         beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
@@ -4690,7 +4707,14 @@ def build_day_card_text(uid, for_date):
     d = date.fromisoformat(for_date)
     lines = [f"🗂 *Карточка дня — {d.strftime('%d.%m.%Y')}*"]
 
-    if morning:
+    # Реальный баг (20-й чекап): "if morning"/"if evening" проверяли сам
+    # факт наличия строки дневника — а finish_morning/checkpoint_morning_progress
+    # (и их вечерние аналоги) всегда пишут непустую строку со всеми ключами,
+    # даже если ритуал был лишь тронут и ничего реального не заполнено. Из-за
+    # этого карточка дня показывала пустой заголовок "☀️ Утро"/"🌙 Вечер" без
+    # единой строки под ним, а дружелюбное "Пока пусто..." ниже не
+    # показывалось вообще, хотя по сути день пуст.
+    if any(morning.values()):
         lines.append("\n☀️ *Утро*")
         # tasks_done — единый live-источник отметок "выполнено" (тот же,
         # что использует 📋 Задачи); evening["e_tasks_done"] — внутренний
@@ -4712,7 +4736,7 @@ def build_day_card_text(uid, for_date):
     if midday.get("state"):
         lines.append(f"\n☕ *День*\n{md_escape(midday['state'])}")
 
-    if evening:
+    if any(evening.values()):
         lines.append("\n🌙 *Вечер*")
         if evening.get("e_ach"):        lines.append(f"⭐ Достижения: _{md_escape(evening['e_ach'])}_")
         if evening.get("e_praise"):     lines.append(f"🎉 Похвала себе: _{md_escape(evening['e_praise'])}_")
@@ -4731,7 +4755,7 @@ def build_day_card_text(uid, for_date):
             used = [labels[k] for k in evening["e_selfcare"] if k in labels]
             if used: lines.append(f"🧩 {g(gender, 'Применял', 'Применяла')}:\n" + "\n".join(used))
 
-    if not morning and not midday and not evening:
+    if not any(morning.values()) and not midday.get("state") and not any(evening.values()):
         lines.append("\n_Пока пусто. Заполни утро или вечер — и здесь появятся записи._")
 
     return "\n".join(lines)
