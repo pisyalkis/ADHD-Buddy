@@ -874,7 +874,13 @@ def get_latest_evening_plan(uid):
     """
     today_date = datetime.now(get_user_tz(get_user(uid))).date()
     today = get_diary(uid, "evening", today_date.isoformat())
-    if today.get("e_a"):
+    # Реальный баг (11-й чекап): проверка "есть ли свежая сегодняшняя запись"
+    # смотрела только на e_a — а его вполне могли осознанно пропустить
+    # (skip_e_a/skip_all_goals), тогда запись реально есть (e_energy и
+    # остальные поля заполнены), но today.get("e_a") ложно считает её
+    # непригодной и откатывается на позавчерашний день. Проверяем сам факт
+    # наличия записи, а не конкретное поле в ней.
+    if today:
         return today
     yesterday = get_diary(uid, "evening", (today_date - timedelta(days=1)).isoformat())
     return yesterday
@@ -2427,6 +2433,14 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # и его задачи из прошлого дня утекали в сегодняшний вечерний отчёт.
     # Выставляем свежее значение здесь безусловно, для обеих веток ниже.
     ctx.user_data["e_morning_date"] = morning_today
+    # Реальный баг (11-й чекап, тот же класс): e_tasks_done тоже выставлялся
+    # только внутри ask_tasks_done — на ветке "у сегодняшнего утра нет задач"
+    # (ниже) он не вызывается, и в ctx.user_data мог молча пережить снимок
+    # ВЧЕРАШНЕГО done-списка. finish_evening объединяет его с БД и пишет
+    # обратно в tasks_done уже под сегодняшней датой — чужая вчерашняя
+    # отметка "выполнено" утекала в сегодняшний (пустой) день, а потом
+    # прилипала к новой задаче, вписанной в тот же слот через 📋 Задачи.
+    ctx.user_data["e_tasks_done"] = list(get_diary(uid, "tasks_done", morning_today).get("done", []))
     focus_recap = f"\n🎯 Фокус был: _{md_escape(morning['focus'])}_" if morning.get("focus") else ""
     streak_line = ""
     if not int(user.get("streak_hidden") or 0):
@@ -5257,8 +5271,13 @@ async def send_focus_end(app, uid: int, minutes: int, expected_end_time: str):
         today = datetime.now(tz).date().isoformat()
         prev_mins = int(user.get("focus_minutes_today", 0)) if user.get("focus_date") == today else 0
         new_mins = prev_mins + minutes
-        update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
 
+        # Реальный баг (11-й чекап): update_user раньше стоял ДО send_message —
+        # если отправка падала (таймаут/сетевой сбой), focus_active уже был
+        # обнулён в БД, и check_notifications больше никогда не вызывал
+        # send_focus_end повторно для этого таймера — человек так и не узнавал,
+        # что фокус закончился, хотя минуты уже молча засчитались. Пишем в БД
+        # только после успешной отправки, как и другие уведомления в этом файле.
         await app.bot.send_message(
             chat_id=uid,
             text=(
@@ -5272,6 +5291,7 @@ async def send_focus_end(app, uid: int, minutes: int, expected_end_time: str):
                 [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="go_menu")],
             ])
         )
+        update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
     except Exception as e:
         print(f"Ошибка send_focus_end: {e}")
 
