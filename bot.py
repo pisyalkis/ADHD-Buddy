@@ -5717,7 +5717,9 @@ async def blogger_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✅ Личный промокод для *{md_escape(label)}*: `{code}`\n\n"
         f"Даёт +{days} дн. пробного периода, активаций без ограничения.\n\n"
         f"Что отправить блогеру:\n"
-        f"«Промокод {code} — {days} дней бесплатного доступа к ADHD Buddy. Ввести: /promo {code}»\n\n"
+        # Реальный баг (19-й чекап): "дней" было захардкожено — а days задаёт
+        # админ произвольным аргументом /blogger, не только дефолтным 14.
+        f"«Промокод {code} — {days} {'день' if days % 10 == 1 and days % 100 != 11 else 'дня' if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14) else 'дней'} бесплатного доступа к ADHD Buddy. Ввести: /promo {code}»\n\n"
         f"Смотреть статистику по всем кодам: /promocodes",
         parse_mode="Markdown"
     )
@@ -5772,10 +5774,14 @@ async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _grant_and_notify(ctx, target_uid, days):
     grant_access_days(target_uid, days)
+    # Реальный баг (19-й чекап): "дней" было захардкожено — а /grant USER_ID
+    # days принимает от админа произвольное число, не только дефолтные 30
+    # (30 случайно склоняется верно, но, например, /grant 123 21 — уже нет).
+    _days_pl = "день" if days % 10 == 1 and days % 100 != 11 else "дня" if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14) else "дней"
     try:
         await ctx.bot.send_message(
             target_uid,
-            f"🎁 Тебе продлили доступ на {days} дней — спасибо, что помогаешь боту становиться лучше!"
+            f"🎁 Тебе продлили доступ на {days} {_days_pl} — спасибо, что помогаешь боту становиться лучше!"
         )
     except Exception as e:
         print(f"Не удалось уведомить {target_uid} о выданном доступе: {e}")
