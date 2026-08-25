@@ -2573,7 +2573,11 @@ async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     level = int(q.data.split("_")[1])
     ctx.user_data["e_energy"] = level
-    await ask_plan_a(q.message)
+    # Регрессия из PR #122 (найдена чекапом): ask_plan_a получил обязательный
+    # uid, чтобы показывать предложения из пула, лямбда в RESUME_FIELDS_EVENING
+    # обновили, а этот прямой вызов — нет. TypeError на самом частом переходе
+    # вечернего ритуала (энергия → задача A) — у любого, кто дошёл до конца.
+    await ask_plan_a(q.message, q.from_user.id)
     return E_A
 
 # Текст + skip-кнопка для каждого шага постановки планов на завтра —
