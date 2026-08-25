@@ -2083,10 +2083,17 @@ async def unpin_today_tasks(ctx, uid):
         )
     except Exception:
         pass
+    # Реальный баг (10-й чекап): в отличие от pin_today_tasks (где
+    # pinned_msg_id обновляется только ПОСЛЕ успешного пина), тут
+    # pinned_msg_id стирался безусловно, даже если unpin_chat_message упал
+    # (сетевой сбой/рейт-лимит) — сообщение оставалось реально закреплённым
+    # в чате, а БД уже думала, что пина нет. pin_today_tasks на следующий
+    # день не находит old_id и пинит новое поверх, оставляя старое висеть
+    # закреплённым без шанса когда-либо снять его.
     try:
         await ctx.bot.unpin_chat_message(chat_id=uid, message_id=int(old_id))
     except Exception:
-        pass
+        return
     update_user(uid, pinned_msg_id="")
 
 def daily_prefs_kb(user):
@@ -2411,6 +2418,15 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not morning:
         morning_today = datetime.now(get_user_tz(user)).date().isoformat()
         morning = get_diary(uid, "morning", morning_today)
+    # Реальный баг (10-й чекап): e_morning_date раньше выставлялся только
+    # внутри ask_tasks_done — если сегодняшнее утро прошло вообще без задач
+    # (TASK_FIELDS пустые), этот ключ не трогался и в ctx.user_data мог
+    # молча пережить с ВЧЕРАШНЕГО вечера (когда задачи были и ask_tasks_done
+    # его выставил), пережив рестарт через PicklePersistence. finish_evening
+    # слепо доверяет ctx.user_data.get("e_morning_date"), поэтому чужое утро
+    # и его задачи из прошлого дня утекали в сегодняшний вечерний отчёт.
+    # Выставляем свежее значение здесь безусловно, для обеих веток ниже.
+    ctx.user_data["e_morning_date"] = morning_today
     focus_recap = f"\n🎯 Фокус был: _{md_escape(morning['focus'])}_" if morning.get("focus") else ""
     streak_line = ""
     if not int(user.get("streak_hidden") or 0):
@@ -5789,9 +5805,15 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.pre_checkout_query:
         return
     if update.message and update.message.text and update.message.text.startswith("/"):
-        cmd = update.message.text[1:].split()[0].split("@")[0].lower()
-        if cmd in ACCESS_GATE_EXEMPT_COMMANDS:
-            return
+        # Реальный баг (10-й чекап): одинокий "/" (без имени команды) давал
+        # пустой список после split() — [0] падал с IndexError необработанным
+        # исключением, из-за чего до проверки истёкшего доступа ниже дело
+        # вообще не доходило, и такое сообщение молча проходило мимо пейволла.
+        cmd_parts = update.message.text[1:].split()
+        if cmd_parts:
+            cmd = cmd_parts[0].split("@")[0].lower()
+            if cmd in ACCESS_GATE_EXEMPT_COMMANDS:
+                return
     if update.callback_query and update.callback_query.data in ACCESS_GATE_EXEMPT_CALLBACKS:
         return
     if ctx.user_data.get("awaiting_promo_code"):
