@@ -969,6 +969,23 @@ def g(gender, male, female):
     if gender == 'N': return f"{male}(а)"
     return male
 
+def ru_days(n):
+    """Реальный баг (15-й чекап): склонение "день" по формуле
+    "1 → день, 2-4 → дня, иначе → дней" (буквально, копипастой в 5 местах
+    файла) неверно для 11-14 и для чисел, оканчивающихся на них при
+    больших n (11, 12, 13, 14, 21 и т.д.) — "11 дня"/"21 дней" вместо
+    "11 дней"/"21 день". Учитываем стандартное русское исключение для
+    11-14 (по последним двум цифрам)."""
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return "дней"
+    last = n % 10
+    if last == 1:
+        return "день"
+    if 2 <= last <= 4:
+        return "дня"
+    return "дней"
+
 # Пары "неправильных" форм, которые не подчиняются простому правилу
 # склеивания суффикса (беглая гласная, чередование ё/е) — заменяются
 # явно, до общей regex-замены в personalize().
@@ -2532,7 +2549,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     streak_line = ""
     if not int(user.get("streak_hidden") or 0):
         streak = calc_streak(uid)
-        streak_line = f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n\n"
+        streak_line = f"🔥 Стрик: *{streak} {ru_days(streak)}*\n\n"
 
     evening_greeting = (
         f"🌙 *Хороший был день, {md_escape(user['name'])}!*\n"
@@ -3018,7 +3035,7 @@ async def finish_evening(message, uid, ctx):
         ai_analysis = await ai_day_analysis(user["name"], user["gender"], morning, data)
         if ai_analysis: ai_analysis = f"\n\n🤖 *Анализ дня:*\n_{ai_analysis}_"
 
-    streak_line = "" if streak_hidden else f"🔥 Стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*\n"
+    streak_line = "" if streak_hidden else f"🔥 Стрик: *{streak} {ru_days(streak)}*\n"
     try:
         await message.reply_text(
             "✅ *День закрыт!*\n\n"
@@ -3458,7 +3475,7 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     s = calc_streak(uid)
     await q.message.reply_text(
-        f"🔥 *Стрик: {s} {'день' if s==1 else 'дня' if s<5 else 'дней'} подряд*\n\n"
+        f"🔥 *Стрик: {s} {ru_days(s)} подряд*\n\n"
         f"{'Продолжай! Каждый день считается.' if s>0 else 'Заполни утро или вечер — и стрик пойдёт.'}\n\n"
         "_Стрик растёт когда ты закрываешь вечерний блок._",
         parse_mode="Markdown",
@@ -4115,7 +4132,18 @@ def _skill_beacon_due(user, now):
     if (user.get("skill_beacon_mode") or "interval") == "random":
         count = max(1, int(user.get("skill_beacon_daily_count") or 3))
         targets = _skill_beacon_random_times(user, now, count)
-        if last_dt and last_dt.date() == now.date():
+        # Реальный баг (15-й чекап, прямое следствие фикса ночных окон в 14-м
+        # раунде): "уже использована ли эта цель" сравнивалась по КАЛЕНДАРНОЙ
+        # дате last_dt vs now — а для ночного окна (start > end)
+        # _skill_beacon_random_times теперь намеренно отдаёт ОДИН И ТОТ ЖЕ
+        # список целей по обе стороны полуночи (сид — по дате НАЧАЛА окна).
+        # Если маячок сработал вечером (last_dt — вчера), а тик идёт уже
+        # после полуночи (now.date() — сегодня), даты не совпадали, фильтр
+        # пропускался целиком, и уже использованная вечерняя цель считалась
+        # снова просроченной — маячок стрелял второй раз почти сразу после
+        # полуночи. Фильтруем по last_dt всегда, когда он есть — если он из
+        # действительно другого окна, все текущие цели и так позже него.
+        if last_dt:
             targets = [t for t in targets if t > last_dt]
         return bool(targets) and now >= targets[0]
 
@@ -5339,6 +5367,11 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг (15-й чекап, тот же класс, что чинили в 14-м раунде):
+    # кнопки запуска таймера не одноразовые (см. комментарий ниже) — старое
+    # сообщение /go_focus может провисеть в чате долго и быть нажато уже
+    # после того, как открыли какой-то другой awaiting_* сценарий.
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     minutes = int(q.data.split("_")[2])
 
@@ -5389,6 +5422,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     tz = get_user_tz(user)
@@ -5580,6 +5614,13 @@ async def send_research_question(app, uid, day):
 
 async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг (15-й чекап, тот же класс, что уже чинили в 14-м для
+    # go_about/go_privacy/go_subscribe*/successful_payment_callback):
+    # research-вопрос приходит отдельным уведомлением, а не через постоянное
+    # меню — можно нажать эту кнопку, не ответив на уже открытый awaiting_*
+    # (например 💬 Обратная связь), и его флаг оставался висеть, молча
+    # проглатывая следующее обычное сообщение.
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     parts = q.data.split("_")  # research_DAY_VALUE
     day = int(parts[1])
@@ -5774,7 +5815,7 @@ def _subscribe_text_and_kb(user):
         return text, kb
     elif status == "trial":
         left = get_trial_days_left(user)
-        body = f"🎁 Пробный период — осталось *{left} {'день' if left == 1 else 'дня' if 1 < left < 5 else 'дней'}*."
+        body = f"🎁 Пробный период — осталось *{left} {ru_days(left)}*."
     else:
         body = "⌛ Пробный период закончился."
     text = (
@@ -5975,6 +6016,14 @@ async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if NOTIFY_USER_ID and q.from_user.id != NOTIFY_USER_ID:
         return
+    # Реальный баг (15-й чекап): в том же сообщении /users, у той же строки
+    # пользователя, соседняя кнопка (имя → admin_msg_start) выставляет
+    # admin_msg_target и ждёт следующее сообщение как текст для пересылки.
+    # Если админ вместо этого нажал "🎁 +30" — флаг оставался висеть, и
+    # следующее обычное сообщение админа (что угодно) молча уходило чужому
+    # пользователю с "✅ Отправлено", без единого намёка, что что-то пошло
+    # не так.
+    clear_awaiting_flags(ctx, update)
     target_uid = int(q.data.replace("grant30_", ""))
     await _grant_and_notify(ctx, target_uid, 30)
     target = get_user(target_uid)
@@ -6204,6 +6253,11 @@ async def midday_notification(app, uid):
 async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ответы на дневной чекин — ситуации и инструменты из реального тренинга."""
     q = update.callback_query; await q.answer()
+    # Реальный баг (15-й чекап, тот же класс): дневной чекин приходит своим
+    # уведомлением со своей клавиатурой — как и research_callback/
+    # focus_start_callback, не через постоянное меню, так что мог быть
+    # нажат уже после того, как открыли другой awaiting_*.
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     name = md_escape(user["name"])
@@ -6609,7 +6663,7 @@ async def weekly_report(app, uid):
             lines.append(f"🔋 Средний уровень энергии: *{avg_energy}/5* {energy_label}")
 
         if not int(user.get("streak_hidden") or 0):
-            lines.append(f"🔥 Текущий стрик: *{streak} {'день' if streak==1 else 'дня' if streak<5 else 'дней'}*")
+            lines.append(f"🔥 Текущий стрик: *{streak} {ru_days(streak)}*")
 
         # Мотивационный вывод
         lines.append("")
@@ -7050,7 +7104,15 @@ async def check_notifications(app):
 
                 # Исследовательские вопросы — тот же общий тумблер notif_enabled,
                 # что и утро/день/вечер: "выключить всё" должно выключать и их.
-                if notif_master_on:
+                # Реальный баг (15-й чекап): notif_master_on был снят один раз
+                # в начале тика и не перечитывался — user к этой строке уже
+                # свежий (перечитан выше перед маячками), а notif_master_on
+                # всё ещё старое значение. Если человек выключил уведомления
+                # ровно в тот же тик, пока шли await на предыдущих отправках,
+                # research-вопрос всё равно уходил, хотя "выключить всё"
+                # должно было выключить и его — тот же класс бага, что уже
+                # чинили для user-снапшота выше по этому же тику.
+                if int(user.get("notif_enabled") or 0):
                     try:
                         created_at = user.get("created_at") or now_dt.date().isoformat()
                         days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
