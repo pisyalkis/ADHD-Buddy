@@ -1315,8 +1315,19 @@ async def send_onboarding_final(message, uid):
     else:
         await message.reply_text(onboard_final_offer_text(hour), reply_markup=onboard_final_offer_kb(hour))
 
+# Реальный баг (14-й чекап): %B/%A в strftime всегда рендерятся в C-локали
+# рантайма (locale.setlocale тут нигде не вызывается, а полагаться на то,
+# что на сервере вообще стоит ru_RU.UTF-8, ненадёжно) — в самом частом,
+# ежеутреннем сообщении бота ("Доброе утро!") дата выходила по-английски
+# ("25 August 2026") в полностью русскоязычном интерфейсе.
+_RU_MONTHS = [
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+]
+
 def today_str(tz=None):
-    return datetime.now(tz or pytz.timezone(USER_TIMEZONE)).strftime("%d %B %Y")
+    d = datetime.now(tz or pytz.timezone(USER_TIMEZONE))
+    return f"{d.day} {_RU_MONTHS[d.month - 1]} {d.year}"
 
 # Не "навыки на день", а сама механика бота — их место в онбординге и
 # в разделе 🧠 Навыки, а не в случайной ротации наравне с ситуативными техниками.
@@ -2171,9 +2182,16 @@ def daily_prefs_kb(user):
     целиком текстом — на закреплённом сообщении это стёрло бы итог утра)."""
     be = int(user.get("beacon_enabled") or 0)
     se = int(user.get("skill_beacon_enabled") or 0)
+    # Реальный баг (14-й чекап, тот же класс, что уже чинили для "маячок"
+    # в PR #118): эти два переключателя управляют ровно теми же полями
+    # (beacon_enabled/skill_beacon_enabled), что везде подписаны "Маячок" —
+    # в ⚙️ Настройки ("Маячок: задачи"/"Маячок: навыки"), в самих сообщениях
+    # маячка ("🔔 Маячок") и в disable_notif_row. "Напоминания" тут не
+    # только рвёт эту связь, а ещё и совпадает по названию с СОВСЕМ другой
+    # функцией — ⏰ Напоминания (произвольные текстовые напоминания).
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Напоминания о задачах", callback_data="quick_toggle_beacon"),
-         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Напоминания с навыками", callback_data="quick_toggle_skill")],
+        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Маячок: задачи", callback_data="quick_toggle_beacon"),
+         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Маячок: навыки", callback_data="quick_toggle_skill")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
 
@@ -2182,7 +2200,7 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     cur = int(get_user(uid).get("beacon_enabled") or 0)
     update_user(uid, beacon_enabled=0 if cur else 1)
-    await q.answer("🔕 Напоминания о задачах выключены" if cur else "🔔 Напоминания о задачах включены")
+    await q.answer("🔕 Маячок задач выключен" if cur else "🔔 Маячок задач включён")
     try:
         await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
     except Exception:
@@ -4061,10 +4079,25 @@ def _skill_beacon_random_times(user, now, count):
     end_dt = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
     if end_dt <= start_dt:
         end_dt += timedelta(days=1)
+        # Реальный баг (14-й чекап): для окна через полночь (start > end, тот
+        # же случай, что уже поддержан в _in_beacon_hours, например 22:00-06:00)
+        # "сегодняшнее" окно всегда считалось начинающимся сегодня вечером — а
+        # если сейчас раннее утро (now в хвосте ВЧЕРАШНЕГО окна, до end),
+        # реальное открытое окно на самом деле началось ВЧЕРА вечером. Все
+        # цели получались строго в будущем (сегодня вечером и позже), и
+        # _skill_beacon_due никогда не срабатывал в хвостовые часы (00:00 до
+        # beacon_end) — тихая дыра в расписании именно для random-режима.
+        if now < start_dt:
+            start_dt -= timedelta(days=1)
+            end_dt -= timedelta(days=1)
     window = (end_dt - start_dt).total_seconds()
     if window <= 0 or count <= 0:
         return []
-    rnd = random.Random(f"{user.get('user_id')}-{now.date().isoformat()}")
+    # Сид по дате НАЧАЛА окна (а не now.date()) — иначе для окна через
+    # полночь вечерняя и утренняя половины одного и того же окна считались
+    # бы по разным датам и генерировали РАЗНЫЕ случайные цели на разных
+    # тиках одной и той же ночи.
+    rnd = random.Random(f"{user.get('user_id')}-{start_dt.date().isoformat()}")
     bucket = window / count
     return [start_dt + timedelta(seconds=i * bucket + rnd.uniform(0, bucket)) for i in range(count)]
 
@@ -4418,6 +4451,17 @@ async def add_pool_and_reply(message, uid, items):
     if isinstance(items, str):
         items = [items]
     items = [t.strip() for t in items if t and t.strip()]
+    # Реальный баг (14-й чекап): сообщение из одних пробелов/пустых строк
+    # после фильтрации давало items == [] — ничего не добавлялось в БД, но
+    # "len(items) <= 1" всё равно было истинным, и человек получал ложное
+    # "✅ Добавил в список дел." для операции, которая ничего не сделала.
+    if not items:
+        pool = get_pool_tasks(uid)
+        await message.reply_text(
+            "Не увидел текста дела — напиши ещё раз.\n\n" + task_pool_text(pool),
+            parse_mode="Markdown", reply_markup=task_pool_kb(pool)
+        )
+        return
     for text in items:
         add_pool_task(uid, text)
     pool = get_pool_tasks(uid)
@@ -4518,7 +4562,8 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     иначе отметка "выполнено" по новому тексту задачи удалила бы чужой,
     больше не связанный с ней пункт списка дел."""
     ctx.user_data.pop("awaiting_task_edit", None)
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    now_dt = datetime.now(get_user_tz(get_user(uid)))
+    today = now_dt.date().isoformat()
     morning = get_diary(uid, "morning", today)
     was_filled = bool(morning.get(key))
     morning[key] = text
@@ -4528,6 +4573,15 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     else:
         morning.pop(link_key, None)
     save_diary(uid, "morning", morning, for_date=today)
+    # Реальный баг (14-й чекап): morning_filled_at раньше выставлялся только
+    # в finish_morning (полный утренний ритуал) — send_task_beacon использует
+    # его как точку отсчёта, чтобы не стрелять сразу после того, как задачи
+    # только что заполнили. 📋 Задачи — отдельный, полноценный путь постановки
+    # задач (специально сделан для тех, кто не проходит утренний ритуал), но
+    # этот путь никогда не обновлял отметку — маячок мог тут же спросить
+    # "что делаешь?" сразу после того, как человек только что явно ответил
+    # на этот же вопрос, поставив задачу.
+    update_user(uid, morning_filled_at=now_dt.isoformat())
     if was_filled:
         # Текст задачи поменялся — старая отметка "выполнено" больше не
         # про эту задачу (иначе новая задача выглядела бы уже сделанной).
@@ -5542,7 +5596,11 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Переслать ответ администратору
     user = get_user(uid)
-    low_rating = value in ("1", "2")  # флаг низкой оценки
+    # Реальный баг (14-й чекап): проверка была скопирована с 5-балльной шкалы
+    # дня 3 (нижние 2 из 5) и применялась как есть к 0-10 NPS-шкале дня 14 —
+    # "0", самая худшая возможная оценка, в этот набор не попадала, а "1"/"2"
+    # попадали. Самый неблагополучный ответ молча не доходил до админа.
+    low_rating = value in ("0", "1", "2") if day == 14 else value in ("1", "2")
     if NOTIFY_USER_ID:
         try:
             alert = "⚠️ *НИЗКАЯ ОЦЕНКА — нужна связь!*\n\n" if low_rating else ""
@@ -5615,6 +5673,13 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг (14-й чекап, тот же класс, что уже задокументирован в
+    # clear_awaiting_flags): эта кнопка живёт в том же постоянном меню
+    # (menu_more_kb), что и 💬 Обратная связь — если её нажать вместо того,
+    # чтобы ответить на уже открытый запрос awaiting_feedback (или любой
+    # другой awaiting_*), флаг оставался висеть и молча проглатывал следующее
+    # обычное сообщение пользователя.
+    clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     await q.message.reply_text(
         personalize(
@@ -5656,6 +5721,7 @@ async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     объяснения не было. Доступ только из «О боте» — не дублируем кнопку
     в Коуче, чтобы не перегружать экран быстрой помощи."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await q.message.reply_text(
         "🔒 *А что с приватностью?*\n\n"
         "*Где что хранится.* Дневник, задачи и настройки — в закрытой базе "
@@ -5724,6 +5790,7 @@ def _subscribe_text_and_kb(user):
 
 async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     text, kb = _subscribe_text_and_kb(get_user(q.from_user.id))
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -5733,6 +5800,7 @@ async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await ctx.bot.send_invoice(
         chat_id=q.from_user.id,
         title="Подписка ADHD Buddy",
@@ -5747,6 +5815,7 @@ async def precheckout_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.pre_checkout_query.answer(ok=True)
 
 async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    clear_awaiting_flags(ctx, update)
     uid = update.effective_user.id
     user = get_user(uid)
     payment = update.message.successful_payment
@@ -6496,8 +6565,19 @@ async def weekly_report(app, uid):
 
             if e:
                 evenings_done += 1
-                done_set = set(e.get("e_tasks_done") or [])
-                tasks_done += len(done_set)
+
+            # Реальный баг (14-й чекап): tasks_done считался только из
+            # e_tasks_done — снимка, который существует ТОЛЬКО если вечерний
+            # ритуал в этот день хотя бы начинали. Живой источник "выполнено"
+            # (tasks_done, тот же что 📋 Задачи/миддей-кнопки "Сделал") —
+            # отдельный от вечера, и день, когда все задачи закрыли через
+            # 📋 Задачи, но вечерний ритуал в тот день пропустили (обычное
+            # дело), давал 0 в счётчике недельного отчёта, хотя работа была
+            # сделана. Берём объединение обоих источников, как и
+            # finish_evening/checkpoint_evening_progress.
+            live_done = set(get_diary(uid, "tasks_done", d).get("done", []))
+            evening_done = set(e.get("e_tasks_done") or [])
+            tasks_done += len(live_done | evening_done)
 
             # Энергия вечером
             en = e.get("e_energy")
