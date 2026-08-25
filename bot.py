@@ -1873,6 +1873,15 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if todolist_idx is not None and todolist_idx != skill_idx:
             kb_rows.append([InlineKeyboardButton("📋 Как вести список дел", callback_data=f"skill_{todolist_idx}")])
 
+    # Реальный фидбек (Артём): "поставил задачи вчера вечером, а сегодня их
+    # нет" — вечерний план (y_plan) до сих пор был ТОЛЬКО текстом-напоминанием
+    # в приветствии; реальный список задач дня (тот, что видят маячок,
+    # дневной чекин и коуч) им не заполнялся — нужно было заново набирать
+    # всё руками через 📋 Задачи. Даём одно нажатие, которое превращает
+    # вчерашний план в реальные задачи сегодняшнего дня.
+    if any(y_plan.values()):
+        kb_rows.append([InlineKeyboardButton("✅ Взять как задачи на сегодня", callback_data="use_yesterday_plan")])
+
     kb_rows.append([InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")])
     kb_rows.append([InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")])
     reply_markup = InlineKeyboardMarkup(kb_rows)
@@ -1932,6 +1941,41 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await q.message.reply_text(warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
     return M_EXERCISE
+
+async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"✅ Взять как задачи на сегодня" на утреннем приветствии — превращает
+    вчерашний вечерний план (get_latest_evening_plan) в реальные задачи
+    СЕГОДНЯШНЕГО дня (TASK_FIELDS: focus/b1/b2/c1/c2/c3) — те, что видят
+    маячок, дневной чекин и коуч. Раньше план вечером сохранялся только
+    как текст-напоминание в приветствии; сам список задач дня им не
+    заполнялся, и приходилось набирать всё заново руками через 📋 Задачи
+    (реальный фидбек: "поставил задачи вчера вечером, а сегодня их нет").
+    Не перезаписывает уже стоящие сегодня задачи — заполняет только
+    пустые слоты, чтобы не затереть то, что уже успели поставить вручную."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    user = get_user(uid)
+    today = datetime.now(get_user_tz(user)).date().isoformat()
+    ev = get_latest_evening_plan(uid)
+    mapping = [("e_a", "focus"), ("e_b1", "b1"), ("e_b2", "b2"), ("e_c1", "c1"), ("e_c2", "c2"), ("e_c3", "c3")]
+    morning = get_diary(uid, "morning", today)
+    filled = []
+    for plan_key, task_key in mapping:
+        val = ev.get(plan_key)
+        if val and not morning.get(task_key):
+            morning[task_key] = val
+            filled.append(task_key)
+    if not filled:
+        await q.message.reply_text(
+            "Переносить нечего — либо вчерашнего плана нет, либо на сегодня уже стоят все эти задачи."
+        )
+        return
+    save_diary(uid, "morning", morning, for_date=today)
+    done_data = get_diary(uid, "tasks_done", today)
+    done_set = set(done_data.get("done", []))
+    out_text, kb = _tasks_text_and_kb(morning, done_set, user["gender"])
+    await q.message.reply_text("✅ Взял вчерашний план как задачи на сегодня.\n\n" + out_text, parse_mode="Markdown", reply_markup=kb)
 
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -7359,6 +7403,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(reroll_skill_callback, pattern="^reroll_skill$"))
+    app.add_handler(CallbackQueryHandler(use_yesterday_plan_callback, pattern="^use_yesterday_plan$"))
     app.add_handler(CallbackQueryHandler(show_box_breathing, pattern="^skill_box_breathing$"))
     app.add_handler(CallbackQueryHandler(show_streak, pattern="^go_streak$"))
     app.add_handler(CallbackQueryHandler(why_callback, pattern=r"^why_"))
