@@ -5764,8 +5764,8 @@ ACCESS_GATE_EXEMPT_CALLBACKS = {
 ACCESS_GATE_EXEMPT_COMMANDS = {"start", "subscribe", "promo", "admin", "newpromo"}
 
 async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Group=-2 — перед вообще всеми остальными обработчиками. Пока
-    ACCESS_GATE_ENABLED=False ничего не делает, полностью прозрачен."""
+    """Group=-2 — перед вообще всеми остальными обработчиками. Если
+    ACCESS_GATE_ENABLED=False, ничего не делает, полностью прозрачен."""
     if not ACCESS_GATE_ENABLED:
         return
     user_obj = update.effective_user
@@ -5798,6 +5798,16 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # достижения из E_ACH молча съедает следующее сообщение уже после
     # оплаты, вместо того чтобы дойти до нужного экрана).
     clear_awaiting_flags(ctx, update)
+    # Реальный баг: если блокируем нажатие инлайн-кнопки, а не отвечаем на
+    # callback_query — Telegram-клиент оставляет кнопку в состоянии
+    # "загрузка" (спиннер) до собственного таймаута, потому что обработчик,
+    # которому принадлежал этот callback_data, так и не вызвался (мы
+    # остановили цепочку раньше через ApplicationHandlerStop).
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
     paywall_text = (
         "⌛ *Пробный период закончился*\n\n"
         f"Месяц подписки — {STARS_PRICE_MONTHLY} ⭐️ Stars — примерно как одна чашка кофе."
@@ -6685,7 +6695,18 @@ async def check_notifications(app):
                 except Exception:
                     pass
 
-                # Маячок — два независимых блока: задачи и навыки
+                # Маячок — два независимых блока: задачи и навыки. user тут
+                # снапшот с начала тика — если только что выше в этом же
+                # тике отправился дневной чекин, midday_sent_date уже
+                # записан в БД, но не в этом старом словаре. send_task_beacon
+                # сверяет именно midday_sent_date для своего анти-дубль
+                # guard'а ("не дублируем маячок в течение получаса после
+                # дневного чекина") — со старым user guard молчаливо не
+                # срабатывал именно в тот единственный тик, когда дневной
+                # чекин реально только что ушёл, и маячок дублировал тот же
+                # вопрос секундами позже (тот же класс бага, что уже чинили
+                # для resume_check_due). Перечитываем свежим из БД.
+                user = get_user(uid)
                 await send_task_beacon(app, user)
                 await send_skill_beacon(app, user)
 
