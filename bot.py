@@ -726,13 +726,26 @@ def save_diary(uid, block, data, for_date=None):
               (uid, d, block, json.dumps(data, ensure_ascii=False)))
     conn.commit(); conn.close()
 
-def has_any_diary_ever(uid):
-    """Заполнял(а) ли пользователь дневник хоть раз — используется, чтобы не
+def has_any_evening_diary_ever(uid):
+    """Закрывал(а) ли пользователь вечер хоть раз — используется, чтобы не
     показывать в самый первый вечерний прогон чек-лист техник (SELFCARE_ITEMS),
-    которые новичок ещё не видел и не понимает."""
+    которые новичок ещё не видел и не понимает.
+
+    Реальный баг (17-й чекап): раньше проверялся дневник ЛЮБОГО типа
+    (has_any_diary_ever, "SELECT 1 FROM diary ... LIMIT 1" без фильтра по
+    block) — а finish_morning сохраняет запись "morning" сразу же, как
+    только утренний ритуал завершён, даже в первый же день. Для САМОГО
+    обычного пути "сначала утро, потом вечер в тот же день" (типичный
+    первый день любого нового пользователя) эта проверка была уже true к
+    моменту чек-листа самопомощи — ветка "пропустить для новичка" ни разу
+    не срабатывала для тех, кто и должен был её увидеть. Фильтруем именно
+    по block="evening" — эта запись сохраняется впервые только в конце
+    самого текущего вечера (finish_evening/checkpoint_evening_progress),
+    так что на момент проверки (гораздо раньше в том же ритуале) её ещё
+    объективно нет для настоящего новичка."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT 1 FROM diary WHERE user_id=? LIMIT 1", (uid,))
+    c.execute("SELECT 1 FROM diary WHERE user_id=? AND block='evening' LIMIT 1", (uid,))
     row = c.fetchone()
     conn.close()
     return row is not None
@@ -1447,7 +1460,12 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Ты уже проходил(а) тренинг навыков для СДВГ (ДБТ или похожую программу) — "
         "или пока не сталкивался(-лась) с этим?",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(g(gender, "Да, проходил — сразу к делу", "Да, проходила — сразу к делу"), callback_data="ob_trained_yes")],
+            # Реальный баг (17-й чекап): g() рассчитана на одно слово — для
+            # gender="N" ("Другое") она приклеивала "(а)" в конец ВСЕЙ фразы
+            # ("...сразу к делу(а)"), а не к глаголу. personalize() — тот
+            # инструмент, который для этого и сделан (текст с плейсхолдером
+            # "(а)" прямо внутри слова, N оставляет как есть).
+            [InlineKeyboardButton(personalize("Да, проходил(а) — сразу к делу", gender), callback_data="ob_trained_yes")],
             [InlineKeyboardButton("Нет, хочу разобраться", callback_data="ob_trained_no")],
         ])
     )
@@ -1826,11 +1844,20 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "a":  ev.get("e_a", ""),  "b1": ev.get("e_b1", ""), "b2": ev.get("e_b2", ""),
         "c1": ev.get("e_c1", ""), "c2": ev.get("e_c2", ""), "c3": ev.get("e_c3", ""),
     }
+    # Реальный баг (17-й чекап, прямой аналог уже пофикшенного в
+    # finish_evening — "C2/C3 тут никогда не выводились"): здесь баг был ещё
+    # хуже — весь блок гасился, если задачу A вечером явно пропустили
+    # (skip_e_a), даже если B1/B2/C1-C3 реально поставили. Показываем блок,
+    # если есть ХОТЬ ОДНО поле, и перечисляем все шесть, а не только A/B1/B2.
     plans_text = ""
-    if y_plan["a"]:
-        plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {md_escape(y_plan['a'])}"
+    if any(y_plan.values()):
+        plans_text = "\n\n⭐ Помни — сегодня тебе важно:"
+        if y_plan["a"]:  plans_text += f"\n🅰️ {md_escape(y_plan['a'])}"
         if y_plan["b1"]: plans_text += f"\n🅱️ {md_escape(y_plan['b1'])}"
         if y_plan["b2"]: plans_text += f"\n🅱️ {md_escape(y_plan['b2'])}"
+        if y_plan["c1"]: plans_text += f"\n🅲 {md_escape(y_plan['c1'])}"
+        if y_plan["c2"]: plans_text += f"\n🅲 {md_escape(y_plan['c2'])}"
+        if y_plan["c3"]: plans_text += f"\n🅲 {md_escape(y_plan['c3'])}"
 
     # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
     # то, что человек сам решил перенести на сегодня вечером; здесь же —
@@ -2232,7 +2259,10 @@ async def finish_morning(message, uid, ctx):
             f"{tasks_text}"
             f"{ai_msg}"
             f"{pin_note}\n\n"
-            f"{g(user['gender'], 'Вперёд', 'Вперёд')}, {md_escape(user['name'])}! 💪",
+            # Реальный баг (17-й чекап): "Вперёд" не склоняется по роду —
+            # g() с одинаковыми male/female всё равно приклеивала "(а)" для
+            # gender="N" ("Другое"), давая бессмысленное "Вперёд(а)".
+            f"Вперёд, {md_escape(user['name'])}! 💪",
             parse_mode="Markdown",
             reply_markup=daily_prefs_kb(user)
         )
@@ -2242,7 +2272,7 @@ async def finish_morning(message, uid, ctx):
         # завершиться штатно, а не зависнуть в последнем ConversationHandler-состоянии.
         print(f"Ошибка отправки итога утра uid={uid}: {e}")
         sent = await message.reply_text(
-            f"✅ Утро записано! {g(user['gender'], 'Вперёд', 'Вперёд')}, {user['name']}! 💪",
+            f"✅ Утро записано! Вперёд, {user['name']}! 💪",
             reply_markup=menu_button_kb()
         )
 
@@ -2742,15 +2772,15 @@ async def advance_evening(ctx, message, gender, uid, from_key=None):
     """Переходит к следующему шагу вечернего ритуала после from_key (или с
     самого начала, если from_key=None) — см. advance_morning, тот же принцип.
     Чек-лист техник (e_selfcare) дополнительно пропускается для тех, кто
-    закрывает вечер первый раз в жизни (has_any_diary_ever) — те же техники,
-    что и в чек-листе выше, новичку ещё незнакомы."""
+    закрывает вечер первый раз в жизни (has_any_evening_diary_ever) — те же
+    техники, что и в чек-листе выше, новичку ещё незнакомы."""
     user = get_user(uid)
     start_idx = 0
     if from_key is not None:
         start_idx = next(i for i, (k, _, _) in enumerate(RESUME_FIELDS_EVENING) if k == from_key) + 1
     for key, state, ask_fn in RESUME_FIELDS_EVENING[start_idx:]:
         toggle_name = {v: k for k, v in _TOGGLE_TO_RESUME_KEY.items()}.get(key, key)
-        if key == "e_selfcare_done" and not has_any_diary_ever(uid):
+        if key == "e_selfcare_done" and not has_any_evening_diary_ever(uid):
             ctx.user_data[key] = True
             continue
         if is_field_disabled(user, toggle_name):
@@ -3484,6 +3514,7 @@ async def toggle_streak_visibility(update: Update, ctx: ContextTypes.DEFAULT_TYP
     его отовсюду — из меню и итоговых сообщений — а не просто разрешаем
     не смотреть: сам факт присутствия уже ощущается как давление."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     new_val = 0 if int(user.get("streak_hidden") or 0) else 1
@@ -3506,6 +3537,7 @@ def _edit_reports_kb(user):
 
 async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
     await q.message.reply_text(
         "🎛 *Редактировать отчёты*\n\n"
@@ -3518,6 +3550,7 @@ async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("toggle_field_", "")
     user = get_user(uid)
@@ -3534,6 +3567,7 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
     """Кнопка «Отключить этот вопрос» в подсказке после нескольких пропусков
     подряд (см. maybe_send_skip_nudge)."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("quickdisable_", "")
     user = get_user(uid)
@@ -3547,6 +3581,7 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
 
 async def dismiss_nudge_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await q.message.edit_text("Окей, продолжаю спрашивать как раньше.")
 
 def _beacon_types_kb(user):
@@ -3560,6 +3595,7 @@ def _beacon_types_kb(user):
 
 async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
     await q.message.reply_text(
         "🎯 *Типы маячка*\n\n"
@@ -3572,6 +3608,7 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("toggle_beacontype_", "")
     user = get_user(uid)
@@ -3635,6 +3672,7 @@ async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     new_val = 0 if user.get("notif_enabled", 0) else 1
@@ -3658,6 +3696,7 @@ async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Включить/выключить конкретный блок уведомлений (утро/день/вечер)."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     block = q.data.replace("toggle_", "")  # morning / midday / evening
     col = f"notif_{block}_on"
@@ -3673,6 +3712,7 @@ async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("beacon_enabled") or 0)
@@ -3685,6 +3725,7 @@ async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     interval = int(q.data.split("_")[2])
     update_user(uid, beacon_interval=interval)
@@ -3698,6 +3739,7 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Вкл/выкл напоминаний с навыками — независимо от напоминаний по
     задачам (toggle_beacon), см. задачу «разделить настройки маячка»."""
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("skill_beacon_enabled") or 0)
@@ -3710,6 +3752,7 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     mode = "random" if q.data == "skill_mode_random" else "interval"
     update_user(uid, skill_beacon_mode=mode)
@@ -3721,6 +3764,7 @@ async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     minutes = int(q.data.replace("skill_int_", ""))
     update_user(uid, skill_beacon_interval=minutes)
@@ -3732,6 +3776,7 @@ async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TY
 
 async def set_skill_beacon_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     count = int(q.data.replace("skill_count_", ""))
     update_user(uid, skill_beacon_daily_count=count)
@@ -3782,6 +3827,7 @@ def disable_notif_row(kind):
 
 async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     kind = q.data.replace("disable_notif_", "")
     target = DISABLE_NOTIF_TARGETS.get(kind)
@@ -4301,6 +4347,7 @@ def pool_suggestions_kb(key, pool, offset=0, limit=3):
 
 async def pool_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     key, offset_s = q.data[len("poolmore_"):].rsplit("_", 1)
     pool = get_pool_tasks(q.from_user.id)
     await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
@@ -5058,8 +5105,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # выше: send_work_start_reminder сравнивает это лексикографически.
             h, m = map(int, text.split(":"))
             text = f"{h:02d}:{m:02d}"
-            today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-            update_user(uid, work_start_time=text, work_start_date=today, work_start_sent_date="")
+            user_tz = get_user_tz(get_user(uid))
+            now_tz = datetime.now(user_tz)
+            today = now_tz.date().isoformat()
+            # Реальный баг (17-й чекап, тот же класс, что уже чинили для
+            # notif_morning/midday/evening чуть выше): если введённое время
+            # уже прошло сегодня (например ответили на "во сколько начинаешь"
+            # только в 14:00, а привычно пишут "09:00"), check_notifications
+            # присылал бы "Пора начинать!" в течение ближайшей минуты — сразу
+            # после того как человек только что ответил на этот же вопрос.
+            work_start_sent_date = today if (h, m) <= (now_tz.hour, now_tz.minute) else ""
+            update_user(uid, work_start_time=text, work_start_date=today, work_start_sent_date=work_start_sent_date)
             await update.message.reply_text(
                 f"🚪 Хорошо — в *{text}* пришлю напоминание с задачами.",
                 parse_mode="Markdown", reply_markup=menu_button_kb()
@@ -5604,6 +5660,7 @@ async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    clear_awaiting_flags(ctx, update)
     text, kb = _subscribe_text_and_kb(get_user(update.effective_user.id))
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -5877,6 +5934,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── BUDDY ──────────────────────────────────────────────────────────────────
 async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     buddy = user.get("buddy_name","")
@@ -6606,10 +6664,12 @@ GUIDE_SECTIONS = {
 
 async def guide_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     await send_guide_section(q.message, "what")
 
 async def guide_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     section_id = q.data.replace("guide_", "")
     await send_guide_section(q.message, section_id)
 
@@ -6940,8 +7000,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # /admin съезжает на день (реальный класс бага, уже чинили в
         # платежах/access_gate).
         admin_today = datetime.now(get_user_tz(get_user(uid))).date()
-        week_ago  = (admin_today - timedelta(days=7)).isoformat()
-        month_ago = (admin_today - timedelta(days=30)).isoformat()
+        # Реальный баг (17-й чекап, тот же класс, что уже чинили для
+        # weekly_report): "today - 7" вместе с ">=" считает 8 календарных
+        # дат (сегодня и 7 дней до него), хотя подпись говорит "за 7 дней".
+        # today - 6 даёт ровно 7 дат, включая сегодня (в отличие от
+        # weekly_report, эта метрика — не отчёт по уже закрытой неделе, а
+        # "активен за последние N дней прямо сейчас", так что сегодняшний
+        # день здесь уместно включать).
+        week_ago  = (admin_today - timedelta(days=6)).isoformat()
+        month_ago = (admin_today - timedelta(days=29)).isoformat()
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
 
