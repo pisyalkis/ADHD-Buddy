@@ -285,6 +285,16 @@ PROBLEM_TO_SKILLS = {
     "memory":      ["Список дел", "Бумажка гениальных мыслей"],
     "bedstuck":    ["Активация", "Холодная вода", "Готовность и полуулыбка"],
     "emotions":    ["Бросить якорь", "Аптечка самоуспокоения", "заземления", "Дыхание", "Холодная вода"],
+    # Реальный баг (19-й чекап): группа "Отношение к себе" (self_esteem/
+    # self_talk/unfinished_shame/memory_yesterday) добавлена в PROBLEM_ITEMS
+    # позже остальных — но PROBLEM_TO_SKILLS для неё не завели. Пользователь,
+    # отметивший на онбординге ТОЛЬКО эти пункты, получал пустой keywords и
+    # молча откатывался на неперсонализированную ротацию по всем навыкам —
+    # именно то, что эта группа вопросов должна была предотвращать.
+    "self_esteem":      ["Подкрепление", "Готовность и полуулыбка"],
+    "self_talk":        ["Подкрепление", "Готовность и полуулыбка"],
+    "unfinished_shame": ["Подкрепление", "Приоритеты"],
+    "memory_yesterday": ["Бумажка гениальных мыслей", "Список дел"],
 }
 
 PROBLEM_HELP_TEXT = {
@@ -1822,6 +1832,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Показать вчерашние планы, если есть (только для приветственного текста —
     # постановка задач A/B/C сейчас идёт отдельно через 📋 Задачи/пул).
     ev = get_latest_evening_plan(uid)
+    last_energy = int(ev.get("e_energy", 0) or 0)
+    low_energy = last_energy in (1, 2)
     y_plan = {
         "a":  ev.get("e_a", ""),  "b1": ev.get("e_b1", ""), "b2": ev.get("e_b2", ""),
         "c1": ev.get("e_c1", ""), "c2": ev.get("e_c2", ""), "c3": ev.get("e_c3", ""),
@@ -1829,8 +1841,14 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     plans_text = ""
     if y_plan["a"]:
         plans_text = f"\n\n⭐ Помни — сегодня тебе важно:\n🅰️ {md_escape(y_plan['a'])}"
-        if y_plan["b1"]: plans_text += f"\n🅱️ {md_escape(y_plan['b1'])}"
-        if y_plan["b2"]: plans_text += f"\n🅱️ {md_escape(y_plan['b2'])}"
+        # Реальный баг (19-й чекап, тот же класс, что уже чинили в
+        # morning_notification): ниже при низкой энергии текст прямо говорит
+        # "только одна задача A" — но сюда безусловно попадали и B1/B2, если
+        # они были поставлены. Противоречиво: список из 3 задач, а следом
+        # "достаточно одной".
+        if not low_energy:
+            if y_plan["b1"]: plans_text += f"\n🅱️ {md_escape(y_plan['b1'])}"
+            if y_plan["b2"]: plans_text += f"\n🅱️ {md_escape(y_plan['b2'])}"
 
     # Что вчера по факту осталось не сделано (не путать с y_plan выше — это
     # то, что человек сам решил перенести на сегодня вечером; здесь же —
@@ -1860,9 +1878,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(kb_rows)
 
     # Адаптивное приветствие по уровню энергии вечера
-    last_energy = int(ev.get("e_energy", 0) or 0)
     energy_note = ""
-    if last_energy in (1, 2):
+    if low_energy:
         energy_note = (
             f"\n\n🔋 *Вчера был тяжёлый день* — ты {g(gender, 'отметил', 'отметила')} низкий уровень энергии.\n"
             "Сегодня можно взять темп помедленнее. Главное — одна задача A."
@@ -2130,8 +2147,16 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
-    cur = int(get_user(uid).get("skill_beacon_enabled") or 0)
-    update_user(uid, skill_beacon_enabled=0 if cur else 1)
+    user = get_user(uid)
+    cur = int(user.get("skill_beacon_enabled") or 0)
+    kwargs = {"skill_beacon_enabled": 0 if cur else 1}
+    # Реальный баг (19-й чекап): beacon_types пуст по умолчанию и никогда не
+    # заполняется автоматически — включение без явного похода в "🎯 Типы
+    # маячка" давало ложное "включено", а next_beacon_slot/_beacon_rotation_pool
+    # молча возвращали None навсегда, и напоминания не приходили вообще.
+    if not cur and not (user.get("beacon_types") or "").strip():
+        kwargs["beacon_types"] = ",".join(k for k, _ in BEACON_TECHNIQUE_TYPES)
+    update_user(uid, **kwargs)
     await q.answer("🔕 Напоминания с навыками выключены" if cur else "🧠 Напоминания с навыками включены")
     try:
         await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
@@ -3701,7 +3726,12 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("skill_beacon_enabled") or 0)
-    update_user(uid, skill_beacon_enabled=0 if cur else 1)
+    kwargs = {"skill_beacon_enabled": 0 if cur else 1}
+    # Реальный баг (19-й чекап, тот же класс, что и в quick_toggle_skill):
+    # включение с пустым beacon_types оставляет маячок навсегда немым.
+    if not cur and not (user.get("beacon_types") or "").strip():
+        kwargs["beacon_types"] = ",".join(k for k, _ in BEACON_TECHNIQUE_TYPES)
+    update_user(uid, **kwargs)
     text, kb = _settings_text_and_kb(get_user(uid))
     try:
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -4368,9 +4398,18 @@ async def handle_delete_reminder_intent(message, uid, query):
         text, kb = reminders_text_and_kb(remaining)
         await message.reply_text(f"✅ Удалил: {md_escape(target['text'])}\n\n" + text, parse_mode="Markdown", reply_markup=kb)
         return
-    candidates = (matches or items)[:2]
+    # Реальный баг (19-й чекап): при НУЛЕВЫХ совпадениях candidates молча
+    # откатывался на первые два напоминания из всего списка (никак не
+    # связанные с запросом) — но текст всё равно уверял "вот похожие",
+    # вводя в заблуждение.
+    if matches:
+        candidates = matches[:2]
+        prompt = "Не понял, какое именно — вот похожие, выбери 🗑:\n\n"
+    else:
+        candidates = items[:2]
+        prompt = "Не нашёл похожих — вот что есть, выбери 🗑:\n\n"
     text, kb = reminders_text_and_kb(candidates)
-    await message.reply_text("Не понял, какое именно — вот похожие, выбери 🗑:\n\n" + text, parse_mode="Markdown", reply_markup=kb)
+    await message.reply_text(prompt + text, parse_mode="Markdown", reply_markup=kb)
 
 async def handle_delete_pool_intent(message, uid, query):
     """Удаление дела из списка дел по свободной фразе — та же логика
@@ -5466,9 +5505,16 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         update_user(uid, research_awaiting=f"3_open:{open_q}")
         await q.message.reply_text(followup, parse_mode="Markdown")
     elif day == 7:
+        # Реальный баг (19-й чекап): первое сообщение читалось как финал
+        # ("Продолжай — впереди ещё много интересного") и несло кнопку
+        # "◀️ Меню" — а следом ЕЩЁ шёл открытый вопрос с research_awaiting.
+        # Кто угодно, кто интуитивно тапнул "Меню" вместо того чтобы писать
+        # ответ, попадал в go_menu → clear_awaiting_flags → research_awaiting
+        # молча сбрасывался в 0, и открытый вопрос дня 7 терялся навсегда
+        # (в отличие от веток day==3/14, которые не предлагают уйти до
+        # открытого вопроса). Убрали кнопку "Меню" из первого сообщения.
         await q.message.reply_text(
-            "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.",
-            reply_markup=menu_button_kb()
+            "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного."
         )
         update_user(uid, research_awaiting=f"7_open:{RESEARCH_OPEN_Q_DAY7}")
         await q.message.reply_text(
@@ -5717,7 +5763,9 @@ async def blogger_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✅ Личный промокод для *{md_escape(label)}*: `{code}`\n\n"
         f"Даёт +{days} дн. пробного периода, активаций без ограничения.\n\n"
         f"Что отправить блогеру:\n"
-        f"«Промокод {code} — {days} дней бесплатного доступа к ADHD Buddy. Ввести: /promo {code}»\n\n"
+        # Реальный баг (19-й чекап): "дней" было захардкожено — а days задаёт
+        # админ произвольным аргументом /blogger, не только дефолтным 14.
+        f"«Промокод {code} — {days} {'день' if days % 10 == 1 and days % 100 != 11 else 'дня' if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14) else 'дней'} бесплатного доступа к ADHD Buddy. Ввести: /promo {code}»\n\n"
         f"Смотреть статистику по всем кодам: /promocodes",
         parse_mode="Markdown"
     )
@@ -5772,10 +5820,14 @@ async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def _grant_and_notify(ctx, target_uid, days):
     grant_access_days(target_uid, days)
+    # Реальный баг (19-й чекап): "дней" было захардкожено — а /grant USER_ID
+    # days принимает от админа произвольное число, не только дефолтные 30
+    # (30 случайно склоняется верно, но, например, /grant 123 21 — уже нет).
+    _days_pl = "день" if days % 10 == 1 and days % 100 != 11 else "дня" if days % 10 in (2, 3, 4) and days % 100 not in (12, 13, 14) else "дней"
     try:
         await ctx.bot.send_message(
             target_uid,
-            f"🎁 Тебе продлили доступ на {days} дней — спасибо, что помогаешь боту становиться лучше!"
+            f"🎁 Тебе продлили доступ на {days} {_days_pl} — спасибо, что помогаешь боту становиться лучше!"
         )
     except Exception as e:
         print(f"Не удалось уведомить {target_uid} о выданном доступе: {e}")
@@ -5995,7 +6047,16 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = md_escape(user["name"])
     gender = user["gender"]
     today, morning, done_set = get_today_context(user)
-    focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
+    # Реальный баг (19-й чекап): next_undone_task возвращает None и когда
+    # все задачи выполнены, И когда задач вообще не было поставлено —
+    # общий фолбэк-текст ("все задачи дня уже сделаны") неверно утверждал
+    # первое во втором случае. Внутри "😬 Прокрастинирую" (mid_nostart и
+    # т.п.) это звучит абсурдно — "прокрастинирую" именно потому что не
+    # знаю, что делать, а бот отвечает "всё уже сделано, отдыхай".
+    if any(morning.get(k) for k, _ in TASK_FIELDS):
+        focus = next_undone_task(morning, done_set) or "все задачи дня уже сделаны — можно просто отдыхать 🎉"
+    else:
+        focus = "задачи на сегодня ещё не поставлены — загляни в 📋 Задачи"
     action = q.data
 
     if action in MIDDAY_LABELS:
@@ -6727,9 +6788,21 @@ async def check_notifications(app):
                     # (00:30), а now.strftime("%H:%M") этого не знает: сравнение
                     # "08:00" >= "00:30" истинно почти весь день, и напоминание
                     # срывается на много часов раньше нужного (реальный баг).
+                    # Реальный баг (19-й чекап): finish_morning ВСЕГДА пишет
+                    # непустую строку дневника (через _merged_task_fields —
+                    # ключи focus/b1/b2/c1/c2/c3 присутствуют, даже если все
+                    # значения "") — уже после разминки/писем/благодарности,
+                    # даже если человек так и не дошёл до постановки задач
+                    # (например явно отказался в "📋 Поставить задачи?").
+                    # "not get_diary(...)" проверяло сам факт наличия строки,
+                    # а не наличие хоть одной реальной задачи — из-за чего
+                    # это напоминание никогда не срабатывало именно для тех,
+                    # кому оно нужнее всего: кто начал утро, но не поставил
+                    # ни одной задачи.
+                    morning_for_reminder = get_diary(uid, "morning", day_key)
                     if (notif_master_on and now_dt >= reminder_time and int(user.get("notif_morning_on") or 1)
                             and user.get("morning_reminder_sent_date") != day_key
-                            and not get_diary(uid, "morning", day_key)
+                            and not any(morning_for_reminder.get(k) for k, _ in TASK_FIELDS)
                             and not morning_conv_active):
                         # Как и остальные уведомления в этом тике — помечаем
                         # "отправлено" только после реального успеха, а не до
