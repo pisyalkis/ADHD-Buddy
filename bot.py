@@ -3103,13 +3103,27 @@ EVENING_PLAN_STEPS = {
     "e_c3": ("🅲 *C3:*", "skip_e_c_all", "Пропустить задачи C →"),
 }
 
-def evening_plan_kb(key, uid, offset=0, limit=3):
+def evening_plan_kb(key, uid, offset=0, limit=8):
+    """Тот же экран выбора готового дела, что и pool_suggestions_kb (📋
+    Задачи), только для постановки плана на завтра — реализован отдельно,
+    поэтому фикс постраничной навигации (лимит побольше + счётчик ◀️ N/M ▶️
+    вместо бесконечного "Показать ещё" без возврата назад) сюда не попал
+    вместе с pool_suggestions_kb. Тот же принцип здесь."""
     _, skip_cb, skip_label = EVENING_PLAN_STEPS[key]
     pool = get_pool_tasks(uid)
+    total = len(pool)
     chunk = pool[offset:offset + limit]
     rows = [[InlineKeyboardButton(item["text"][:40], callback_data=f"eplanuse_{key}_{item['id']}")] for item in chunk]
-    if offset + limit < len(pool):
-        rows.append([InlineKeyboardButton("Показать ещё", callback_data=f"eplanmore_{key}_{offset + limit}")])
+    total_pages = max(1, (total + limit - 1) // limit)
+    if total_pages > 1:
+        current_page = offset // limit + 1
+        nav_row = []
+        if offset > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"eplanmore_{key}_{max(0, offset - limit)}"))
+        nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="noop"))
+        if offset + limit < total:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"eplanmore_{key}_{offset + limit}"))
+        rows.append(nav_row)
     rows.append([InlineKeyboardButton(skip_label, callback_data=skip_cb)])
     # "Поставлю цели завтра" — только у задачи A, единственного шага, откуда
     # можно пропустить весь блок A/B1/B2/C1/C2/C3 одним тапом. Раньше это
