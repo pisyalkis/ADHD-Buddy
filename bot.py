@@ -3901,107 +3901,146 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
 # ── SETTINGS: NOTIFICATION TIMES ───────────────────────────────────────────
-def _settings_text_and_kb(user):
-    enabled  = int(user.get("notif_enabled") or 0)
-    m  = user.get("notif_morning", "09:00")
-    d  = user.get("notif_midday",  "13:00")
-    e  = user.get("notif_evening", "21:00")
-    mo = int(user.get("notif_morning_on") or 1)
-    do = int(user.get("notif_midday_on")  or 1)
-    eo = int(user.get("notif_evening_on") or 1)
-    be = int(user.get("beacon_enabled")   or 0)
-    bi = int(user.get("beacon_interval")  or 2)
-    bs = user.get("beacon_start") or "09:00"
-    bfin = user.get("beacon_end") or "21:00"
-    se = int(user.get("skill_beacon_enabled") or 0)
-    smode = user.get("skill_beacon_mode") or "interval"
-    sint = int(user.get("skill_beacon_interval") or 60)
-    scount = int(user.get("skill_beacon_daily_count") or 3)
-    sh = int(user.get("streak_hidden")    or 0)
+SETTINGS_TABS = ("notifications", "profile")
+SETTINGS_TAB_LABELS = {"notifications": "🔔 Уведомления", "profile": "👤 Профиль"}
 
-    status = "✅ включены" if enabled else "❌ выключены"
-    beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
-    if smode == "random":
-        skill_label = f"{scount} раз(а) в день, в случайные моменты"
-    else:
-        skill_label = "каждые 30 мин" if sint == 30 else ("каждый час" if sint == 60 else f"каждые {sint // 60} ч")
-    tz_name = user.get("timezone") or USER_TIMEZONE
-    city_name = md_escape(user.get("city") or "")
-    tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
-    text = (
-        "⚙️ *Настройки уведомлений*\n\n"
-        f"Уведомления: *{status}*\n\n"
-        f"{'✅' if mo else '🔕'} Утро: *{m}*\n"
-        f"{'✅' if do else '🔕'} День: *{d}*\n"
-        f"{'✅' if eo else '🔕'} Вечер: *{e}*\n"
-        # Симметрично пояснению у маячка ниже — раньше был объяснён только
-        # маячок, и эта асимметрия сама по себе усиливала путаницу между
-        # двумя разными механизмами (реальный отзыв: путала их даже через
-        # неделю использования).
-        "_Основной ритуал дня — по расписанию, один раз_\n\n"
-        f"🌍 Таймзона: *{tz_display}*\n\n"
-        "*🔔 Маячок*\n"
-        f"{'✅' if be else '🔕'} Напоминания по задачам: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
-        "_Периодически спрашивает «что сейчас делаешь?» по задачам дня_\n\n"
-        f"{'✅' if se else '🔕'} Напоминания с навыками: *{'вкл, ' + skill_label if se else 'выкл'}*\n"
-        "_Периодически предлагает короткую технику (СТОП/Дыхание/...)_\n"
-        + ("🕐 Рабочие часы маячка: *{}–{}*\n".format(bs, bfin) if (be or se) else "")
-        + "\n_Нажми на время чтобы изменить, на иконку — включить/выключить_"
-    )
-    beacon_interval_row = [
-        InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
-        InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
-        InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
-    ]
-    beacon_hours_row = [
-        InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
-        InlineKeyboardButton(f"🌇 До {bfin}", callback_data="set_beacon_end"),
-    ]
-    skill_mode_row = [
-        InlineKeyboardButton(f"{'→' if smode=='interval' else ''} Интервал", callback_data="skill_mode_interval"),
-        InlineKeyboardButton(f"{'→' if smode=='random' else ''} Рандом N/день", callback_data="skill_mode_random"),
-    ]
-    skill_interval_row = [
-        InlineKeyboardButton(f"{'→' if sint==30 else ''} 30 мин", callback_data="skill_int_30"),
-        InlineKeyboardButton(f"{'→' if sint==60 else ''} 1 ч", callback_data="skill_int_60"),
-        InlineKeyboardButton(f"{'→' if sint==120 else ''} 2 ч", callback_data="skill_int_120"),
-    ]
-    skill_count_row = [
-        InlineKeyboardButton(f"{'→' if scount==n else ''} {n}", callback_data=f"skill_count_{n}")
-        for n in (1, 2, 3, 4, 5)
-    ]
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
-         InlineKeyboardButton(f"☀️ {m}", callback_data="set_morning")],
-        [InlineKeyboardButton(f"{'✅' if do else '🔕'} День", callback_data="toggle_midday"),
-         InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
-        [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
-         InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
-        [InlineKeyboardButton(
-            f"{'✅' if be else '🔕'} Маячок: задачи", callback_data="toggle_beacon"),
-         *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
-        *([ beacon_interval_row ] if be else []),
-        [InlineKeyboardButton(
-            f"{'✅' if se else '🔕'} Маячок: навыки", callback_data="toggle_skill_beacon")],
-        *([ skill_mode_row ] if se else []),
-        *([ skill_interval_row ] if (se and smode == "interval") else []),
-        *([ skill_count_row ] if (se and smode == "random") else []),
-        *([[InlineKeyboardButton("🎯 Типы маячка", callback_data="beacon_types_menu")]] if se else []),
-        *([ beacon_hours_row ] if (be or se) else []),
-        [InlineKeyboardButton(
-            "🔕 Выключить все" if enabled else "🔔 Включить все",
-            callback_data="toggle_notif"
-        )],
-        [InlineKeyboardButton("✏️ Изменить имя", callback_data="set_name")],
-        [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
-        [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
-        [InlineKeyboardButton(
-            "🔥 Стрик: скрыт — показать" if sh else "🔥 Стрик: показывается — скрыть",
-            callback_data="toggle_streak_visibility"
-        )],
-        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-    ])
-    return text, kb
+def _settings_tab_row(tab):
+    row = []
+    for key in SETTINGS_TABS:
+        label = SETTINGS_TAB_LABELS[key]
+        if key == tab:
+            row.append(InlineKeyboardButton(f"• {label} •", callback_data="noop"))
+        else:
+            row.append(InlineKeyboardButton(label, callback_data=f"go_settings_tab_{key}"))
+    return row
+
+def _settings_text_and_kb(user, tab="notifications"):
+    """Реальный запрос: экран ⚙️ Общие был одной длинной свалкой (утро/день/
+    вечер, оба маячка, имя, город, редактор отчётов, стрик — всё в одном
+    сообщении). Разложено на две вкладки той же механикой, что и вкладки
+    главного меню (см. menu_tab_kb/go_tab): 'notifications' — всё, что
+    касается расписания уведомлений и маячка; 'profile' — имя/город/отчёты/
+    стрик. Переключение между ними редактирует то же сообщение."""
+    if tab not in SETTINGS_TABS:
+        tab = "notifications"
+    sh = int(user.get("streak_hidden") or 0)
+
+    if tab == "notifications":
+        enabled  = int(user.get("notif_enabled") or 0)
+        m  = user.get("notif_morning", "09:00")
+        d  = user.get("notif_midday",  "13:00")
+        e  = user.get("notif_evening", "21:00")
+        mo = int(user.get("notif_morning_on") or 1)
+        do = int(user.get("notif_midday_on")  or 1)
+        eo = int(user.get("notif_evening_on") or 1)
+        be = int(user.get("beacon_enabled")   or 0)
+        bi = int(user.get("beacon_interval")  or 2)
+        bs = user.get("beacon_start") or "09:00"
+        bfin = user.get("beacon_end") or "21:00"
+        se = int(user.get("skill_beacon_enabled") or 0)
+        smode = user.get("skill_beacon_mode") or "interval"
+        sint = int(user.get("skill_beacon_interval") or 60)
+        scount = int(user.get("skill_beacon_daily_count") or 3)
+
+        status = "✅ включены" if enabled else "❌ выключены"
+        beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
+        if smode == "random":
+            skill_label = f"{scount} раз(а) в день, в случайные моменты"
+        else:
+            skill_label = "каждые 30 мин" if sint == 30 else ("каждый час" if sint == 60 else f"каждые {sint // 60} ч")
+        tz_name = user.get("timezone") or USER_TIMEZONE
+        city_name = md_escape(user.get("city") or "")
+        tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
+        text = (
+            "🔔 *Уведомления*\n\n"
+            f"Уведомления: *{status}*\n\n"
+            f"{'✅' if mo else '🔕'} Утро: *{m}*\n"
+            f"{'✅' if do else '🔕'} День: *{d}*\n"
+            f"{'✅' if eo else '🔕'} Вечер: *{e}*\n"
+            # Симметрично пояснению у маячка ниже — раньше был объяснён только
+            # маячок, и эта асимметрия сама по себе усиливала путаницу между
+            # двумя разными механизмами (реальный отзыв: путала их даже через
+            # неделю использования).
+            "_Основной ритуал дня — по расписанию, один раз_\n\n"
+            f"🌍 Таймзона: *{tz_display}*\n\n"
+            "*🔔 Маячок*\n"
+            f"{'✅' if be else '🔕'} Напоминания по задачам: *{'вкл, ' + beacon_label if be else 'выкл'}*\n"
+            "_Периодически спрашивает «что сейчас делаешь?» по задачам дня_\n\n"
+            f"{'✅' if se else '🔕'} Напоминания с навыками: *{'вкл, ' + skill_label if se else 'выкл'}*\n"
+            "_Периодически предлагает короткую технику (СТОП/Дыхание/...)_\n"
+            + ("🕐 Рабочие часы маячка: *{}–{}*\n".format(bs, bfin) if (be or se) else "")
+            + "\n_Нажми на время чтобы изменить, на иконку — включить/выключить_"
+        )
+        beacon_interval_row = [
+            InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
+            InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
+            InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
+        ]
+        beacon_hours_row = [
+            InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
+            InlineKeyboardButton(f"🌇 До {bfin}", callback_data="set_beacon_end"),
+        ]
+        skill_mode_row = [
+            InlineKeyboardButton(f"{'→' if smode=='interval' else ''} Интервал", callback_data="skill_mode_interval"),
+            InlineKeyboardButton(f"{'→' if smode=='random' else ''} Рандом N/день", callback_data="skill_mode_random"),
+        ]
+        skill_interval_row = [
+            InlineKeyboardButton(f"{'→' if sint==30 else ''} 30 мин", callback_data="skill_int_30"),
+            InlineKeyboardButton(f"{'→' if sint==60 else ''} 1 ч", callback_data="skill_int_60"),
+            InlineKeyboardButton(f"{'→' if sint==120 else ''} 2 ч", callback_data="skill_int_120"),
+        ]
+        skill_count_row = [
+            InlineKeyboardButton(f"{'→' if scount==n else ''} {n}", callback_data=f"skill_count_{n}")
+            for n in (1, 2, 3, 4, 5)
+        ]
+        rows = [_settings_tab_row(tab)]
+        rows += [
+            [InlineKeyboardButton(f"{'✅' if mo else '🔕'} Утро", callback_data="toggle_morning"),
+             InlineKeyboardButton(f"☀️ {m}", callback_data="set_morning")],
+            [InlineKeyboardButton(f"{'✅' if do else '🔕'} День", callback_data="toggle_midday"),
+             InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
+            [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
+             InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
+            [InlineKeyboardButton(
+                f"{'✅' if be else '🔕'} Маячок: задачи", callback_data="toggle_beacon"),
+             *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
+            *([ beacon_interval_row ] if be else []),
+            [InlineKeyboardButton(
+                f"{'✅' if se else '🔕'} Маячок: навыки", callback_data="toggle_skill_beacon")],
+            *([ skill_mode_row ] if se else []),
+            *([ skill_interval_row ] if (se and smode == "interval") else []),
+            *([ skill_count_row ] if (se and smode == "random") else []),
+            *([[InlineKeyboardButton("🎯 Типы маячка", callback_data="beacon_types_menu")]] if se else []),
+            *([ beacon_hours_row ] if (be or se) else []),
+            [InlineKeyboardButton(
+                "🔕 Выключить все" if enabled else "🔔 Включить все",
+                callback_data="toggle_notif"
+            )],
+        ]
+    else:  # "profile"
+        name = md_escape(user.get("name") or "—")
+        tz_name = user.get("timezone") or USER_TIMEZONE
+        city_name = md_escape(user.get("city") or "")
+        city_display = city_name if city_name else "—"
+        text = (
+            "👤 *Профиль*\n\n"
+            f"Имя: *{name}*\n"
+            f"Город: *{city_display}* ({tz_name})\n\n"
+            "_Здесь же — что бот спрашивает в ритуалах и виден ли стрик._"
+        )
+        rows = [_settings_tab_row(tab)]
+        rows += [
+            [InlineKeyboardButton("✏️ Изменить имя", callback_data="set_name")],
+            [InlineKeyboardButton("🌍 Изменить город", callback_data="set_city")],
+            [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
+            [InlineKeyboardButton(
+                "🔥 Стрик: скрыт — показать" if sh else "🔥 Стрик: показывается — скрыть",
+                callback_data="toggle_streak_visibility"
+            )],
+        ]
+
+    rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+    return text, InlineKeyboardMarkup(rows)
 
 async def settings_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4020,8 +4059,8 @@ async def toggle_streak_visibility(update: Update, ctx: ContextTypes.DEFAULT_TYP
     user = get_user(uid)
     new_val = 0 if int(user.get("streak_hidden") or 0) else 1
     update_user(uid, streak_hidden=new_val)
-    text, kb = _settings_text_and_kb(get_user(uid))
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    text, kb = _settings_text_and_kb(get_user(uid), "profile")
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 def _edit_reports_kb(user):
     disabled = set((user.get("disabled_fields") or "").split(","))
@@ -4033,7 +4072,7 @@ def _edit_reports_kb(user):
     for key, label in TOGGLEABLE_FIELDS[3:]:
         mark = "▫️ " if key in disabled else "✅ "
         rows.append([InlineKeyboardButton(mark + label, callback_data=f"toggle_field_{key}")])
-    rows.append([InlineKeyboardButton("◀️ Настройки", callback_data="go_settings")])
+    rows.append([InlineKeyboardButton("◀️ Настройки", callback_data="go_settings_tab_profile")])
     return InlineKeyboardMarkup(rows)
 
 async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4156,7 +4195,7 @@ async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✏️ *Как мне тебя называть?*\n\nСейчас: {md_escape(user['name']) if user['name'] else '—'}\n\nНапиши новое имя:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Отмена", callback_data="go_settings")
+            InlineKeyboardButton("Отмена", callback_data="go_settings_tab_profile")
         ]])
     )
     clear_awaiting_flags(ctx, update)
@@ -4171,7 +4210,7 @@ async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Просто напиши название города:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Отмена", callback_data="go_settings")
+            InlineKeyboardButton("Отмена", callback_data="go_settings_tab_profile")
         ]])
     )
     clear_awaiting_flags(ctx, update)
@@ -4196,10 +4235,17 @@ async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     text, kb = _settings_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+
+async def go_settings_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Переключение вкладок экрана настроек (🔔 Уведомления / 👤 Профиль) —
+    та же механика, что и у вкладок главного меню (см. go_tab): редактирует
+    то же сообщение вместо отправки нового."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    tab = q.data[len("go_settings_tab_"):]
+    text, kb = _settings_text_and_kb(get_user(q.from_user.id), tab)
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Включить/выключить конкретный блок уведомлений (утро/день/вечер)."""
@@ -5696,7 +5742,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"Можно изменить в ⚙️ Настройки позже."
             )
         if from_settings:
-            text, kb = _settings_text_and_kb(get_user(uid))
+            text, kb = _settings_text_and_kb(get_user(uid), "profile")
             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
             return
         # Показываем настройку уведомлений
@@ -8330,6 +8376,7 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_guide_done,  pattern="^obguide_done$"))
     app.add_handler(CallbackQueryHandler(onboard_guide_section, pattern="^obguide_"))
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
+    app.add_handler(CallbackQueryHandler(go_settings_tab,  pattern="^go_settings_tab_(notifications|profile)$"))
     app.add_handler(CallbackQueryHandler(edit_reports_menu, pattern="^edit_reports$"))
     app.add_handler(CallbackQueryHandler(toggle_field_callback, pattern="^toggle_field_"))
     app.add_handler(CallbackQueryHandler(quickdisable_field_callback, pattern="^quickdisable_"))
