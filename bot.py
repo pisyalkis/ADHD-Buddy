@@ -551,6 +551,10 @@ def init_db():
         user_id INTEGER, stars INTEGER, days INTEGER,
         charge_id TEXT, created TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS scheduled_deletions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, message_id INTEGER, delete_at TEXT
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -1184,12 +1188,13 @@ async def maybe_send_skip_nudge(message, uid, key):
     streak = bump_skip_streak(uid, key)
     if streak == SKIP_STREAK_NUDGE_THRESHOLD:
         label = dict(TOGGLEABLE_FIELDS).get(key, key)
-        await message.reply_text(
+        sent = await message.reply_text(
             f"Заметил — уже несколько раз подряд пропускаешь «{label}». "
             "Могу отключить этот вопрос насовсем, чтобы он больше не появлялся "
             "(включить обратно можно в любой момент через ⚙️ Настройки → Редактировать отчёты).",
             reply_markup=disable_field_kb(key)
         )
+        _track_ritual_msg(sent)
 
 TASK_FIELDS = [("focus", "A"), ("b1", "B1"), ("b2", "B2"), ("c1", "C1"), ("c2", "C2"), ("c3", "C3")]
 
@@ -1350,7 +1355,8 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
         text = f"{text}\n\n_{hint}_"
         rows = [[InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")]] + list(kb.inline_keyboard)
         kb = InlineKeyboardMarkup(rows)
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    sent = await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    _track_ritual_msg(sent)
     if show_hint:
         _mark_privacy_hint_seen(uid, key, user)
 
@@ -1965,6 +1971,84 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(PIN_CHAT_TIP, parse_mode="Markdown")
     await send_onboarding_final(q.message, uid)
 
+# ── RITUAL CLEANUP ─────────────────────────────────────────────────────────
+# Реальный запрос: утренний/вечерний ритуал — это вопрос за вопросом, каждый
+# отдельным сообщением, и весь этот черновик остаётся в чате навсегда, хотя
+# 🗂 Карточка дня уже показывает все ответы. Решение (не удалять вопросы ПО
+# ХОДУ ритуала — тогда ответ пользователя повисает без контекста, что на
+# него отвечали) — копить id всех сообщений ритуала, а как только он
+# полностью завершён, удалить их разом и прислать короткое подтверждение,
+# которое само исчезнет через RITUAL_CONFIRM_TTL_SEC.
+#
+# Хранилище — обычный dict в памяти (не ctx.user_data): не переживает
+# перезапуск бота, но это ничем не грозит — просто конкретный черновик
+# ритуала останется неубранным, а не сломается что-то важное.
+_RITUAL_MSG_IDS = {}
+RITUAL_CONFIRM_TTL_SEC = 600
+
+def _track_ritual_msg(msg):
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if chat_id is not None and mid is not None:
+        _RITUAL_MSG_IDS.setdefault(chat_id, []).append(mid)
+
+def schedule_message_deletion(chat_id, message_id, delay_seconds):
+    """Планирует удаление сообщения через delay_seconds — не через таймер в
+    памяти (сгорит, если watchdog перезапустит процесс раньше срока), а
+    строкой в БД, которую выметает тот же ежеминутный тик планировщика, что
+    уже гоняет check_notifications (см. sweep_scheduled_deletions)."""
+    delete_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO scheduled_deletions(chat_id, message_id, delete_at) VALUES (?, ?, ?)",
+        (chat_id, message_id, delete_at)
+    )
+    conn.commit()
+    conn.close()
+
+async def sweep_scheduled_deletions(app):
+    now_iso = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT id, chat_id, message_id FROM scheduled_deletions WHERE delete_at <= ?", (now_iso,)
+    ).fetchall()
+    if rows:
+        conn.execute("DELETE FROM scheduled_deletions WHERE delete_at <= ?", (now_iso,))
+        conn.commit()
+    conn.close()
+    for _id, chat_id, message_id in rows:
+        try:
+            await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+
+async def _finish_ritual_cleanup(ctx, message, uid, kind):
+    """Вызывается из finish_morning/finish_evening, когда ритуал реально
+    завершён: удаляет весь накопленный Q&A-хвост и шлёт короткое
+    самоудаляющееся подтверждение вместо него — содержимое уже видно в
+    закреплённом сообщении (утро) / итоговой сводке (вечер), а полный
+    список ответов — в 🗂 Карточке дня.
+
+    chat_id берём из uid, а не message.chat_id — это личный чат с ботом,
+    id пользователя и id чата всегда совпадают (та же логика, что и в
+    unpin_chat_message(chat_id=uid, ...) в pin_today_tasks)."""
+    bot = getattr(ctx, "bot", None)
+    if bot is None:
+        return
+    chat_id = uid
+    ids = _RITUAL_MSG_IDS.pop(chat_id, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
+    label = "Утро записано" if kind == "morning" else "Вечер записан"
+    try:
+        sent = await bot.send_message(chat_id=chat_id, text=f"✅ {label} — всё видно в 🗂 Карточке дня.")
+        schedule_message_deletion(chat_id, sent.message_id, RITUAL_CONFIRM_TTL_SEC)
+    except Exception:
+        pass
+
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
 async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1988,7 +2072,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for key, state, ask_fn in RESUME_FIELDS:
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
-                await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
+                sent = await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
+                _track_ritual_msg(sent)
                 await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Все шаги уже пройдены (крайний случай — finish_morning не успел
@@ -2101,15 +2186,16 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"_{skill['desc']}_"
     )
     try:
-        await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
+        sent_greeting = await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
         # Тот же класс сбоя, что в finish_morning/finish_evening — непарный
         # спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
         print(f"Ошибка отправки утреннего приветствия uid={uid}: {e}")
-        await q.message.reply_text(
+        sent_greeting = await q.message.reply_text(
             f"☀️ Доброе утро, {name}! 💡 Навык дня: {skill['name']}",
             reply_markup=reply_markup
         )
+    _track_ritual_msg(sent_greeting)
     await asyncio.sleep(0.5)
 
     # Если энергия была низкой — сразу предложить быстрый режим первой кнопкой
@@ -2138,7 +2224,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Если хочется — сделай свою разминку подольше, бот не ограничивает._"
         )
 
-    await q.message.reply_text(warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
+    sent_warmup = await q.message.reply_text(warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
+    _track_ritual_msg(sent_warmup)
     return M_EXERCISE
 
 async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2191,6 +2278,7 @@ async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     msg = await q.message.reply_text("Начинаем! 🏃")
+    _track_ritual_msg(msg)
     for i, (name, hint) in enumerate(WARMUP):
         dots = "🟡"*(i+1) + "⚪"*(len(WARMUP)-i-1)
         await msg.edit_text(f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
@@ -2201,7 +2289,8 @@ async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def warmup_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    await q.message.reply_text("💪 Отлично, тело уже разбужено!")
+    sent = await q.message.reply_text("💪 Отлично, тело уже разбужено!")
+    _track_ritual_msg(sent)
     return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2233,6 +2322,7 @@ async def ask_writing(message, uid):
     )
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["m_writing"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "m_writing")
@@ -2255,6 +2345,7 @@ async def ask_gratitude(message, gender, uid):
     )
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["m_gratitude"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "m_gratitude")
@@ -2277,6 +2368,7 @@ async def ask_child(message, gender, uid):
     )
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["m_child"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "m_child")
@@ -2613,6 +2705,8 @@ async def finish_morning(message, uid, ctx):
     if sent is not None and will_pin:
         await pin_today_tasks(ctx, uid, sent, pinned_keys=pinned_keys, ai_msg=ai_msg_raw)
 
+    await _finish_ritual_cleanup(ctx, message, uid, "morning")
+
 async def send_morning_task_offer(message, uid):
     """После утреннего ритуала (только практики) — отдельное необязательное
     предложение поставить задачи, а не встроенный шаг того же диалога. По
@@ -2696,11 +2790,12 @@ async def ask_tasks_done(message, uid, ctx, for_date):
     already_done = list(get_diary(uid, "tasks_done", for_date).get("done", []))
     ctx.user_data["e_tasks_done"] = already_done
     ctx.user_data["e_morning_date"] = for_date
-    await message.reply_text(
+    sent = await message.reply_text(
         "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
         parse_mode="Markdown",
         reply_markup=tasks_done_kb(morning, already_done)
     )
+    _track_ritual_msg(sent)
 
 async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2760,7 +2855,8 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for key, state, ask_fn in RESUME_FIELDS_EVENING:
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
-                await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
+                sent = await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
+                _track_ritual_msg(sent)
                 await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Все шаги уже пройдены (крайний случай — finish_evening не успел
@@ -2829,12 +2925,13 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Давай закроем этот день."
     )
     try:
-        await q.message.reply_text(evening_greeting, parse_mode="Markdown")
+        sent_greeting = await q.message.reply_text(evening_greeting, parse_mode="Markdown")
     except Exception as e:
         # Тот же класс сбоя, что в morning_start/finish_morning/finish_evening —
         # непарный спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
         print(f"Ошибка отправки вечернего приветствия uid={uid}: {e}")
-        await q.message.reply_text(f"🌙 Хороший был день, {user['name']}! Давай закроем этот день.")
+        sent_greeting = await q.message.reply_text(f"🌙 Хороший был день, {user['name']}! Давай закроем этот день.")
+    _track_ritual_msg(sent_greeting)
     await asyncio.sleep(0.5)
 
     if any(morning.get(key) for key, _ in TASK_FIELDS):
@@ -2848,6 +2945,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_ach"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "e_ach")
@@ -2871,6 +2969,7 @@ async def ask_praise(message, uid):
     )
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_praise"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "e_praise")
@@ -2892,6 +2991,7 @@ async def ask_highlights(message, uid):
     )
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_highlights"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "e_highlights")
@@ -2933,12 +3033,13 @@ async def ask_selfcare(message, ctx, gender):
     ctx.user_data.setdefault("e_selfcare", [])
     did = g(gender, "делал", "делала")
     used = g(gender, "применял", "применяла")
-    await message.reply_text(
+    sent = await message.reply_text(
         f"🧩 *Что из этого {did} сегодня?*\n\n"
         f"Отметь всё, что {used} — это помогает быть в себе.",
         parse_mode="Markdown",
         reply_markup=selfcare_kb(ctx.user_data["e_selfcare"])
     )
+    _track_ritual_msg(sent)
 
 async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2961,7 +3062,7 @@ async def ask_energy(message, gender):
     exhausted = g(gender, "выжат", "выжата")
     tired = g(gender, "устал", "устала")
     charged = g(gender, "заряжен", "заряжена")
-    await message.reply_text(
+    sent = await message.reply_text(
         "🔋 *Уровень энергии сейчас*\n\n"
         "Как ты себя чувствуешь по итогам дня?",
         parse_mode="Markdown",
@@ -2973,6 +3074,7 @@ async def ask_energy(message, gender):
             [InlineKeyboardButton(f"⚡ 5 — {charged} на 100%", callback_data="energy_5")],
         ])
     )
+    _track_ritual_msg(sent)
 
 async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3022,12 +3124,14 @@ def evening_plan_kb(key, uid, offset=0, limit=3):
 
 async def ask_evening_plan_step(message, uid, key):
     text, _, _ = EVENING_PLAN_STEPS[key]
-    await message.reply_text(text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
+    sent = await message.reply_text(text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
+    _track_ritual_msg(sent)
 
 async def ask_plan_a(message, uid):
     await ask_evening_plan_step(message, uid, "e_a")
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_a"] = update.message.text
     await ask_evening_plan_step(update.message, update.effective_user.id, "e_b1")
     return E_B1
@@ -3049,6 +3153,7 @@ async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_b1"] = update.message.text
     await ask_evening_plan_step(update.message, update.effective_user.id, "e_b2")
     return E_B2
@@ -3060,6 +3165,7 @@ async def skip_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return E_B2
 
 async def got_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_b2"] = update.message.text
     await ask_evening_plan_step(update.message, update.effective_user.id, "e_c1")
     return E_C1
@@ -3071,16 +3177,19 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return E_C1
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_c1"] = update.message.text
     await ask_evening_plan_step(update.message, update.effective_user.id, "e_c2")
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_c2"] = update.message.text
     await ask_evening_plan_step(update.message, update.effective_user.id, "e_c3")
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    _track_ritual_msg(update.message)
     ctx.user_data["e_c3"] = update.message.text
     await finish_evening(update.message, update.effective_user.id, ctx)
     return ConversationHandler.END
@@ -3344,6 +3453,8 @@ async def finish_evening(message, uid, ctx):
             f"✅ День закрыт!{streak_suffix} До завтра, {user['name']} 👋",
             reply_markup=menu_button_kb()
         )
+
+    await _finish_ritual_cleanup(ctx, message, uid, "evening")
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
 async def parse_reminder_request(text, now_dt):
@@ -8293,6 +8404,7 @@ def main():
     scheduler = AsyncIOScheduler()
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
+    scheduler.add_job(sweep_scheduled_deletions, 'cron', minute='*', args=[app])
     scheduler.start()
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
