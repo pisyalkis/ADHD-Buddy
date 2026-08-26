@@ -587,7 +587,7 @@ def init_db():
         ("pinned_msg_id", "''"),
         ("pinned_task_keys", "''"),
         ("pinned_ai_msg", "''"),
-        ("notify_updates", "1"),
+        ("notify_updates", "0"),
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
         ("daily_skill_override", "''"),
@@ -6199,7 +6199,7 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 def _whats_new_kb(user):
-    notify_on = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    notify_on = int(user.get("notify_updates") if user.get("notify_updates") is not None else 0)
     label = "🔔 Присылать анонсы обновлений: вкл" if notify_on else "🔕 Присылать анонсы обновлений: выкл"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, callback_data="toggle_notify_updates")],
@@ -6211,8 +6211,7 @@ async def show_whats_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     CHANGELOG с кратким объяснением, как пользоваться новым функционалом —
     не просто "что изменилось", а сразу и "как этим воспользоваться". Тут
     же — переключатель "присылать анонсы обновлений" (по запросу): по
-    умолчанию включён (та же конвенция, что и у остальных notif_*_on), кто
-    не хочет — выключает сам."""
+    умолчанию выключен, кто хочет получать анонсы — включает сам."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
@@ -6229,7 +6228,7 @@ async def toggle_notify_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     uid = q.from_user.id
     user = get_user(uid)
-    cur = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    cur = int(user.get("notify_updates") if user.get("notify_updates") is not None else 0)
     update_user(uid, notify_updates=0 if cur else 1)
     await q.answer("🔕 Анонсы обновлений выключены" if cur else "🔔 Анонсы обновлений включены")
     try:
@@ -8000,7 +7999,7 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # раньше. Фильтруем в Python (int(...) or 1), как и остальные
         # 0/1-флаги в файле — не полагаемся на SQL-сравнение TEXT-колонки.
         all_rows = conn.execute("SELECT user_id, notify_updates FROM users WHERE name != ''").fetchall()
-        rows = [(u,) for u, nu in all_rows if int(nu or 1)]
+        rows = [(u,) for u, nu in all_rows if int(nu or 0)]
     else:
         rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
     conn.close()
