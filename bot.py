@@ -587,6 +587,7 @@ def init_db():
         ("pinned_msg_id", "''"),
         ("pinned_task_keys", "''"),
         ("pinned_ai_msg", "''"),
+        ("notify_updates", "1"),
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
         ("daily_skill_override", "''"),
@@ -6197,16 +6198,44 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
+def _whats_new_kb(user):
+    notify_on = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    label = "🔔 Присылать анонсы обновлений: вкл" if notify_on else "🔕 Присылать анонсы обновлений: выкл"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="toggle_notify_updates")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
 async def show_whats_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«🆕 Что нового» — по запросу, не пуш. Показывает последние записи
     CHANGELOG с кратким объяснением, как пользоваться новым функционалом —
-    не просто "что изменилось", а сразу и "как этим воспользоваться"."""
+    не просто "что изменилось", а сразу и "как этим воспользоваться". Тут
+    же — переключатель "присылать анонсы обновлений" (по запросу): по
+    умолчанию включён (та же конвенция, что и у остальных notif_*_on), кто
+    не хочет — выключает сам."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
+    user = get_user(q.from_user.id)
     if not CHANGELOG:
-        await q.message.reply_text("Пока нечего показать — загляни попозже 🙂", reply_markup=menu_button_kb())
+        await q.message.reply_text("Пока нечего показать — загляни попозже 🙂", reply_markup=_whats_new_kb(user))
         return
-    await q.message.reply_text(_whats_new_text(), parse_mode="Markdown", reply_markup=menu_button_kb())
+    await q.message.reply_text(_whats_new_text(), parse_mode="Markdown", reply_markup=_whats_new_kb(user))
+
+async def toggle_notify_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Переключатель "присылать анонсы обновлений" на экране "🆕 Что
+    нового" — гейтит именно /broadcast latest (адресную рассылку записи
+    CHANGELOG), не обычный /broadcast (тот остаётся на усмотрение админа
+    и уходит всем зарегистрированным, как и раньше)."""
+    q = update.callback_query
+    uid = q.from_user.id
+    user = get_user(uid)
+    cur = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    update_user(uid, notify_updates=0 if cur else 1)
+    await q.answer("🔕 Анонсы обновлений выключены" if cur else "🔔 Анонсы обновлений включены")
+    try:
+        await q.message.edit_reply_markup(reply_markup=_whats_new_kb(get_user(uid)))
+    except Exception:
+        pass
 
 # ── PRIVACY ────────────────────────────────────────────────────────────────
 async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -7944,7 +7973,8 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Нет доступа.")
         return
     reply = update.message.reply_to_message
-    if not reply and ctx.args and ctx.args[0].lower() == "latest":
+    is_changelog = not reply and ctx.args and ctx.args[0].lower() == "latest"
+    if is_changelog:
         if not CHANGELOG:
             await update.message.reply_text("В CHANGELOG пока пусто — нечего разослать.")
             return
@@ -7962,7 +7992,17 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
+    if is_changelog:
+        # /broadcast latest — анонс обновления, гейтится персональным
+        # переключателем "🔔 Присылать анонсы обновлений" (см. "🆕 Что
+        # нового"/toggle_notify_updates). Обычный /broadcast <текст> — это
+        # прямое обращение админа, ему такой гейт не нужен, шлём всем как
+        # раньше. Фильтруем в Python (int(...) or 1), как и остальные
+        # 0/1-флаги в файле — не полагаемся на SQL-сравнение TEXT-колонки.
+        all_rows = conn.execute("SELECT user_id, notify_updates FROM users WHERE name != ''").fetchall()
+        rows = [(u,) for u, nu in all_rows if int(nu or 1)]
+    else:
+        rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
     conn.close()
 
     sent, failed = 0, 0
@@ -8177,6 +8217,7 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
     app.add_handler(CallbackQueryHandler(show_whats_new,   pattern="^go_whats_new$"))
+    app.add_handler(CallbackQueryHandler(toggle_notify_updates, pattern="^toggle_notify_updates$"))
     app.add_handler(CallbackQueryHandler(go_privacy,       pattern="^go_privacy$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
