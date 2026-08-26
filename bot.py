@@ -537,6 +537,8 @@ def init_db():
         ("resume_check_due", "''"),
         ("struggles", "''"),
         ("pinned_msg_id", "''"),
+        ("pinned_task_keys", "''"),
+        ("pinned_ai_msg", "''"),
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
         ("daily_skill_override", "''"),
@@ -1062,6 +1064,18 @@ def md_escape(text):
     for ch in ("_", "*", "`", "["):
         text = text.replace(ch, "\\" + ch)
     return text
+
+def _strike(text):
+    """Визуальное зачёркивание через юникод-комбинирующий символ (U+0336,
+    combining long stroke overlay) — работает при любом parse_mode, в т.ч.
+    обычном legacy Markdown (используется во всём коде), поскольку не
+    требует особого форматирования — просто добавляет отдельные
+    комбинирующие символы к уже существующим. ВАЖНО: применять к сырому
+    тексту ДО md_escape, а не после — иначе комбинирующий символ мог бы
+    оказаться между экранирующим "\\" и спецсимволом, ломая escape-пару
+    (после md_escape порядок safe: replace находит "_" по коду символа
+    независимо от соседних комбинирующих меток)."""
+    return "".join(ch + "\u0336" for ch in text)
 
 # ── ОТКЛЮЧАЕМЫЕ ПОЛЯ РИТУАЛА ────────────────────────────────────────────────
 # Только ситуативные "мягкие" поля — задачи A/B/C, чек-лист выполненного и
@@ -2227,10 +2241,17 @@ async def advance_morning(ctx, message, gender, uid, from_key=None):
     await send_morning_task_offer(message, uid)
     return ConversationHandler.END
 
-async def pin_today_tasks(ctx, uid, sent_message):
+async def pin_today_tasks(ctx, uid, sent_message, pinned_keys=None, ai_msg=""):
     """Пинит сообщение с задачами дня, сняв старый пин (если остался, например
     если вчера не закрыли вечер и unpin не случился). В приватном чате с ботом
-    пин доступен всегда, без прав администратора."""
+    пин доступен всегда, без прав администратора.
+
+    pinned_keys/ai_msg — снимок того, что реально попало в закреплённое
+    сообщение (см. finish_morning), чтобы потом (в task_done_callback)
+    перерисовать его с зачёркиванием выполненных, не трогая остальной
+    текст и не подтягивая туда задачи, добавленные уже ПОСЛЕ пина (по
+    запросу — список в закреплённом сообщении остаётся в изначальном виде,
+    меняется только зачёркивание)."""
     user = get_user(uid)
     old_id = user.get("pinned_msg_id") or ""
     if old_id:
@@ -2240,9 +2261,63 @@ async def pin_today_tasks(ctx, uid, sent_message):
             pass
     try:
         await ctx.bot.pin_chat_message(chat_id=uid, message_id=sent_message.message_id, disable_notification=True)
-        update_user(uid, pinned_msg_id=str(sent_message.message_id))
+        update_user(
+            uid, pinned_msg_id=str(sent_message.message_id),
+            pinned_task_keys=",".join(pinned_keys or []),
+            pinned_ai_msg=ai_msg or "",
+        )
     except Exception as e:
         print(f"Ошибка пина задач дня uid={uid}: {e}")
+
+def _build_pinned_tasks_text(user, pinned_keys, ai_msg_raw):
+    """Собирает текст закреплённого сообщения "Утро записано!" заново —
+    те же шесть строк, что и при finish_morning (только ключи из
+    pinned_keys, без новых задач, добавленных позже), но с зачёркиванием
+    (см. _strike) для отмеченных выполненными. Используется и в первый
+    раз (finish_morning может тоже вызвать после отметки чего-то ещё до
+    ритуала — например через "Взять как задачи на сегодня"), и при каждой
+    последующей отметке ✅/▫️ (см. _refresh_pinned_tasks_message)."""
+    uid = user["user_id"]
+    tz = get_user_tz(user)
+    today = datetime.now(tz).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    lines = []
+    for key, icon in TASK_FIELDS:
+        if key not in pinned_keys:
+            continue
+        val = morning.get(key)
+        if not val:
+            continue
+        display = _strike(val) if key in done_set else val
+        lines.append(f"{icon}: {md_escape(display)}")
+    tasks_text = "\n" + "\n".join(lines) if lines else "_(задачи не заданы)_"
+    ai_part = f"\n\n🤖 _{ai_msg_raw}_" if ai_msg_raw else ""
+    pin_note = "\n\n📌 _Закрепил это сообщение — будет перед глазами весь день._"
+    return (
+        f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
+        f"{tasks_text}"
+        f"{ai_part}"
+        f"{pin_note}\n\n"
+        f"Вперёд, {md_escape(user['name'])}! 💪"
+    )
+
+async def _refresh_pinned_tasks_message(ctx, uid):
+    """Перерисовывает закреплённое сообщение с зачёркиванием после
+    отметки/снятия отметки задачи выполненной (см. task_done_callback,
+    walk_clear_callback) — список задач в нём НЕ меняется (не пополняется
+    новыми задачами, поставленными позже), меняется только зачёркивание
+    уже показанных."""
+    user = get_user(uid)
+    pinned_msg_id = user.get("pinned_msg_id") or ""
+    pinned_keys = [k for k in (user.get("pinned_task_keys") or "").split(",") if k]
+    if not pinned_msg_id or not pinned_keys:
+        return
+    text = _build_pinned_tasks_text(user, pinned_keys, user.get("pinned_ai_msg") or "")
+    try:
+        await ctx.bot.edit_message_text(chat_id=uid, message_id=int(pinned_msg_id), text=text, parse_mode="Markdown")
+    except Exception:
+        pass
 
 async def unpin_today_tasks(ctx, uid):
     user = get_user(uid)
@@ -2403,32 +2478,38 @@ async def finish_morning(message, uid, ctx):
     add_streak(uid)
 
     morning_for_summary = task_fields
-    tasks_text = build_tasks_summary(morning_for_summary)
-    tasks_text = "\n" + tasks_text if tasks_text != "_задачи не заданы_" else "_(задачи не заданы)_"
+    pinned_keys = [k for k, _ in TASK_FIELDS if morning_for_summary.get(k)]
 
     # AI мотивация если есть ключ
-    ai_msg = ""
+    ai_msg_raw = ""
     if ANTHROPIC_KEY and focus:
-        ai_msg = await ai_morning_boost(user["name"], user["gender"], focus)
-        if ai_msg: ai_msg = f"\n\n🤖 _{ai_msg}_"
+        ai_msg_raw = await ai_morning_boost(user["name"], user["gender"], focus)
 
     # Решаем заранее, будем ли пинить — чтобы упомянуть это прямо в самом
     # сообщении (реальный запрос: "писать, что мы его запинили, чтобы было
     # удобно возвращаться"), а не редактировать текст вторым проходом.
     will_pin = any(morning_for_summary.values())
-    pin_note = "\n\n📌 _Закрепил это сообщение — будет перед глазами весь день._" if will_pin else ""
 
     sent = None
     try:
+        if will_pin:
+            # Общий билдер с _refresh_pinned_tasks_message — тот же текст,
+            # что будет перерисовываться при каждой отметке ✅/▫️ (см.
+            # task_done_callback), только пока без зачёркиваний.
+            greeting_text = _build_pinned_tasks_text(user, pinned_keys, ai_msg_raw)
+        else:
+            ai_part = f"\n\n🤖 _{ai_msg_raw}_" if ai_msg_raw else ""
+            greeting_text = (
+                f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
+                "_(задачи не заданы)_"
+                f"{ai_part}\n\n"
+                # Реальный баг (17-й чекап): "Вперёд" не склоняется по роду —
+                # g() с одинаковыми male/female всё равно приклеивала "(а)" для
+                # gender="N" ("Другое"), давая бессмысленное "Вперёд(а)".
+                f"Вперёд, {md_escape(user['name'])}! 💪"
+            )
         sent = await message.reply_text(
-            f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
-            f"{tasks_text}"
-            f"{ai_msg}"
-            f"{pin_note}\n\n"
-            # Реальный баг (17-й чекап): "Вперёд" не склоняется по роду —
-            # g() с одинаковыми male/female всё равно приклеивала "(а)" для
-            # gender="N" ("Другое"), давая бессмысленное "Вперёд(а)".
-            f"Вперёд, {md_escape(user['name'])}! 💪",
+            greeting_text,
             parse_mode="Markdown",
             reply_markup=daily_prefs_kb(user)
         )
@@ -2444,7 +2525,7 @@ async def finish_morning(message, uid, ctx):
 
     # Пиним, только если реально есть что закреплять — не пустое "задачи не заданы".
     if sent is not None and will_pin:
-        await pin_today_tasks(ctx, uid, sent)
+        await pin_today_tasks(ctx, uid, sent, pinned_keys=pinned_keys, ai_msg=ai_msg_raw)
 
 async def send_morning_task_offer(message, uid):
     """После утреннего ритуала (только практики) — отдельное необязательное
@@ -3278,7 +3359,17 @@ async def classify_free_text(text, now_dt):
                 '{"intent": "edit_reminder", "query": "ключевые слова, по которым искать, какое именно"}. '
                 'Здесь НЕ нужно вычислять новое время — только найти, какое напоминание менять, бот '
                 'отдельно спросит новое время и текст.\n'
-                '5) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
+                '5) Явно просит поставить/добавить ЗАДАЧУ НА СЕГОДНЯ — именно как задачу дня (A/B/C), а не '
+                'просто в общий список на будущее («поставь задачу на сегодня разобраться с сайтом», '
+                '«добавь задачу — написать отчёт», «сегодня нужно ещё позвонить маме», «задача: подготовить '
+                'слайды», «поставь как задачу B1 — купить молоко», «задача C2: полить цветы»): '
+                '{"intent": "set_task", "text": "суть задачи", "slot": "A"|"B1"|"B2"|"C1"|"C2"|"C3"|""}. '
+                'slot — только если пользователь ЯВНО назвал букву/номер слота ("как задачу B1", "задача C2: '
+                '..."), иначе пустая строка "" — тогда бот сам поставит в первый свободный слот. Отличие от '
+                '(2) — здесь явно про СЕГОДНЯШНИЙ день/прямо сейчас как реальное дело дня, а не просто "куда-то '
+                'занести на потом". Если неочевидно, что это именно на сегодня — выбирай (2) add_pool, это '
+                'безопаснее.\n'
+                '6) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
                 'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
                 '{"intent": "other"}\n'
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
@@ -3317,6 +3408,11 @@ async def classify_free_text(text, now_dt):
         if intent == "delete" and data.get("target") in ("reminder", "pool") and data.get("query"):
             return data
         if intent == "edit_reminder" and data.get("query"):
+            return data
+        if intent == "set_task" and str(data.get("text") or "").strip():
+            data["text"] = str(data["text"]).strip()
+            slot = str(data.get("slot") or "").strip().upper()
+            data["slot_key"] = {"A": "focus", "B1": "b1", "B2": "b2", "C1": "c1", "C2": "c2", "C3": "c3"}.get(slot, "")
             return data
         return {"intent": "other"}
     except Exception:
@@ -4561,9 +4657,35 @@ async def _walk_to_step(message, ctx, uid, key):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➡️ Пропустить", callback_data=f"walk_skip_{key}")],
             [InlineKeyboardButton("✏️ Поменять", callback_data=f"walk_edit_{key}")],
+            # По запросу (фидбек): раньше слот можно было только переписать
+            # новым текстом или отметить выполненным — стереть задачу
+            # целиком, если она сегодня вообще не нужна, было нельзя.
+            [InlineKeyboardButton("🗑 Убрать", callback_data=f"walk_clear_{key}")],
             [InlineKeyboardButton("✅ Готово", callback_data="walk_finish")],
         ])
     )
+
+async def walk_clear_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«🗑 Убрать» на шаге прохода по задачам — стирает слот целиком (не
+    просто отмечает выполненным и не заменяет текст), убирает связь с
+    пулом (если задача была оттуда) и снимает отметку "выполнено", если
+    была — иначе пустой слот остался бы висеть отмеченным."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    key = q.data[len("walk_clear_"):]
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    morning[key] = ""
+    morning.pop(f"_pool_link_{key}", None)
+    save_diary(uid, "morning", morning, for_date=today)
+    done_data = get_diary(uid, "tasks_done", today)
+    done_list = [k for k in done_data.get("done", []) if k != key]
+    if len(done_list) != len(done_data.get("done", [])):
+        save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
+    await q.message.reply_text(f"🗑 Убрал: {TASK_LABELS.get(key, key)}")
+    await _refresh_pinned_tasks_message(ctx, uid)
+    await _walk_to_step(q.message, ctx, uid, _next_task_key(key))
 
 async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«✏️ Поставить/изменить задачи» — единая точка входа вместо отдельной
@@ -4761,6 +4883,32 @@ async def handle_delete_pool_intent(message, uid, query):
     candidates = (matches or items)[:2]
     await send_pool_delete_menu(message, uid, items=candidates)
 
+async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
+    """Свободный текст, явно про задачу НА СЕГОДНЯ (см. classify_free_text,
+    intent "set_task") — ставит в первый пустой слот A/B1/B2/C1/C2/C3, а не
+    заставляет открывать 📋 Задачи и топтаться по шагам ради одной короткой
+    фразы. По запросу — "это точно делаем".
+
+    slot_key — если пользователь ЯВНО назвал слот ("поставь как задачу
+    B1 — купить молоко"), кладём именно туда (перезаписывая, если уже
+    занят — раз назвали конкретно, значит осознанно), а не в первый
+    свободный (по запросу: "можно ли писать какой задачей на день
+    добавить ту, что просишь добавить?")."""
+    valid_keys = {k for k, _ in TASK_FIELDS}
+    if slot_key and slot_key in valid_keys:
+        await apply_task_edit(message, ctx, uid, slot_key, text)
+        return
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
+    if key is None:
+        await message.reply_text(
+            "Все шесть слотов задач на сегодня уже заняты — открой 📋 Задачи, чтобы что-то поменять.",
+            reply_markup=menu_button_kb()
+        )
+        return
+    await apply_task_edit(message, ctx, uid, key, text)
+
 async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула.
@@ -4940,6 +5088,11 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     except Exception:
         await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    # По запросу: закреплённое утреннее сообщение оставляем "в изначальном
+    # виде" (не добавляем в него новые задачи), но отметку о выполнении —
+    # зачёркиванием — отражаем и там тоже, а не только на этом экране.
+    await _refresh_pinned_tasks_message(ctx, uid)
 
 
 # ── REMINDERS ─────────────────────────────────────────────────────────────
@@ -5485,6 +5638,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await handle_delete_pool_intent(update.message, uid, routed.get("query") or text)
         elif intent == "edit_reminder":
             await handle_edit_reminder_intent(update.message, ctx, uid, routed.get("query") or text)
+        elif intent == "set_task":
+            await handle_set_task_intent(update.message, ctx, uid, routed.get("text") or text, routed.get("slot_key") or "")
         else:
             # Реальный баг (12-й чекап, тот же класс, что и coach_mode выше):
             # research_awaiting — флаг в БД, а не сиюминутный ctx.user_data,
@@ -7925,6 +8080,7 @@ def main():
     app.add_handler(CallbackQueryHandler(walk_tasks_start, pattern="^walk_tasks$"))
     app.add_handler(CallbackQueryHandler(walk_skip_callback, pattern="^walk_skip_"))
     app.add_handler(CallbackQueryHandler(walk_edit_callback, pattern="^walk_edit_"))
+    app.add_handler(CallbackQueryHandler(walk_clear_callback, pattern="^walk_clear_"))
     app.add_handler(CallbackQueryHandler(walk_finish_callback, pattern="^walk_finish$"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
     app.add_handler(CallbackQueryHandler(show_task_pool,       pattern="^go_task_pool$"))
