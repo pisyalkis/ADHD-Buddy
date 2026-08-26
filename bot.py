@@ -1354,6 +1354,18 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
     if show_hint:
         _mark_privacy_hint_seen(uid, key, user)
 
+async def _edit_or_send(q, text, **kwargs):
+    """Редактирует то же сообщение вместо отправки нового — та же механика,
+    что у переключения вкладок меню (go_tab) и ⚙️ Общие (go_settings): тапнул
+    на кнопку раздела — экран обновился на месте, а не заспамил чат новыми
+    сообщениями. Падает обратно на новое сообщение, если редактирование
+    невозможно (сообщение слишком старое, или это не текстовое сообщение —
+    например, с картинкой/видео)."""
+    try:
+        await q.message.edit_text(text, **kwargs)
+    except Exception:
+        await q.message.reply_text(text, **kwargs)
+
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
 
@@ -3627,7 +3639,8 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     write_self = g(gender, "сам", "сама")
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"🤖 *Коуч*\n\nЧто происходит? Пиши {write_self} или выбери быструю кнопку:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
@@ -3661,7 +3674,8 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     daily = get_daily_skill(uid)
     rows = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + list(skills_list_kb().inline_keyboard)
     kb = InlineKeyboardMarkup(rows)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "🧠 *Навыки*\n\n"
         f"💡 *Навык дня:* {daily['name']}\n"
         f"_{daily['desc']}_\n\n"
@@ -3757,14 +3771,16 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if int(user.get("streak_hidden") or 0):
         # Кнопка могла остаться в старом сообщении после того, как стрик
         # уже скрыли в настройках — не показываем его в обход настройки.
-        await q.message.reply_text(
+        await _edit_or_send(
+            q,
             "🔥 Стрик сейчас скрыт в настройках.\n\n"
             "Включить обратно можно в ⚙️ Настройки.",
             reply_markup=menu_button_kb()
         )
         return
     s = calc_streak(uid)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"🔥 *Стрик: {s} {ru_days(s)} подряд*\n\n"
         f"{'Продолжай! Каждый день считается.' if s>0 else 'Заполни утро или вечер — и стрик пойдёт.'}\n\n"
         "_Стрик растёт когда ты закрываешь вечерний блок._",
@@ -4652,7 +4668,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
     if not morning:
         text += "\n\n_Утро ещё не заполнялось — можно поставить задачи прямо тут, или пройти полный утренний ритуал кнопкой ☀️ в меню._"
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def _offer_task_input(message, ctx, uid, key):
     """Если в «Списке дел» (пуле) уже что-то накоплено — сначала предлагаем
@@ -5198,7 +5214,7 @@ async def show_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -5387,7 +5403,7 @@ async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # так что вне этого окна поведение не меняется.
     for_date = evening_day(tz).isoformat()
     text = build_day_card_text(uid, for_date)
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
 async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -5788,7 +5804,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             end_dt_tz = end_dt.astimezone(tz)
             remaining = int((end_dt_tz - now).total_seconds() / 60)
             if remaining > 0:
-                await q.message.reply_text(
+                await _edit_or_send(
+                    q,
                     f"🍅 *Таймер уже идёт!*\n\n"
                     f"Осталось примерно *{remaining} мин* (до {end_dt_tz.strftime('%H:%M')}).\n\n"
                     f"Не отвлекайся — я напишу когда время выйдет 🔕",
@@ -5810,7 +5827,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     stats_hint = f"\n\n⏱ Сегодня в фокусе: *{mins_today} мин*" if mins_today > 0 else ""
 
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"🍅 *Фокус-режим*\n\n"
         f"📝 *Перед стартом:* возьми листок бумаги и положи рядом.\n"
         f"Это «бумажка гениальных мыслей» — когда во время работы придёт посторонняя идея или мысль, просто запиши её и сразу возвращайся к задаче. Не нужно ничего обдумывать прямо сейчас. Так мозг отпускает мысль и не тратит силы держать её в голове.\n\n"
@@ -6206,7 +6224,8 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # обычное сообщение пользователя.
     clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         personalize(
             "ℹ️ *О боте*\n\n"
             "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
@@ -6257,9 +6276,9 @@ async def show_whats_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
     if not CHANGELOG:
-        await q.message.reply_text("Пока нечего показать — загляни попозже 🙂", reply_markup=_whats_new_kb(user))
+        await _edit_or_send(q, "Пока нечего показать — загляни попозже 🙂", reply_markup=_whats_new_kb(user))
         return
-    await q.message.reply_text(_whats_new_text(), parse_mode="Markdown", reply_markup=_whats_new_kb(user))
+    await _edit_or_send(q, _whats_new_text(), parse_mode="Markdown", reply_markup=_whats_new_kb(user))
 
 async def toggle_notify_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Переключатель "присылать анонсы обновлений" на экране "🆕 Что
@@ -6307,7 +6326,8 @@ async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "💬 *Обратная связь*\n\n"
         "Напиши что улучшить, что не работает, или какая функция нужна — читаю всё.",
         parse_mode="Markdown",
@@ -6355,7 +6375,7 @@ async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     text, kb = _subscribe_text_and_kb(get_user(q.from_user.id))
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
@@ -6693,7 +6713,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("➕ Добавить бадди", callback_data="buddy_set")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ]
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
