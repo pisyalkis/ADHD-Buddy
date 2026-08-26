@@ -1130,6 +1130,17 @@ def _strike(text):
     независимо от соседних комбинирующих меток)."""
     return "".join(ch + "\u0336" for ch in text)
 
+def _underline(text):
+    """\u0412\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u043e\u0435 \u043f\u043e\u0434\u0447\u0451\u0440\u043a\u0438\u0432\u0430\u043d\u0438\u0435 \u0447\u0435\u0440\u0435\u0437 \u044e\u043d\u0438\u043a\u043e\u0434-\u043a\u043e\u043c\u0431\u0438\u043d\u0438\u0440\u0443\u044e\u0449\u0438\u0439 \u0441\u0438\u043c\u0432\u043e\u043b (U+0332,
+    combining low line) \u2014 \u0442\u0430 \u0436\u0435 \u043c\u0435\u0445\u0430\u043d\u0438\u043a\u0430, \u0447\u0442\u043e \u0438 _strike (U+0336), \u0442\u043e\u043b\u044c\u043a\u043e
+    \u0434\u043b\u044f \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0439 \u0432\u043a\u043b\u0430\u0434\u043a\u0438 \u0432 \u0441\u0442\u0440\u043e\u043a\u0430\u0445-\u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0430\u0442\u0435\u043b\u044f\u0445 (\u043c\u0435\u043d\u044e/\u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438).
+    \u0418\u043d\u043b\u0430\u0439\u043d-\u043a\u043d\u043e\u043f\u043a\u0438 Telegram \u043d\u0435 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044e\u0442 \u0444\u043e\u0440\u043c\u0430\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430 (\u043d\u0438
+    \u0436\u0438\u0440\u043d\u044b\u0439, \u043d\u0438 \u0446\u0432\u0435\u0442) \u0432\u043e\u043e\u0431\u0449\u0435, \u0430 "\u0436\u0438\u0440\u043d\u043e\u0433\u043e" \u044e\u043d\u0438\u043a\u043e\u0434\u0430 \u0434\u043b\u044f \u043a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u044b \u043d\u0435
+    \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442 \u2014 \u043f\u043e\u0434\u0447\u0451\u0440\u043a\u0438\u0432\u0430\u043d\u0438\u0435 \u043a\u043e\u043c\u0431\u0438\u043d\u0438\u0440\u0443\u044e\u0449\u0438\u043c \u0441\u0438\u043c\u0432\u043e\u043b\u043e\u043c \u043e\u0441\u0442\u0430\u0451\u0442\u0441\u044f
+    \u0435\u0434\u0438\u043d\u0441\u0442\u0432\u0435\u043d\u043d\u044b\u043c \u0441\u043f\u043e\u0441\u043e\u0431\u043e\u043c \u0432\u0438\u0437\u0443\u0430\u043b\u044c\u043d\u043e \u0432\u044b\u0434\u0435\u043b\u0438\u0442\u044c \u0430\u043a\u0442\u0438\u0432\u043d\u0443\u044e \u0432\u043a\u043b\u0430\u0434\u043a\u0443 \u0431\u0435\u0437
+    \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f \u043d\u043e\u0432\u044b\u0445 \u0441\u0438\u043c\u0432\u043e\u043b\u043e\u0432-\u0438\u043a\u043e\u043d\u043e\u043a."""
+    return "".join(ch + "\u0332" for ch in text)
+
 # ── ОТКЛЮЧАЕМЫЕ ПОЛЯ РИТУАЛА ────────────────────────────────────────────────
 # Только ситуативные "мягкие" поля — задачи A/B/C, чек-лист выполненного и
 # уровень энергии остаются обязательными, это не декорация ритуала, а его
@@ -1392,7 +1403,7 @@ def menu_tab_kb(tab, user=None):
     for key in MENU_TABS:
         label = MENU_TAB_LABELS[key]
         if key == tab:
-            tab_row.append(InlineKeyboardButton(f"• {label} •", callback_data="noop"))
+            tab_row.append(InlineKeyboardButton(f"• {_underline(label)} •", callback_data="noop"))
         else:
             tab_row.append(InlineKeyboardButton(label, callback_data=f"go_tab_{key}"))
     rows = [tab_row]
@@ -3909,7 +3920,10 @@ def _settings_tab_row(tab):
     for key in SETTINGS_TABS:
         label = SETTINGS_TAB_LABELS[key]
         if key == tab:
-            row.append(InlineKeyboardButton(f"• {label} •", callback_data="noop"))
+            # Подчёркиваем только текст, не ведущий эмодзи — комбинирующий
+            # символ на самом эмодзи иногда рисуется криво в некоторых клиентах.
+            icon, _, word = label.partition(" ")
+            row.append(InlineKeyboardButton(f"• {icon} {_underline(word)} •", callback_data="noop"))
         else:
             row.append(InlineKeyboardButton(label, callback_data=f"go_settings_tab_{key}"))
     return row
