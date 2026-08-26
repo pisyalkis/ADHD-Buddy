@@ -3416,6 +3416,33 @@ async def finish_evening(message, uid, ctx):
         add_pool_task(uid, text)
         existing_pool_texts.add(text.lower())
 
+    # Реальный фидбек (Артём): "список дел вечером снова показывал те же
+    # задачи, хотя они помечены выполненными" — task_done_callback (чекбокс
+    # в 📋 Задачи) чистит связанный пункт пула сразу при отметке "сделано",
+    # но toggle_task_done (чек-лист "Что получилось?" здесь, в самом
+    # вечернем ритуале) никогда этого не делал — отметка "сделано" оставалась
+    # только в ctx.user_data/tasks_done, а пункт 📥 Список дел молча висел
+    # уже выполненным и продолжал предлагаться (в т.ч. как вариант для
+    # завтрашнего плана, см. evening_plan_kb). Зеркалим ту же логику здесь
+    # для каждой задачи, отмеченной выполненной в этом чек-листе.
+    morning_link_changed = False
+    for key, _ in TASK_FIELDS:
+        if key not in done:
+            continue
+        link_key = f"_pool_link_{key}"
+        linked_pool_id = morning_for_summary.pop(link_key, None)
+        if linked_pool_id is not None:
+            delete_pool_task(uid, linked_pool_id)
+            morning_link_changed = True
+        else:
+            task_text = (morning_for_summary.get(key) or "").strip().lower()
+            if task_text:
+                for item in get_pool_tasks(uid):
+                    if item["text"].strip().lower() == task_text:
+                        delete_pool_task(uid, item["id"])
+    if morning_link_changed:
+        save_diary(uid, "morning", morning_for_summary, for_date=morning_today)
+
     selfcare_summary = ""
     if data["e_selfcare"]:
         labels = dict(SELFCARE_ITEMS)
