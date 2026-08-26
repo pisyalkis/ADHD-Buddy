@@ -4615,19 +4615,35 @@ async def ask_task_text(message, ctx, key):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
     )
 
-def pool_suggestions_kb(key, pool, offset=0, limit=3):
+def pool_suggestions_kb(key, pool, offset=0, limit=8):
+    """Клавиатура выбора готовой формулировки из "Списка дел" при постановке
+    A/B/C. Реальный фидбек: со старым лимитом (3 и просто "Показать ещё")
+    было непонятно, сколько дел всего и сколько ещё осталось — гибрид по
+    просьбе Артёма: лимит побольше (не гигантский список одним разом), а
+    если пул больше одной страницы — понятная постраничная навигация
+    ◀️/▶️ со счётчиком "N/M" вместо бесконечного "Показать ещё" без
+    возможности вернуться назад."""
+    total = len(pool)
     chunk = pool[offset:offset + limit]
     rows = [[InlineKeyboardButton(item["text"][:40], callback_data=f"pooluse_{key}_{item['id']}")] for item in chunk]
-    if offset + limit < len(pool):
-        rows.append([InlineKeyboardButton("Показать ещё", callback_data=f"poolmore_{key}_{offset + limit}")])
+    total_pages = max(1, (total + limit - 1) // limit)
+    if total_pages > 1:
+        current_page = offset // limit + 1
+        nav_row = []
+        if offset > 0:
+            nav_row.append(InlineKeyboardButton("◀️", callback_data=f"poolpage_{key}_{max(0, offset - limit)}"))
+        nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="noop"))
+        if offset + limit < total:
+            nav_row.append(InlineKeyboardButton("▶️", callback_data=f"poolpage_{key}_{offset + limit}"))
+        rows.append(nav_row)
     rows.append([InlineKeyboardButton("✍️ Напишу свою", callback_data=f"poolwrite_{key}")])
     rows.append([InlineKeyboardButton("Отмена", callback_data="go_tasks")])
     return InlineKeyboardMarkup(rows)
 
-async def pool_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def pool_change_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    key, offset_s = q.data[len("poolmore_"):].rsplit("_", 1)
+    key, offset_s = q.data[len("poolpage_"):].rsplit("_", 1)
     pool = get_pool_tasks(q.from_user.id)
     await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
 
@@ -4900,6 +4916,19 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if linked_pool_id is not None:
             delete_pool_task(uid, linked_pool_id)
             save_diary(uid, "morning", morning, for_date=today)
+        else:
+            # Реальный фидбек: если задачу поставили НЕ через выбор из
+            # пула (напечатали вручную тот же текст, или перенесли вечерним
+            # планом через "Взять как задачи на сегодня") — связи
+            # _pool_link_ нет, и совпадающий по тексту пункт пула молча
+            # оставался висеть в "Списке дел" уже выполненным. Чистим по
+            # точному совпадению текста без учёта регистра — как и
+            # существующая дедупликация при добавлении дел в пул.
+            task_text = (morning.get(key) or "").strip().lower()
+            if task_text:
+                for item in get_pool_tasks(uid):
+                    if item["text"].strip().lower() == task_text:
+                        delete_pool_task(uid, item["id"])
     done_set = set(done_list)
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
 
@@ -7903,7 +7932,7 @@ def main():
     app.add_handler(CallbackQueryHandler(show_task_pool_delete, pattern="^pool_del_menu$"))
     app.add_handler(CallbackQueryHandler(pool_delete_item,     pattern="^pooldel_"))
     app.add_handler(CallbackQueryHandler(pool_use_item,        pattern="^pooluse_"))
-    app.add_handler(CallbackQueryHandler(pool_show_more,       pattern="^poolmore_"))
+    app.add_handler(CallbackQueryHandler(pool_change_page,     pattern="^poolpage_"))
     app.add_handler(CallbackQueryHandler(pool_write_own,       pattern="^poolwrite_"))
     app.add_handler(CallbackQueryHandler(show_reminders,       pattern="^go_reminders$"))
     app.add_handler(CallbackQueryHandler(reminder_add_start,   pattern="^rem_add$"))
