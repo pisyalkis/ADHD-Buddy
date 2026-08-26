@@ -2052,7 +2052,18 @@ async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_
     Не перезаписывает уже стоящие сегодня задачи — заполняет только
     пустые слоты, чтобы не затереть то, что уже успели поставить вручную."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    # Реальный баг: полный clear_awaiting_flags(ctx, update) дополнительно
+    # отменяет активный morning/evening ConversationHandler — но эта кнопка
+    # висит на том же сообщении, что и разминка, и нажимается ПОКА
+    # пользователь ещё внутри утреннего ритуала (состояние M_EXERCISE).
+    # Отмена диалога здесь осиротяла все следующие кнопки ритуала
+    # ("Уже сделал"/"Начать разминку" и т.д.) — они переставали отвечать
+    # вообще (Telegram показывал бесконечную загрузку, потому что
+    # ConversationHandler больше не отслеживал разговор для ответа).
+    # Частичная форма (без update) чистит только ctx.user_data, не трогая
+    # активный диалог — здесь и не нужно ничего, кроме неё: свободного
+    # текста эта кнопка не ждёт.
+    clear_awaiting_flags(ctx)
     uid = q.from_user.id
     user = get_user(uid)
     today = datetime.now(get_user_tz(user)).date().isoformat()
