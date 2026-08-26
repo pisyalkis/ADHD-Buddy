@@ -1355,7 +1355,7 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
         _mark_privacy_hint_seen(uid, key, user)
 
 MENU_TABS = ("today", "tools", "me")
-MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Я"}
+MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
 
 def menu_tab_kb(tab, user=None):
     """Три вкладки меню вместо одного длинного списка с «Ещё» на 8 пунктов
@@ -1399,7 +1399,7 @@ def menu_tab_kb(tab, user=None):
         ]
     else:  # "me"
         rows += [
-            [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
+            [InlineKeyboardButton("⚙️ Общие", callback_data="go_settings")],
             [InlineKeyboardButton("💎 Подписка", callback_data="go_subscribe")],
             [InlineKeyboardButton("🆕 Что нового", callback_data="go_whats_new")],
             [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
@@ -5445,13 +5445,13 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.reply_text("Главное меню 👇", reply_markup=main_menu(get_user(q.from_user.id)))
+    await q.message.reply_text("Главное меню", reply_markup=main_menu(get_user(q.from_user.id)))
 
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await q.message.reply_text("🧩 Инструменты 👇", reply_markup=menu_tab_kb("tools", user))
+    await q.message.reply_text("🧩 Инструменты", reply_markup=menu_tab_kb("tools", user))
 
 async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Переключение вкладок меню — редактирует то же сообщение, а не шлёт
@@ -5461,8 +5461,8 @@ async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tab = q.data[len("go_tab_"):]
     await q.answer()
     user = get_user(q.from_user.id)
-    titles = {"today": "Сегодня 👇", "tools": "🧩 Инструменты 👇", "me": "🧑 Я 👇"}
-    text = titles.get(tab, "Меню 👇")
+    titles = {"today": "Сегодня", "tools": "🧩 Инструменты", "me": "⚙️ Настройки"}
+    text = titles.get(tab, "Меню")
     kb = menu_tab_kb(tab, user)
     try:
         await q.message.edit_text(text, reply_markup=kb)
