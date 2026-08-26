@@ -1354,40 +1354,64 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
     if show_hint:
         _mark_privacy_hint_seen(uid, key, user)
 
+MENU_TABS = ("today", "tools", "me")
+MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Я"}
+
+def menu_tab_kb(tab, user=None):
+    """Три вкладки меню вместо одного длинного списка с «Ещё» на 8 пунктов
+    вторым уровнем: 'today' — то, к чему обращаются каждый день, 'tools' —
+    навыки/маячок/карточка дня/гид, 'me' — настройки и всё о самом боте.
+    Переключение вкладок редактирует то же сообщение (см. go_tab), а не
+    шлёт новое — тумблер-строка сверху всегда видна и не размножает чат.
+
+    Кнопка «🔥 Стрик» на вкладке 'today' скрывается, если пользователь
+    отключил её в настройках (см. streak_hidden) — некоторых стрик не
+    мотивирует, а давит, и вместо тумблера-полумеры проще просто убрать
+    его из виду."""
+    if tab not in MENU_TABS:
+        tab = "today"
+    tab_row = []
+    for key in MENU_TABS:
+        label = MENU_TAB_LABELS[key]
+        if key == tab:
+            tab_row.append(InlineKeyboardButton(f"• {label} •", callback_data="noop"))
+        else:
+            tab_row.append(InlineKeyboardButton(label, callback_data=f"go_tab_{key}"))
+    rows = [tab_row]
+    if tab == "today":
+        streak_hidden = bool(user and int(user.get("streak_hidden") or 0))
+        row3 = [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")]
+        if not streak_hidden:
+            row3.append(InlineKeyboardButton("🔥 Стрик", callback_data="go_streak"))
+        rows += [
+            [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
+             InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
+            [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
+             InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
+            row3,
+        ]
+    elif tab == "tools":
+        rows += [
+            [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
+            [InlineKeyboardButton("⏰ Напоминания", callback_data="go_reminders")],
+            [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
+            [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+        ]
+    else:  # "me"
+        rows += [
+            [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings")],
+            [InlineKeyboardButton("💎 Подписка", callback_data="go_subscribe")],
+            [InlineKeyboardButton("🆕 Что нового", callback_data="go_whats_new")],
+            [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+            [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+        ]
+    return InlineKeyboardMarkup(rows)
+
 def main_menu(user=None):
-    """Верхний уровень меню — только то, к чему обращаются каждый день.
-    Редкие пункты (карточка дня, навыки, о СДВГ, обратная связь, о боте)
-    убраны под «🧩 Ещё», см. menu_more_kb().
+    return menu_tab_kb("today", user)
 
-    Кнопка «🔥 Стрик» скрывается, если пользователь отключил её в
-    настройках (см. streak_hidden) — некоторых стрик не мотивирует, а
-    давит, и вместо тумблера-полумеры проще просто убрать его из виду."""
-    streak_hidden = bool(user and int(user.get("streak_hidden") or 0))
-    row3 = [InlineKeyboardButton("🤖 Коуч", callback_data="go_coach")]
-    if not streak_hidden:
-        row3.append(InlineKeyboardButton("🔥 Стрик", callback_data="go_streak"))
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("☀️ Утро", callback_data="go_morning"),
-         InlineKeyboardButton("🌙 Вечер", callback_data="go_evening")],
-        [InlineKeyboardButton("📋 Задачи", callback_data="go_tasks"),
-         InlineKeyboardButton("🍅 Фокус-режим", callback_data="go_focus")],
-        row3,
-        [InlineKeyboardButton("⚙️ Настройки", callback_data="go_settings"),
-         InlineKeyboardButton("🧩 Ещё", callback_data="go_menu_more")],
-    ])
-
-def menu_more_kb():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗂 Карточка дня", callback_data="go_daycard")],
-        [InlineKeyboardButton("⏰ Напоминания", callback_data="go_reminders")],
-        [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
-        [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
-        [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
-        [InlineKeyboardButton("💎 Подписка", callback_data="go_subscribe")],
-        [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
-        [InlineKeyboardButton("🆕 Что нового", callback_data="go_whats_new")],
-        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-    ])
+def menu_more_kb(user=None):
+    return menu_tab_kb("tools", user)
 
 def menu_button_kb():
     """Свёрнутое меню — одна кнопка «◀️ Меню», раскрывающая полный main_menu()
@@ -5426,7 +5450,24 @@ async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.reply_text("🧩 Ещё 👇", reply_markup=menu_more_kb())
+    user = get_user(q.from_user.id)
+    await q.message.reply_text("🧩 Инструменты 👇", reply_markup=menu_tab_kb("tools", user))
+
+async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Переключение вкладок меню — редактирует то же сообщение, а не шлёт
+    новое, чтобы вкладки ощущались как настоящие вкладки, а не серия
+    сообщений подряд."""
+    q = update.callback_query
+    tab = q.data[len("go_tab_"):]
+    await q.answer()
+    user = get_user(q.from_user.id)
+    titles = {"today": "Сегодня 👇", "tools": "🧩 Инструменты 👇", "me": "🧑 Я 👇"}
+    text = titles.get(tab, "Меню 👇")
+    kb = menu_tab_kb(tab, user)
+    try:
+        await q.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await q.message.reply_text(text, reply_markup=kb)
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -8150,6 +8191,7 @@ def main():
     app.add_handler(CallbackQueryHandler(why_callback, pattern=r"^why_"))
     app.add_handler(CallbackQueryHandler(go_menu,     pattern="^go_menu$"))
     app.add_handler(CallbackQueryHandler(go_menu_more, pattern="^go_menu_more$"))
+    app.add_handler(CallbackQueryHandler(go_tab, pattern="^go_tab_(today|tools|me)$"))
     app.add_handler(CallbackQueryHandler(guide_start,      pattern="^go_guide$"))
     app.add_handler(CallbackQueryHandler(guide_section,    pattern="^guide_"))
     app.add_handler(CallbackQueryHandler(onboard_trained_yes, pattern="^ob_trained_yes$"))
