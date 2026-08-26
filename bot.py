@@ -3362,9 +3362,13 @@ async def classify_free_text(text, now_dt):
                 '5) Явно просит поставить/добавить ЗАДАЧУ НА СЕГОДНЯ — именно как задачу дня (A/B/C), а не '
                 'просто в общий список на будущее («поставь задачу на сегодня разобраться с сайтом», '
                 '«добавь задачу — написать отчёт», «сегодня нужно ещё позвонить маме», «задача: подготовить '
-                'слайды»): {"intent": "set_task", "text": "суть задачи"}. Отличие от (2) — здесь явно про '
-                'СЕГОДНЯШНИЙ день/прямо сейчас как реальное дело дня, а не просто "куда-то занести на потом". '
-                'Если неочевидно, что это именно на сегодня — выбирай (2) add_pool, это безопаснее.\n'
+                'слайды», «поставь как задачу B1 — купить молоко», «задача C2: полить цветы»): '
+                '{"intent": "set_task", "text": "суть задачи", "slot": "A"|"B1"|"B2"|"C1"|"C2"|"C3"|""}. '
+                'slot — только если пользователь ЯВНО назвал букву/номер слота ("как задачу B1", "задача C2: '
+                '..."), иначе пустая строка "" — тогда бот сам поставит в первый свободный слот. Отличие от '
+                '(2) — здесь явно про СЕГОДНЯШНИЙ день/прямо сейчас как реальное дело дня, а не просто "куда-то '
+                'занести на потом". Если неочевидно, что это именно на сегодня — выбирай (2) add_pool, это '
+                'безопаснее.\n'
                 '6) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
                 'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
                 '{"intent": "other"}\n'
@@ -3407,6 +3411,8 @@ async def classify_free_text(text, now_dt):
             return data
         if intent == "set_task" and str(data.get("text") or "").strip():
             data["text"] = str(data["text"]).strip()
+            slot = str(data.get("slot") or "").strip().upper()
+            data["slot_key"] = {"A": "focus", "B1": "b1", "B2": "b2", "C1": "c1", "C2": "c2", "C3": "c3"}.get(slot, "")
             return data
         return {"intent": "other"}
     except Exception:
@@ -4877,11 +4883,21 @@ async def handle_delete_pool_intent(message, uid, query):
     candidates = (matches or items)[:2]
     await send_pool_delete_menu(message, uid, items=candidates)
 
-async def handle_set_task_intent(message, ctx, uid, text):
+async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
     """Свободный текст, явно про задачу НА СЕГОДНЯ (см. classify_free_text,
     intent "set_task") — ставит в первый пустой слот A/B1/B2/C1/C2/C3, а не
     заставляет открывать 📋 Задачи и топтаться по шагам ради одной короткой
-    фразы. По запросу — "это точно делаем"."""
+    фразы. По запросу — "это точно делаем".
+
+    slot_key — если пользователь ЯВНО назвал слот ("поставь как задачу
+    B1 — купить молоко"), кладём именно туда (перезаписывая, если уже
+    занят — раз назвали конкретно, значит осознанно), а не в первый
+    свободный (по запросу: "можно ли писать какой задачей на день
+    добавить ту, что просишь добавить?")."""
+    valid_keys = {k for k, _ in TASK_FIELDS}
+    if slot_key and slot_key in valid_keys:
+        await apply_task_edit(message, ctx, uid, slot_key, text)
+        return
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
@@ -5623,7 +5639,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif intent == "edit_reminder":
             await handle_edit_reminder_intent(update.message, ctx, uid, routed.get("query") or text)
         elif intent == "set_task":
-            await handle_set_task_intent(update.message, ctx, uid, routed.get("text") or text)
+            await handle_set_task_intent(update.message, ctx, uid, routed.get("text") or text, routed.get("slot_key") or "")
         else:
             # Реальный баг (12-й чекап, тот же класс, что и coach_mode выше):
             # research_awaiting — флаг в БД, а не сиюминутный ctx.user_data,
