@@ -77,6 +77,54 @@ _evening_conv = None
  E_TASKS_DONE, E_ACH, E_PRAISE, E_HIGHLIGHTS, E_SELFCARE, E_ENERGY,
  E_A, E_B1, E_B2, E_C1, E_C2, E_C3) = range(24)
 
+# ── ЧТО НОВОГО ──────────────────────────────────────────────────────────────
+# Куратор ведёт вручную при значимых пользовательских фичах (не при каждом
+# багфиксе) — самое новое первым. Одна точка правды: тот же текст показывает
+# и "🆕 Что нового" по запросу, и /broadcast latest (одноразовый пуш всем) —
+# чтобы не писать объяснение нового функционала дважды в двух местах.
+CHANGELOG = [
+    {
+        "title": "🆕 Перенос вечернего плана в задачи дня",
+        "text": (
+            "Если вечером поставил(а) план на завтра — на утреннем приветствии "
+            "теперь есть кнопка «✅ Взять как задачи на сегодня»: план сразу "
+            "становится реальными задачами дня, а не просто напоминанием в тексте."
+        ),
+    },
+    {
+        "title": "🆕 Список дел стал понятнее",
+        "text": (
+            "На экране выбора готового дела для задачи A/B/C теперь видно, "
+            "сколько страниц и на какой ты сейчас (◀️ 2/5 ▶️) — вместо "
+            "непонятного «Показать ещё». А дела, которые уже сделаны, теперь "
+            "сами исчезают из списка, даже если поставил(а) их не отсюда."
+        ),
+    },
+    {
+        "title": "🆕 Можно убрать задачу целиком",
+        "text": (
+            "В 📋 Задачи → «✏️ Поставить/изменить задачи» появилась кнопка "
+            "«🗑 Убрать» — если задача на сегодня не нужна вообще, теперь можно "
+            "стереть слот, а не только переписать текст или отметить выполненной."
+        ),
+    },
+    {
+        "title": "🆕 Можно писать задачи текстом, без кнопок",
+        "text": (
+            "Просто напиши «поставь задачу на сегодня — разобраться с сайтом» "
+            "— бот сам поставит её в первый свободный слот A/B/C. Можно и "
+            "указать слот явно: «поставь как задачу B1 — купить молоко»."
+        ),
+    },
+]
+
+def _whats_new_text(limit=5):
+    entries = CHANGELOG[:limit]
+    lines = ["🆕 *Что нового*\n"]
+    for entry in entries:
+        lines.append(f"*{entry['title']}*\n{entry['text']}\n")
+    return "\n".join(lines)
+
 # ── ADHD SKILLS FROM TRAINING ──────────────────────────────────────────────
 SKILLS = [
     {
@@ -539,6 +587,7 @@ def init_db():
         ("pinned_msg_id", "''"),
         ("pinned_task_keys", "''"),
         ("pinned_ai_msg", "''"),
+        ("notify_updates", "1"),
         ("morning_filled_at", "''"),
         ("onboard_explained", "'0'"),
         ("daily_skill_override", "''"),
@@ -1336,6 +1385,7 @@ def menu_more_kb():
         [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
         [InlineKeyboardButton("💎 Подписка", callback_data="go_subscribe")],
         [InlineKeyboardButton("ℹ️ О боте", callback_data="go_about")],
+        [InlineKeyboardButton("🆕 Что нового", callback_data="go_whats_new")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
 
@@ -6148,6 +6198,45 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
+def _whats_new_kb(user):
+    notify_on = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    label = "🔔 Присылать анонсы обновлений: вкл" if notify_on else "🔕 Присылать анонсы обновлений: выкл"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data="toggle_notify_updates")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
+async def show_whats_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«🆕 Что нового» — по запросу, не пуш. Показывает последние записи
+    CHANGELOG с кратким объяснением, как пользоваться новым функционалом —
+    не просто "что изменилось", а сразу и "как этим воспользоваться". Тут
+    же — переключатель "присылать анонсы обновлений" (по запросу): по
+    умолчанию включён (та же конвенция, что и у остальных notif_*_on), кто
+    не хочет — выключает сам."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    user = get_user(q.from_user.id)
+    if not CHANGELOG:
+        await q.message.reply_text("Пока нечего показать — загляни попозже 🙂", reply_markup=_whats_new_kb(user))
+        return
+    await q.message.reply_text(_whats_new_text(), parse_mode="Markdown", reply_markup=_whats_new_kb(user))
+
+async def toggle_notify_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Переключатель "присылать анонсы обновлений" на экране "🆕 Что
+    нового" — гейтит именно /broadcast latest (адресную рассылку записи
+    CHANGELOG), не обычный /broadcast (тот остаётся на усмотрение админа
+    и уходит всем зарегистрированным, как и раньше)."""
+    q = update.callback_query
+    uid = q.from_user.id
+    user = get_user(uid)
+    cur = int(user.get("notify_updates") if user.get("notify_updates") is not None else 1)
+    update_user(uid, notify_updates=0 if cur else 1)
+    await q.answer("🔕 Анонсы обновлений выключены" if cur else "🔔 Анонсы обновлений включены")
+    try:
+        await q.message.edit_reply_markup(reply_markup=_whats_new_kb(get_user(uid)))
+    except Exception:
+        pass
+
 # ── PRIVACY ────────────────────────────────────────────────────────────────
 async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Отвечает на прямой вопрос тестировщицы про безопасность/хранение
@@ -7874,13 +7963,25 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Текст рассылки берётся из сообщения, на которое отвечаешь (reply) — так
     сохраняются переносы строк и Markdown-разметка, которые /broadcast текст
     аргументами команды потерял бы (Telegram схлопывает их в одну строку).
-    Можно и одной строкой: /broadcast текст — тогда без переносов."""
+    Можно и одной строкой: /broadcast текст — тогда без переносов.
+
+    /broadcast latest — разослать самую свежую запись CHANGELOG (ту же, что
+    показывает "🆕 Что нового" по запросу), не переписывая объяснение
+    нового функционала заново специально для рассылки."""
     uid = update.effective_user.id
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     reply = update.message.reply_to_message
-    text = reply.text if (reply and reply.text) else " ".join(ctx.args)
+    is_changelog = not reply and ctx.args and ctx.args[0].lower() == "latest"
+    if is_changelog:
+        if not CHANGELOG:
+            await update.message.reply_text("В CHANGELOG пока пусто — нечего разослать.")
+            return
+        entry = CHANGELOG[0]
+        text = f"{entry['title']}\n\n{entry['text']}"
+    else:
+        text = reply.text if (reply and reply.text) else " ".join(ctx.args)
     if not text:
         await update.message.reply_text(
             "Использование: напиши текст рассылки отдельным сообщением боту, "
@@ -7891,7 +7992,17 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
+    if is_changelog:
+        # /broadcast latest — анонс обновления, гейтится персональным
+        # переключателем "🔔 Присылать анонсы обновлений" (см. "🆕 Что
+        # нового"/toggle_notify_updates). Обычный /broadcast <текст> — это
+        # прямое обращение админа, ему такой гейт не нужен, шлём всем как
+        # раньше. Фильтруем в Python (int(...) or 1), как и остальные
+        # 0/1-флаги в файле — не полагаемся на SQL-сравнение TEXT-колонки.
+        all_rows = conn.execute("SELECT user_id, notify_updates FROM users WHERE name != ''").fetchall()
+        rows = [(u,) for u, nu in all_rows if int(nu or 1)]
+    else:
+        rows = conn.execute("SELECT user_id FROM users WHERE name != ''").fetchall()
     conn.close()
 
     sent, failed = 0, 0
@@ -8105,6 +8216,8 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
+    app.add_handler(CallbackQueryHandler(show_whats_new,   pattern="^go_whats_new$"))
+    app.add_handler(CallbackQueryHandler(toggle_notify_updates, pattern="^toggle_notify_updates$"))
     app.add_handler(CallbackQueryHandler(go_privacy,       pattern="^go_privacy$"))
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
