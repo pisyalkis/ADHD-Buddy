@@ -1483,6 +1483,12 @@ async def _render_ritual_step(message, ctx, text, ttl_seconds=None, **kwargs):
     _finish_ritual_cleanup) — сюда попадают только сообщения-вопросы бота."""
     await _render_step_msg(message, ctx, "ritual_step", text, ttl_seconds=ttl_seconds, **kwargs)
 
+async def _render_coach_msg(message, ctx, text, **kwargs):
+    """Диалог с 🧠 Коуч (coach_menu/coach_quick/send_coach) — track_key="coach".
+    Каждая реплика коуча (и "🤖 думаю...", и сам ответ) редактирует одно и
+    то же сообщение вместо того чтобы копить отдельное на каждый обмен."""
+    await _render_step_msg(message, ctx, "coach", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, **kwargs)
+
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
 
@@ -3918,7 +3924,12 @@ async def send_coach(message, text, uid, ctx=None):
     ctx (если передан) хранит историю диалога в user_data["coach_history"],
     чтобы коуч помнил, о чём уже говорили в этой сессии, а не отвечал на
     каждое сообщение с нуля, теряя нить (жалоба: "сильно тупил" — ответы
-    не учитывали предыдущие реплики)."""
+    не учитывали предыдущие реплики).
+
+    По просьбе (одно актуальное сообщение вместо цепочки) — при наличии
+    ctx каждый обмен (и "🤖 думаю...", и сам ответ) редактирует одно и то
+    же сообщение (track_key="coach", см. _render_coach_msg), а не шлёт
+    новое на каждую реплику."""
     if not ANTHROPIC_KEY:
         await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=menu_button_kb())
         return
@@ -3937,7 +3948,10 @@ async def send_coach(message, text, uid, ctx=None):
     skill_names = ", ".join(s["name"] for s in SKILLS)
 
     history = ctx.user_data.get("coach_history", []) if ctx is not None else []
-    thinking = await message.reply_text("🤖 думаю...")
+    if ctx is not None:
+        await _render_coach_msg(message, ctx, "🤖 думаю...")
+    else:
+        thinking = await message.reply_text("🤖 думаю...")
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
@@ -3961,15 +3975,18 @@ async def send_coach(message, text, uid, ctx=None):
             messages=history + [{"role": "user", "content": text}]
         )
         reply_text = resp.content[0].text
+        final_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
         if ctx is not None:
             history = history + [{"role": "user", "content": text}, {"role": "assistant", "content": reply_text}]
             ctx.user_data["coach_history"] = history[-COACH_HISTORY_LIMIT:]
-        await thinking.edit_text(
-            f"🤖 {reply_text}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
-        )
+            await _render_coach_msg(message, ctx, f"🤖 {reply_text}", reply_markup=final_kb)
+        else:
+            await thinking.edit_text(f"🤖 {reply_text}", reply_markup=final_kb)
     except Exception as e:
-        await thinking.edit_text(f"Ошибка: {e}")
+        if ctx is not None:
+            await _render_coach_msg(message, ctx, f"Ошибка: {e}")
+        else:
+            await thinking.edit_text(f"Ошибка: {e}")
 
 # ── COACH MENU ─────────────────────────────────────────────────────────────
 COACH_PROMPTS = {
@@ -3998,7 +4015,7 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     write_self = g(gender, "сам", "сама")
-    await _edit_or_send(
+    msg = await _edit_or_send(
         q,
         f"🤖 *Коуч*\n\nЧто происходит? Пиши {write_self} или выбери быструю кнопку:",
         parse_mode="Markdown",
@@ -4012,6 +4029,13 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
+    # Запоминаем как track_key="coach" ДО первого обмена — иначе он ушёл бы
+    # отдельным новым сообщением, а этот экран остался бы висеть рядом.
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if chat_id is not None and mid is not None:
+        ctx.user_data["coach_msg_id"] = mid
+        ctx.user_data["coach_chat_id"] = chat_id
     ctx.user_data["coach_mode"] = True
 
 async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5950,6 +5974,8 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
+    ctx.user_data.pop("coach_msg_id", None)
+    ctx.user_data.pop("coach_chat_id", None)
     ctx.user_data.pop("admin_msg_target", None)
     ctx.user_data.pop("admin_msg_name", None)
     if update is not None and update.effective_user is not None:
