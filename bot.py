@@ -2656,10 +2656,12 @@ def daily_prefs_kb(user):
     # пополам, и различие ("задачи"/"навыки") было ПОСЛЕДНИМ словом длинной
     # подписи "Маячки внимания: ..." — Telegram обрезает лишнее с конца, и
     # на экране обе кнопки читались как один и тот же текст "Маячки
-    # вниман...". Различающееся слово теперь идёт сразу после иконки.
+    # вниман...". Различающееся слово теперь идёт сразу после иконки —
+    # и по тому же запросу (мало места на кнопках) "внимания" тут убрано,
+    # само слово "маячки" уже узнаваемо однозначно в контексте задач/навыков.
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Задачи: маячки внимания", callback_data="quick_toggle_beacon"),
-         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Навыки: маячки внимания", callback_data="quick_toggle_skill")],
+        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Задачи: маячки", callback_data="quick_toggle_beacon"),
+         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Навыки: маячки", callback_data="quick_toggle_skill")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
 
@@ -4153,7 +4155,7 @@ def _settings_notifications_text_and_kb(user):
          InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
         [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
          InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
-        [InlineKeyboardButton("📳 Маячки внимания →", callback_data="go_settings_beacon")],
+        [InlineKeyboardButton("📳 Маячки →", callback_data="go_settings_beacon")],
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
             callback_data="toggle_notif"
@@ -4213,11 +4215,11 @@ def _settings_beacon_text_and_kb(user):
     ]
     rows = [
         [InlineKeyboardButton(
-            f"{'✅' if be else '🔕'} Маячки внимания: задачи", callback_data="toggle_beacon"),
+            f"{'✅' if be else '🔕'} Маячки: задачи", callback_data="toggle_beacon"),
          *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
         *([ beacon_interval_row ] if be else []),
         [InlineKeyboardButton(
-            f"{'✅' if se else '🔕'} Маячки внимания: навыки", callback_data="toggle_skill_beacon")],
+            f"{'✅' if se else '🔕'} Маячки: навыки", callback_data="toggle_skill_beacon")],
         *([ skill_mode_row ] if se else []),
         *([ skill_interval_row ] if (se and smode == "interval") else []),
         *([ skill_count_row ] if (se and smode == "random") else []),
@@ -4318,7 +4320,7 @@ def _beacon_types_kb(user):
     for key, label in BEACON_TECHNIQUE_TYPES:
         mark = "✅ " if key in enabled else "▫️ "
         rows.append([InlineKeyboardButton(mark + label, callback_data=f"toggle_beacontype_{key}")])
-    rows.append([InlineKeyboardButton("◀️ Маячки внимания", callback_data="go_settings_beacon")])
+    rows.append([InlineKeyboardButton("◀️ Маячки", callback_data="go_settings_beacon")])
     return InlineKeyboardMarkup(rows)
 
 async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5888,7 +5890,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 update_user(uid, **{block: text})
                 beacon_labels = {"beacon_start": "🌅 Начало", "beacon_end": "🌇 Конец"}
                 confirm_text = f"{beacon_labels.get(block,'')} рабочих часов «Маячков внимания» установлен на *{text}* ✅"
-                confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Маячки внимания", callback_data="go_settings_beacon")]])
+                confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Маячки", callback_data="go_settings_beacon")]])
                 if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
                     await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
             else:
