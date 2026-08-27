@@ -5174,11 +5174,20 @@ async def walk_clear_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«✏️ Поставить/изменить задачи» — единая точка входа вместо отдельной
     «✏️ Изменить» на каждой строке списка. Ведёт последовательно по всем
-    шести слотам, см. _walk_to_step."""
+    шести слотам, см. _walk_to_step.
+
+    Реальный фидбек: проход всегда начинался с A, и если A/B1/... уже
+    заполнены, приходилось тапать «Пропустить» по каждой из них, чтобы
+    дойти до реально нужной. Начинаем сразу с первого незаполненного
+    слота — если такой есть; если все шесть уже заняты, идти незачем
+    "к следующей" и проход как раньше стартует с A для полного обзора/правки."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
-    await _walk_to_step(q.message, ctx, uid, TASK_FIELDS[0][0])
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    start_key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), TASK_FIELDS[0][0])
+    await _walk_to_step(q.message, ctx, uid, start_key)
 
 async def walk_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
