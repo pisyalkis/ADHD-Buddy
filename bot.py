@@ -5937,12 +5937,17 @@ async def send_due_reminders(app, user, now_dt):
     now_key = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
     for rem in get_due_reminders(uid, now_key):
         try:
-            await app.bot.send_message(
+            msg = await app.bot.send_message(
                 chat_id=uid,
                 text=f"⏰ *Напоминание*\n\n{md_escape(rem['text'])}",
                 parse_mode="Markdown",
                 reply_markup=menu_button_kb()
             )
+            # Только самоудаление по тишине — НЕ через notif_msg_ids/
+            # send_tracked_notification: два разных напоминания могут
+            # сработать почти одновременно, и срабатывание одного не
+            # должно удалять ещё не прочитанное сообщение другого.
+            schedule_message_deletion(uid, msg.message_id, INACTIVE_SCREEN_TTL_SEC)
             if rem.get("recur"):
                 reschedule_reminder(uid, rem["id"], next_recur_time(rem["remind_at"], rem["recur"], now_dt))
             else:
