@@ -555,6 +555,10 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER, message_id INTEGER, delete_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS ritual_msg_ids (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER, message_id INTEGER
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -2047,17 +2051,36 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # полностью завершён, удалить их разом и прислать короткое подтверждение,
 # которое само исчезнет через RITUAL_CONFIRM_TTL_SEC.
 #
-# Хранилище — обычный dict в памяти (не ctx.user_data): не переживает
-# перезапуск бота, но это ничем не грозит — просто конкретный черновик
-# ритуала останется неубранным, а не сломается что-то важное.
-_RITUAL_MSG_IDS = {}
+# Реальный баг (живой отчёт): накопленные id хранились обычным dict в
+# памяти процесса — а этот бот за одну сессию правок передеплоивается
+# много раз за час. Рестарт процесса между вопросом и ответом ритуала
+# (совершенно рядовое событие при таком темпе деплоев, а не редкий
+# краевой случай) стирал уже накопленные id, и до конца ритуала доживал
+# только "хвост", начатый после рестарта — из всего Q&A удалялось только
+# последнее сообщение. Таблица БД (та же схема хранения, что и у
+# scheduled_deletions) переживает рестарт как любые другие данные.
 RITUAL_CONFIRM_TTL_SEC = 600
 
 def _track_ritual_msg(msg):
     chat_id = getattr(msg, "chat_id", None)
     mid = getattr(msg, "message_id", None)
-    if chat_id is not None and mid is not None:
-        _RITUAL_MSG_IDS.setdefault(chat_id, []).append(mid)
+    if chat_id is None or mid is None:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO ritual_msg_ids(chat_id, message_id) VALUES (?, ?)", (chat_id, mid))
+    conn.commit()
+    conn.close()
+
+def _pop_ritual_msg_ids(chat_id):
+    """Возвращает и удаляет из БД все накопленные id сообщений ритуала для
+    этого чата — атомарно в том смысле, что вызывающий код (см.
+    _finish_ritual_cleanup) забирает их ровно один раз."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT message_id FROM ritual_msg_ids WHERE chat_id=?", (chat_id,)).fetchall()
+    conn.execute("DELETE FROM ritual_msg_ids WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
+    return [r[0] for r in rows]
 
 def schedule_message_deletion(chat_id, message_id, delay_seconds):
     """Планирует удаление сообщения через delay_seconds — не через таймер в
@@ -2116,7 +2139,7 @@ async def _finish_ritual_cleanup(ctx, message, uid, kind, extra_text=None, extra
     if bot is None:
         return
     chat_id = uid
-    ids = _RITUAL_MSG_IDS.pop(chat_id, [])
+    ids = _pop_ritual_msg_ids(chat_id)
     for mid in ids:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=mid)
