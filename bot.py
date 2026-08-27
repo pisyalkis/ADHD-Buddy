@@ -1359,7 +1359,7 @@ def _mark_privacy_hint_seen(uid, key, user=None):
         shown.append(key)
         update_user(uid, privacy_hint_shown=",".join(shown))
 
-async def send_with_privacy_hint(message, text, kb, uid, key):
+async def send_with_privacy_hint(message, ctx, text, kb, uid, key):
     """Отправляет вопрос, добавляя строку про приватность и кнопку "🔒
     Приватность" в клавиатуру — но только при первом обращении
     пользователя к этому полю за всё время (privacy_hint_shown). Дальше
@@ -1370,7 +1370,11 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
     отправки сообщения (в этой позиции), а не после — временный сбой
     reply_text (таймаут/сеть) навсегда терял пользователю этот
     одноразовый показ подсказки о приватности, хотя он её так и не увидел.
-    Пишем в БД только после успешной отправки."""
+    Пишем в БД только после успешной отправки.
+
+    По просьбе (одно актуальное сообщение вместо цепочки) — вопрос теперь
+    редактирует то же сообщение ритуала (см. _render_ritual_step), а не
+    шлёт новое каждый шаг."""
     hint = PRIVACY_HINT_FIELDS.get(key)
     user = get_user(uid)
     already_shown = key in (user.get("privacy_hint_shown") or "").split(",")
@@ -1379,8 +1383,7 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
         text = f"{text}\n\n_{hint}_"
         rows = [[InlineKeyboardButton("🔒 Приватность", callback_data="go_privacy")]] + list(kb.inline_keyboard)
         kb = InlineKeyboardMarkup(rows)
-    sent = await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-    _track_ritual_msg(sent)
+    await _render_ritual_step(message, ctx, text, parse_mode="Markdown", reply_markup=kb)
     if show_hint:
         _mark_privacy_hint_seen(uid, key, user)
 
@@ -1443,30 +1446,42 @@ async def _edit_tracked_msg(ctx, track_key, text, ttl_seconds=None, **kwargs):
     except Exception:
         return False
 
-async def _render_walk_step(message, ctx, text, ttl_seconds=None, **kwargs):
-    """Общая точка входа для каждого шага последовательного прохода по
-    задачам (walk_tasks_start/_walk_to_step) — по фидбеку: в любой момент
-    должно быть видно только одно актуальное сообщение прохода, а не
-    цепочку из отдельных сообщений на каждый шаг.
+async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kwargs):
+    """Общая механика для любого многошагового сценария, который должен
+    держать одно актуальное сообщение вместо цепочки отдельных сообщений
+    на каждый шаг (см. _render_walk_step для прохода по задачам,
+    _render_ritual_step для утреннего/вечернего ритуала).
 
-    track_key="walk_step" отдельно от "task_edit" (тот — для одиночной
-    правки вне прохода). Работает одинаково и когда текущее взаимодействие
-    пришло с кнопки (message — само отслеживаемое сообщение бота), и
-    когда текстом (message — сообщение пользователя, редактировать его
-    нельзя): в обоих случаях правим ПО ЗАПОМНЕННЫМ id уже показанное
-    сообщение прохода; message используется только как источник chat_id
-    для отправки нового, если редактировать оказалось нечего (самый
-    первый шаг, либо старое сообщение уже недоступно)."""
-    if await _edit_tracked_msg(ctx, "walk_step", text, ttl_seconds=ttl_seconds, **kwargs):
+    Работает одинаково и когда текущее взаимодействие пришло с кнопки
+    (message — само отслеживаемое сообщение бота), и когда текстом
+    (message — сообщение пользователя, редактировать его нельзя): в обоих
+    случаях правим ПО ЗАПОМНЕННЫМ id уже показанное сообщение шага;
+    message используется только как источник chat_id для отправки нового,
+    если редактировать оказалось нечего (самый первый шаг, либо старое
+    сообщение уже недоступно)."""
+    if await _edit_tracked_msg(ctx, track_key, text, ttl_seconds=ttl_seconds, **kwargs):
         return
     sent = await message.reply_text(text, **kwargs)
     chat_id = getattr(sent, "chat_id", None)
     mid = getattr(sent, "message_id", None)
     if chat_id is not None and mid is not None:
-        ctx.user_data["walk_step_msg_id"] = mid
-        ctx.user_data["walk_step_chat_id"] = chat_id
+        ctx.user_data[f"{track_key}_msg_id"] = mid
+        ctx.user_data[f"{track_key}_chat_id"] = chat_id
         if ttl_seconds:
             schedule_message_deletion(chat_id, mid, ttl_seconds)
+
+async def _render_walk_step(message, ctx, text, ttl_seconds=None, **kwargs):
+    """Проход по задачам (walk_tasks_start/_walk_to_step) — track_key="walk_step",
+    отдельно от "task_edit" (тот — для одиночной правки вне прохода)."""
+    await _render_step_msg(message, ctx, "walk_step", text, ttl_seconds=ttl_seconds, **kwargs)
+
+async def _render_ritual_step(message, ctx, text, ttl_seconds=None, **kwargs):
+    """Утренний/вечерний ритуал (см. morning_start/evening_start и их
+    шаги) — track_key="ritual_step". Собственные типизированные ответы
+    пользователя (got_writing и т.п.) по-прежнему копятся отдельно через
+    _track_ritual_msg/ritual_msg_ids для массового удаления в конце (см.
+    _finish_ritual_cleanup) — сюда попадают только сообщения-вопросы бота."""
+    await _render_step_msg(message, ctx, "ritual_step", text, ttl_seconds=ttl_seconds, **kwargs)
 
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
@@ -2166,12 +2181,22 @@ async def _finish_ritual_cleanup(ctx, message, uid, extra_text=None, extra_kb=No
 
     chat_id берём из uid, а не message.chat_id — это личный чат с ботом,
     id пользователя и id чата всегда совпадают (та же логика, что и в
-    unpin_chat_message(chat_id=uid, ...) в pin_today_tasks)."""
+    unpin_chat_message(chat_id=uid, ...) в pin_today_tasks).
+
+    Помимо накопленного хвоста (собственные текстовые ответы человека —
+    _track_ritual_msg), сюда же попадает и последнее отслеживаемое
+    сообщение-вопрос самого ритуала (track_key="ritual_step", см.
+    _render_ritual_step) — по завершении ритуала оно уже не нужно,
+    итог виден в отдельной сводке (finish_morning/finish_evening)."""
     bot = getattr(ctx, "bot", None)
     if bot is None:
         return
     chat_id = uid
     ids = _pop_ritual_msg_ids(chat_id)
+    step_mid = ctx.user_data.pop("ritual_step_msg_id", None)
+    ctx.user_data.pop("ritual_step_chat_id", None)
+    if step_mid is not None:
+        ids.append(step_mid)
     for mid in ids:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=mid)
@@ -2210,8 +2235,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for key, state, ask_fn in RESUME_FIELDS:
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
-                sent = await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
-                _track_ritual_msg(sent)
+                await _render_ritual_step(q.message, ctx, f"↩️ Продолжаем с того места, где {stopped} сегодня утром:")
+                await asyncio.sleep(0.5)
                 await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Реальный баг (живой отчёт): "заполнил утро, но не задал цели.
@@ -2342,16 +2367,16 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"_{skill['desc']}_"
     )
     try:
-        sent_greeting = await q.message.reply_text(morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
+        await _render_ritual_step(q.message, ctx, morning_greeting, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
         # Тот же класс сбоя, что в finish_morning/finish_evening — непарный
         # спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
         print(f"Ошибка отправки утреннего приветствия uid={uid}: {e}")
-        sent_greeting = await q.message.reply_text(
+        await _render_ritual_step(
+            q.message, ctx,
             f"☀️ Доброе утро, {name}! 💡 Навык дня: {skill['name']}",
             reply_markup=reply_markup
         )
-    _track_ritual_msg(sent_greeting)
     await asyncio.sleep(0.5)
 
     # Если энергия была низкой — сразу предложить быстрый режим первой кнопкой
@@ -2380,8 +2405,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "Если хочется — сделай свою разминку подольше, бот не ограничивает._"
         )
 
-    sent_warmup = await q.message.reply_text(warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
-    _track_ritual_msg(sent_warmup)
+    await _render_ritual_step(q.message, ctx, warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
     return M_EXERCISE
 
 async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2433,20 +2457,18 @@ async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    msg = await q.message.reply_text("Начинаем! 🏃")
-    _track_ritual_msg(msg)
+    await _render_ritual_step(q.message, ctx, "Начинаем! 🏃")
     for i, (name, hint) in enumerate(WARMUP):
         dots = "🟡"*(i+1) + "⚪"*(len(WARMUP)-i-1)
-        await msg.edit_text(f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
+        await _edit_tracked_msg(ctx, "ritual_step", f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
         await asyncio.sleep(20)
-    await msg.edit_text("✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
+    await _edit_tracked_msg(ctx, "ritual_step", "✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
     return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def warmup_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    sent = await q.message.reply_text("💪 Отлично, тело уже разбужено!")
-    _track_ritual_msg(sent)
+    await _render_ritual_step(q.message, ctx, "💪 Отлично, тело уже разбужено!")
     return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
 
 async def skip_warmup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2469,9 +2491,9 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await finish_morning(q.message, q.from_user.id, ctx)
     return ConversationHandler.END
 
-async def ask_writing(message, uid):
+async def ask_writing(message, ctx, uid):
     await send_with_privacy_hint(
-        message,
+        message, ctx,
         "📝 *Свободное письмо*\n\nВсё что есть в голове — без фильтра. Мысли, сны, тревоги, идеи.",
         skip_kb("skip_m_writing"), uid, "m_writing"
     )
@@ -2491,10 +2513,10 @@ async def skip_m_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "m_writing")
     return result
 
-async def ask_gratitude(message, gender, uid):
+async def ask_gratitude(message, ctx, gender, uid):
     thankful = g(gender, "благодарен", "благодарна")
     await send_with_privacy_hint(
-        message,
+        message, ctx,
         f"🙏 *Благодарность*\n\nЗа что {thankful} сегодня? Большое или маленькое — всё считается.",
         skip_why_kb("skip_m_gratitude", "m_gratitude"), uid, "m_gratitude"
     )
@@ -2516,10 +2538,10 @@ async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "m_gratitude")
     return result
 
-async def ask_child(message, gender, uid):
+async def ask_child(message, ctx, gender, uid):
     talked = g(gender, "поговорил", "поговорила")
     await send_with_privacy_hint(
-        message,
+        message, ctx,
         f"💛 *Внутренний ребёнок*\n\nСкажи себе что-то доброе. Как бы ты {talked} с лучшим другом?",
         skip_why_kb("skip_m_child", "m_child"), uid, "m_child"
     )
@@ -2552,9 +2574,9 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # задачки отдельно". Постановка задач теперь идёт через 📋 Задачи, которую
 # после ритуала предлагает открыть отдельное сообщение, а не встроенный шаг.
 RESUME_FIELDS = [
-    ("m_writing",   M_WRITING,   lambda msg, ctx, gender, uid: ask_writing(msg, uid)),
-    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender, uid: ask_gratitude(msg, gender, uid)),
-    ("m_child",     M_CHILD,     lambda msg, ctx, gender, uid: ask_child(msg, gender, uid)),
+    ("m_writing",   M_WRITING,   lambda msg, ctx, gender, uid: ask_writing(msg, ctx, uid)),
+    ("m_gratitude", M_GRATITUDE, lambda msg, ctx, gender, uid: ask_gratitude(msg, ctx, gender, uid)),
+    ("m_child",     M_CHILD,     lambda msg, ctx, gender, uid: ask_child(msg, ctx, gender, uid)),
 ]
 
 async def advance_morning(ctx, message, gender, uid, from_key=None):
@@ -2975,12 +2997,12 @@ async def ask_tasks_done(message, uid, ctx, for_date):
     already_done = list(get_diary(uid, "tasks_done", for_date).get("done", []))
     ctx.user_data["e_tasks_done"] = already_done
     ctx.user_data["e_morning_date"] = for_date
-    sent = await message.reply_text(
+    await _render_ritual_step(
+        message, ctx,
         "✅ *Что из запланированного получилось?*\n\nОтметь выполненные задачи:",
         parse_mode="Markdown",
         reply_markup=tasks_done_kb(morning, already_done)
     )
-    _track_ritual_msg(sent)
 
 async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3006,10 +3028,10 @@ async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_field_disabled(user, "e_ach"):
         ctx.user_data["e_ach"] = ""
         return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
-    await ask_achievements(q.message, user["gender"], uid, had_checklist=True)
+    await ask_achievements(q.message, ctx, user["gender"], uid, had_checklist=True)
     return E_ACH
 
-async def ask_achievements(message, gender, uid, had_checklist=False):
+async def ask_achievements(message, ctx, gender, uid, had_checklist=False):
     if had_checklist:
         text = (
             "⭐ *Достижения дня*\n\n"
@@ -3018,7 +3040,7 @@ async def ask_achievements(message, gender, uid, had_checklist=False):
         )
     else:
         text = f"⭐ *Достижения дня*\n\n{g(gender, 'Чего достиг', 'Чего достигла')} сегодня? Большое или маленькое — всё считается."
-    await send_with_privacy_hint(message, text, skip_kb("skip_e_ach"), uid, "e_ach")
+    await send_with_privacy_hint(message, ctx, text, skip_kb("skip_e_ach"), uid, "e_ach")
 
 async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3040,8 +3062,8 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for key, state, ask_fn in RESUME_FIELDS_EVENING:
             if key not in ctx.user_data:
                 stopped = g(user["gender"], "остановился", "остановилась")
-                sent = await q.message.reply_text(f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
-                _track_ritual_msg(sent)
+                await _render_ritual_step(q.message, ctx, f"↩️ Продолжаем с того места, где {stopped} сегодня вечером:")
+                await asyncio.sleep(0.5)
                 await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
         # Все шаги уже пройдены (крайний случай — finish_evening не успел
@@ -3110,13 +3132,12 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Давай закроем этот день."
     )
     try:
-        sent_greeting = await q.message.reply_text(evening_greeting, parse_mode="Markdown")
+        await _render_ritual_step(q.message, ctx, evening_greeting, parse_mode="Markdown")
     except Exception as e:
         # Тот же класс сбоя, что в morning_start/finish_morning/finish_evening —
         # непарный спецсимвол не покрытый md_escape не должен ронять диалог насовсем.
         print(f"Ошибка отправки вечернего приветствия uid={uid}: {e}")
-        sent_greeting = await q.message.reply_text(f"🌙 Хороший был день, {user['name']}! Давай закроем этот день.")
-    _track_ritual_msg(sent_greeting)
+        await _render_ritual_step(q.message, ctx, f"🌙 Хороший был день, {user['name']}! Давай закроем этот день.")
     await asyncio.sleep(0.5)
 
     if any(morning.get(key) for key, _ in TASK_FIELDS):
@@ -3126,7 +3147,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if is_field_disabled(user, "e_ach"):
             ctx.user_data["e_ach"] = ""
             return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
-        await ask_achievements(q.message, user["gender"], uid)
+        await ask_achievements(q.message, ctx, user["gender"], uid)
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3144,9 +3165,9 @@ async def skip_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "e_ach")
     return result
 
-async def ask_praise(message, uid):
+async def ask_praise(message, ctx, uid):
     await send_with_privacy_hint(
-        message,
+        message, ctx,
         "🎉 *Похвали себя*\n\n"
         "Просто скажи себе 'молодец' — своими словами, без 'но' и оговорок.\n"
         "_Даже маленькая победа заслуживает признания._",
@@ -3170,9 +3191,9 @@ async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await maybe_send_skip_nudge(q.message, uid, "e_praise")
     return result
 
-async def ask_highlights(message, uid):
+async def ask_highlights(message, ctx, uid):
     await send_with_privacy_hint(
-        message,
+        message, ctx,
         "✨ *Яркие моменты дня*\n\nЧто сегодня заставило улыбнуться? Или какой инсайт пришёл?",
         skip_kb("skip_e_highlights"), uid, "e_highlights"
     )
@@ -3220,13 +3241,13 @@ async def ask_selfcare(message, ctx, gender):
     ctx.user_data.setdefault("e_selfcare", [])
     did = g(gender, "делал", "делала")
     used = g(gender, "применял", "применяла")
-    sent = await message.reply_text(
+    await _render_ritual_step(
+        message, ctx,
         f"🧩 *Что из этого {did} сегодня?*\n\n"
         f"Отметь всё, что {used} — это помогает быть в себе.",
         parse_mode="Markdown",
         reply_markup=selfcare_kb(ctx.user_data["e_selfcare"])
     )
-    _track_ritual_msg(sent)
 
 async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3242,14 +3263,15 @@ async def toggle_selfcare(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def selfcare_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_selfcare_done"] = True
-    await ask_energy(q.message, get_user(q.from_user.id)["gender"])
+    await ask_energy(q.message, ctx, get_user(q.from_user.id)["gender"])
     return E_ENERGY
 
-async def ask_energy(message, gender):
+async def ask_energy(message, ctx, gender):
     exhausted = g(gender, "выжат", "выжата")
     tired = g(gender, "устал", "устала")
     charged = g(gender, "заряжен", "заряжена")
-    sent = await message.reply_text(
+    await _render_ritual_step(
+        message, ctx,
         "🔋 *Уровень энергии сейчас*\n\n"
         "Как ты себя чувствуешь по итогам дня?",
         parse_mode="Markdown",
@@ -3261,7 +3283,6 @@ async def ask_energy(message, gender):
             [InlineKeyboardButton(f"⚡ 5 — {charged} на 100%", callback_data="energy_5")],
         ])
     )
-    _track_ritual_msg(sent)
 
 async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3271,7 +3292,7 @@ async def got_energy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # uid, чтобы показывать предложения из пула, лямбда в RESUME_FIELDS_EVENING
     # обновили, а этот прямой вызов — нет. TypeError на самом частом переходе
     # вечернего ритуала (энергия → задача A) — у любого, кто дошёл до конца.
-    await ask_plan_a(q.message, q.from_user.id)
+    await ask_plan_a(q.message, ctx, q.from_user.id)
     return E_A
 
 # Текст + skip-кнопка для каждого шага постановки планов на завтра —
@@ -3323,24 +3344,23 @@ def evening_plan_kb(key, uid, offset=0, limit=8):
         rows.append([InlineKeyboardButton("Поставлю цели завтра ▸▸", callback_data="skip_all_goals")])
     return InlineKeyboardMarkup(rows)
 
-async def ask_evening_plan_step(message, uid, key):
+async def ask_evening_plan_step(message, ctx, uid, key):
     text, _, _ = EVENING_PLAN_STEPS[key]
-    sent = await message.reply_text(text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
-    _track_ritual_msg(sent)
+    await _render_ritual_step(message, ctx, text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
 
-async def ask_plan_a(message, uid):
-    await ask_evening_plan_step(message, uid, "e_a")
+async def ask_plan_a(message, ctx, uid):
+    await ask_evening_plan_step(message, ctx, uid, "e_a")
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_a"] = update.message.text
-    await ask_evening_plan_step(update.message, update.effective_user.id, "e_b1")
+    await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_b1")
     return E_B1
 
 async def skip_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_a"] = ""
-    await ask_evening_plan_step(q.message, q.from_user.id, "e_b1")
+    await ask_evening_plan_step(q.message, ctx, q.from_user.id, "e_b1")
     return E_B1
 
 async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3356,37 +3376,37 @@ async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_b1"] = update.message.text
-    await ask_evening_plan_step(update.message, update.effective_user.id, "e_b2")
+    await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_b2")
     return E_B2
 
 async def skip_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_b1"] = ""
-    await ask_evening_plan_step(q.message, q.from_user.id, "e_b2")
+    await ask_evening_plan_step(q.message, ctx, q.from_user.id, "e_b2")
     return E_B2
 
 async def got_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_b2"] = update.message.text
-    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c1")
+    await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c1")
     return E_C1
 
 async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_b2"] = ""
-    await ask_evening_plan_step(q.message, q.from_user.id, "e_c1")
+    await ask_evening_plan_step(q.message, ctx, q.from_user.id, "e_c1")
     return E_C1
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_c1"] = update.message.text
-    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c2")
+    await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c2")
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_c2"] = update.message.text
-    await ask_evening_plan_step(update.message, update.effective_user.id, "e_c3")
+    await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c3")
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3417,7 +3437,7 @@ async def _resume_ask_achievements(msg, ctx, gender, uid):
     (были ли вообще задачи в это утро), что и в evening_start."""
     morning = get_diary(uid, "morning", ctx.user_data.get("e_morning_date", ""))
     had_checklist = any(morning.get(k) for k, _ in TASK_FIELDS)
-    await ask_achievements(msg, gender, uid, had_checklist=had_checklist)
+    await ask_achievements(msg, ctx, gender, uid, had_checklist=had_checklist)
 
 # Шаги вечернего диалога по порядку, для резюме прерванного вечера — тот же
 # принцип, что и RESUME_FIELDS для утра (см. комментарий там). Чек-лист задач
@@ -3427,16 +3447,16 @@ async def _resume_ask_achievements(msg, ctx, gender, uid):
 # устанавливается уже при ВХОДЕ в шаг, до того как человек что-то отметил).
 RESUME_FIELDS_EVENING = [
     ("e_ach",           E_ACH,        _resume_ask_achievements),
-    ("e_praise",        E_PRAISE,     lambda msg, ctx, gender, uid: ask_praise(msg, uid)),
-    ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender, uid: ask_highlights(msg, uid)),
+    ("e_praise",        E_PRAISE,     lambda msg, ctx, gender, uid: ask_praise(msg, ctx, uid)),
+    ("e_highlights",    E_HIGHLIGHTS, lambda msg, ctx, gender, uid: ask_highlights(msg, ctx, uid)),
     ("e_selfcare_done", E_SELFCARE,   lambda msg, ctx, gender, uid: ask_selfcare(msg, ctx, gender)),
-    ("e_energy",        E_ENERGY,     lambda msg, ctx, gender, uid: ask_energy(msg, gender)),
-    ("e_a",             E_A,          lambda msg, ctx, gender, uid: ask_plan_a(msg, uid)),
-    ("e_b1",            E_B1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_b1")),
-    ("e_b2",            E_B2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_b2")),
-    ("e_c1",            E_C1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c1")),
-    ("e_c2",            E_C2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c2")),
-    ("e_c3",            E_C3,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, uid, "e_c3")),
+    ("e_energy",        E_ENERGY,     lambda msg, ctx, gender, uid: ask_energy(msg, ctx, gender)),
+    ("e_a",             E_A,          lambda msg, ctx, gender, uid: ask_plan_a(msg, ctx, uid)),
+    ("e_b1",            E_B1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, ctx, uid, "e_b1")),
+    ("e_b2",            E_B2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, ctx, uid, "e_b2")),
+    ("e_c1",            E_C1,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, ctx, uid, "e_c1")),
+    ("e_c2",            E_C2,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, ctx, uid, "e_c2")),
+    ("e_c3",            E_C3,         lambda msg, ctx, gender, uid: ask_evening_plan_step(msg, ctx, uid, "e_c3")),
 ]
 
 async def advance_evening(ctx, message, gender, uid, from_key=None):
