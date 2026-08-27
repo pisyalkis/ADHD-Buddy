@@ -3171,10 +3171,39 @@ async def toggle_task_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.message.edit_reply_markup(reply_markup=tasks_done_kb(morning, done))
     return E_TASKS_DONE
 
+def _carry_unfinished_tasks_to_pool(uid, morning_today, done_set):
+    """Незавершённые задачи дня — обратно в 📥 Список дел, чтобы не
+    потерялись (реальный запрос: "если задача из плана на день не
+    выполнена — она должна попадать в список дел"). Пропускаем те, у
+    которых ещё остался _pool_link_{key} с версий бота ДО того, как выбор
+    пункта из пула стал удалять его сразу (см. apply_task_edit) — такой
+    пункт и так всё ещё лежит в пуле нетронутым, повторное добавление
+    создало бы дубль. Сравниваем без учёта регистра — иначе "Позвонить
+    маме" и "позвонить маме" (та же задача, просто набрана иначе на
+    следующий день) считались бы разными и дублировались в пуле."""
+    morning = get_diary(uid, "morning", morning_today)
+    existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
+    for key, _ in TASK_FIELDS:
+        text = morning.get(key)
+        if not text or key in done_set:
+            continue
+        if morning.get(f"_pool_link_{key}"):
+            continue
+        if text.lower() in existing_pool_texts:
+            continue
+        add_pool_task(uid, text)
+        existing_pool_texts.add(text.lower())
+
 async def tasks_done_finish(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     user = get_user(uid)
+    # Перенос в пул случается здесь же, сразу как только "Что получилось?"
+    # подтверждено — не в самом конце вечернего ритуала (finish_evening),
+    # до которого ещё пять-шесть шагов и который может не завершиться.
+    morning_today = ctx.user_data.get("e_morning_date")
+    if morning_today:
+        _carry_unfinished_tasks_to_pool(uid, morning_today, set(ctx.user_data.get("e_tasks_done", [])))
     if is_field_disabled(user, "e_ach"):
         ctx.user_data["e_ach"] = ""
         return await advance_evening(ctx, q.message, user["gender"], uid, "e_ach")
@@ -3769,27 +3798,12 @@ async def finish_evening(message, uid, ctx):
         if lines:
             tasks_summary = "\n\n📋 *Задачи дня:*\n" + "\n".join(lines)
 
-    # Незавершённые задачи дня — обратно в 📥 Список дел, чтобы не
-    # потерялись (реальный запрос: "чтобы задачи, которые не сделаны,
-    # попадали в список дел"). Пропускаем те, что и так уже выбраны ИЗ
-    # пула (_pool_link_{key}) — pool_use_item не удаляет исходную запись
-    # из пула при выборе, удаляет только task_done_callback при отметке
-    # "сделано" (см. apply_task_edit/pool_use_item) — она там и так лежит,
-    # повторное добавление создало бы дубль.
-    # Сравниваем без учёта регистра — иначе "Позвонить маме" и "позвонить
-    # маме" (та же задача, просто набрана иначе на следующий день) считались
-    # бы разными и дублировались в пуле.
-    existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
-    for key, _ in TASK_FIELDS:
-        text = morning_for_summary.get(key)
-        if not text or key in done:
-            continue
-        if morning_for_summary.get(f"_pool_link_{key}"):
-            continue
-        if text.lower() in existing_pool_texts:
-            continue
-        add_pool_task(uid, text)
-        existing_pool_texts.add(text.lower())
+    # Незавершённые задачи дня уже перенесены в 📥 Список дел в
+    # tasks_done_finish (сразу как только "Что получилось?" подтверждено —
+    # см. _carry_unfinished_tasks_to_pool), а не здесь, в самом конце
+    # ритуала: между тем шагом и этим — ещё пять-шесть шагов (достижения/
+    # похвала/яркие моменты/самопомощь/энергия/планы на завтра), и перенос
+    # не должен зависеть от того, дойдёт ли человек до конца.
 
     # Реальный фидбек (Артём): "список дел вечером снова показывал те же
     # задачи, хотя они помечены выполненными" — task_done_callback (чекбокс
