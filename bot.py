@@ -2628,9 +2628,15 @@ def daily_prefs_kb(user):
     # "Напоминания" тут не только рвёт эту связь, а ещё и совпадает по
     # названию с СОВСЕМ другой функцией — ⏰ Напоминания (произвольные
     # текстовые напоминания).
+    #
+    # Реальный баг (скриншот): обе кнопки в этой строке — общей ширины
+    # пополам, и различие ("задачи"/"навыки") было ПОСЛЕДНИМ словом длинной
+    # подписи "Маячки внимания: ..." — Telegram обрезает лишнее с конца, и
+    # на экране обе кнопки читались как один и тот же текст "Маячки
+    # вниман...". Различающееся слово теперь идёт сразу после иконки.
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Маячки внимания: задачи", callback_data="quick_toggle_beacon"),
-         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Маячки внимания: навыки", callback_data="quick_toggle_skill")],
+        [InlineKeyboardButton(f"{'🔔' if be else '🔕'} Задачи: маячки внимания", callback_data="quick_toggle_beacon"),
+         InlineKeyboardButton(f"{'🧠' if se else '🔕'} Навыки: маячки внимания", callback_data="quick_toggle_skill")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
 
