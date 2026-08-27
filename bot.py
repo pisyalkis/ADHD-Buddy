@@ -2393,7 +2393,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if morning.get("child"):     lines.append(f"\n💛 Себе доброе: _{md_escape(morning['child'])}_")
         if len(lines) == 1:
             lines.append("\n_Мягкие практики сегодня были пропущены — это нормально._")
-        await q.message.reply_text(
+        await _edit_or_send(
+            q,
             "\n".join(lines),
             parse_mode="Markdown",
             reply_markup=menu_button_kb()
@@ -2599,15 +2600,15 @@ async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_
             morning[task_key] = val
             filled.append(task_key)
     if not filled:
-        await q.message.reply_text(
-            "Переносить нечего — либо вчерашнего плана нет, либо на сегодня уже стоят все эти задачи."
+        await _edit_or_send(
+            q, "Переносить нечего — либо вчерашнего плана нет, либо на сегодня уже стоят все эти задачи."
         )
         return
     save_diary(uid, "morning", morning, for_date=today)
     done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
     out_text, kb = _tasks_text_and_kb(morning, done_set, user["gender"])
-    await q.message.reply_text("✅ Взял вчерашний план как задачи на сегодня.\n\n" + out_text, parse_mode="Markdown", reply_markup=kb)
+    await _edit_or_send(q, "✅ Взял вчерашний план как задачи на сегодня.\n\n" + out_text, parse_mode="Markdown", reply_markup=kb)
 
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -3714,7 +3715,7 @@ async def evening_plan_use_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pool = get_pool_tasks(uid)
     item = next((t for t in pool if t["id"] == int(id_s)), None)
     if item is None:
-        await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
+        await _edit_or_send(q, "Это дело уже не в списке — выбери другое или напиши текст.")
         return EVENING_STEP_STATE[key]
     ctx.user_data[key] = item["text"]
     user = get_user(uid)
@@ -4121,7 +4122,11 @@ async def send_coach(message, text, uid, ctx=None):
     же сообщение (track_key="coach", см. _render_coach_msg), а не шлёт
     новое на каждую реплику."""
     if not ANTHROPIC_KEY:
-        await message.reply_text("⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway.", reply_markup=menu_button_kb())
+        text = "⚠️ ИИ-коуч не настроен. Добавь ANTHROPIC_KEY в переменные Railway."
+        if ctx is not None:
+            await _render_coach_msg(message, ctx, text, reply_markup=menu_button_kb())
+        else:
+            await message.reply_text(text, reply_markup=menu_button_kb())
         return
     user = get_user(uid)
     gender_hint = "женского рода" if user["gender"] == 'F' else "мужского рода"
@@ -5405,7 +5410,7 @@ async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     morning = get_diary(uid, "morning", today)
     key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
     if key is None:
-        await q.message.reply_text("Все задачи на сегодня уже поставлены 🎉", reply_markup=menu_button_kb())
+        await _edit_or_send(q, "Все задачи на сегодня уже поставлены 🎉", reply_markup=menu_button_kb())
         return
     await _offer_task_input(q.message, ctx, uid, key)
 
@@ -5729,12 +5734,13 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
     morning = get_diary(uid, "morning", today)
     key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
     if key is None:
-        await message.reply_text(
+        confirm_text = (
             "Все шесть слотов задач на сегодня уже заняты — открой 📋 Задачи, чтобы что-то поменять.\n\n"
             "Можно и текстом: назови слот прямо в сообщении, например «поставь как задачу B1 — "
-            "новое дело» — перезапишет именно его.",
-            reply_markup=menu_button_kb()
+            "новое дело» — перезапишет именно его."
         )
+        if not await _edit_tracked_msg(ctx, "task_edit", confirm_text, reply_markup=menu_button_kb()):
+            await message.reply_text(confirm_text, reply_markup=menu_button_kb())
         return
     await apply_task_edit(message, ctx, uid, key, text)
 
@@ -5814,7 +5820,7 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     pool = get_pool_tasks(uid)
     item = next((t for t in pool if t["id"] == int(id_s)), None)
     if item is None:
-        await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
+        await _edit_or_send(q, "Это дело уже не в списке — выбери другое или напиши текст.")
         return
     # Реальный запрос: выбор дела в задачи дня раньше не убирал его из
     # 📥 Список дел сразу — пункт висел там же до тех пор, пока задачу не
@@ -6012,8 +6018,10 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     if not ANTHROPIC_KEY:
-        await q.message.reply_text(
+        await _render_tracked(
+            q.message, ctx, "reminders",
             "⚠️ Напоминания разбирают текст через ИИ, а он сейчас не настроен (нет ANTHROPIC_KEY).",
+            ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
             reply_markup=menu_button_kb()
         )
         return
@@ -6062,7 +6070,7 @@ async def reminder_edit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     rem_id = int(q.data.replace("remedit_", ""))
     rem = get_reminder(q.from_user.id, rem_id)
     if rem is None:
-        await q.message.reply_text("Это напоминание уже не активно.", reply_markup=menu_button_kb())
+        await _edit_or_send(q, "Это напоминание уже не активно.", reply_markup=menu_button_kb())
         return
     await ask_reminder_edit(q.message, ctx, rem)
 
@@ -6558,9 +6566,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         routed = await classify_free_text(text, now_dt)
         intent = routed.get("intent")
         if intent == "reminder":
-            await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text, routed.get("recur") or "")
+            await create_reminder_and_reply(update.message, uid, routed["remind_at"], routed.get("text") or text, routed.get("recur") or "", ctx=ctx)
         elif intent == "add_pool":
-            await add_pool_and_reply(update.message, uid, routed.get("items") or [text])
+            await add_pool_and_reply(update.message, uid, routed.get("items") or [text], ctx=ctx)
         elif intent == "delete" and routed.get("target") == "reminder":
             await handle_delete_reminder_intent(update.message, uid, routed.get("query") or text)
         elif intent == "delete" and routed.get("target") == "pool":
@@ -6704,7 +6712,8 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             active_end = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
             if active_end > now:
-                await q.message.reply_text(
+                await _edit_or_send(
+                    q,
                     f"🍅 Таймер уже идёт — до *{active_end.strftime('%H:%M')}*. Эта кнопка устарела.",
                     parse_mode="Markdown"
                 )
