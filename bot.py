@@ -4839,19 +4839,30 @@ def _tasks_text_and_kb(morning, done_set, gender):
     C2/C3), даже если задача уже выполнена — без ✅: галочка в самом тексте
     списка "что сделать" читается как "уже сделано" и сбивает с толку
     (фидбек Виктории). Выполненность вместо этого — чекбокс на самой
-    кнопке-действии (▫️/✅), который можно тапнуть в обе стороны."""
+    кнопке-действии (▫️/✅), который можно тапнуть в обе стороны.
+
+    Реальный фидбек: "неудобно, что не могу отредактировать задачу сразу
+    текстом" — рядом с каждой задачей отдельная кнопка "✏️" ведёт прямиком
+    в edit_task_callback (правка именно этого слота — текстом или из
+    списка дел), без последовательного прохода по остальным пяти."""
     lines = []
+    buttons = []
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
-        if val:
-            lines.append(f"{icon}: {md_escape(val)}")
-    buttons = _task_checkbox_rows(morning, done_set)
+        if not val:
+            continue
+        lines.append(f"{icon}: {md_escape(val)}")
+        mark = "✅" if key in done_set else "▫️"
+        button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
+        buttons.append([
+            InlineKeyboardButton(button_text, callback_data=f"task_done_{key}"),
+            InlineKeyboardButton("✏️", callback_data=f"edit_task_{key}"),
+        ])
 
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_")
-    # Одна кнопка входа вместо отдельной "✏️ Изменить" на каждой строке —
-    # ведёт в последовательный проход по всем слотам (walk_tasks_start),
-    # где на уже заполненных можно быстро "Пропустить" до нужной, а не
-    # решать сразу по всем шести на одном экране.
+    # Проход по всем слотам (walk_tasks_start) остаётся отдельной кнопкой —
+    # удобен для ПОСТАНОВКИ (в т.ч. пустых слотов подряд), а не только правки
+    # уже заполненной задачи, для которой теперь есть прямая "✏️" выше.
     buttons.append([InlineKeyboardButton("✏️ Поставить/изменить задачи", callback_data="walk_tasks")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
