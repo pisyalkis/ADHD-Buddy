@@ -2200,7 +2200,14 @@ async def send_tracked_notification(bot, chat_id, channel, text, ttl_seconds=Non
     вызывающего кода: конкретный обработчик кнопки-ответа должен сам
     вызвать _clear_notif_msg_id (и, если нужно, удалить сообщение) для
     своего канала — см. midday_callback/beacon_technique_done/
-    morning_start/evening_start."""
+    morning_start/evening_start.
+
+    ttl_seconds=0 — явно БЕЗ самоудаления по тишине (не тот же смысл, что
+    "не передали"/None, который берёт умолчание INACTIVE_SCREEN_TTL_SEC).
+    Нужно, например, фокус-таймеру: пока раунд идёт, человек намеренно
+    молчит весь таймер — самоудаление статуса "Таймер уже идёт!" через
+    15 минут тишины прямо посреди рабочего раунда было бы не уборкой, а
+    багом (сообщение исчезло бы, хотя раунд ещё активен)."""
     if ttl_seconds is None:
         ttl_seconds = INACTIVE_SCREEN_TTL_SEC
     prev_mid = _get_notif_msg_id(chat_id, channel)
@@ -2213,7 +2220,8 @@ async def send_tracked_notification(bot, chat_id, channel, text, ttl_seconds=Non
     mid = getattr(sent, "message_id", None)
     if mid is not None:
         _set_notif_msg_id(chat_id, channel, mid)
-        schedule_message_deletion(chat_id, mid, ttl_seconds)
+        if ttl_seconds:
+            schedule_message_deletion(chat_id, mid, ttl_seconds)
     return sent
 
 async def _mark_notif_answered(bot, chat_id, message_id, *channels):
@@ -6452,8 +6460,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             end_dt_tz = end_dt.astimezone(tz)
             remaining = int((end_dt_tz - now).total_seconds() / 60)
             if remaining > 0:
-                await _edit_or_send(
-                    q,
+                await send_tracked_notification(
+                    ctx.bot, uid, "focus_timer",
                     f"🍅 *Таймер уже идёт!*\n\n"
                     f"Осталось примерно *{remaining} мин* (до {end_dt_tz.strftime('%H:%M')}).\n\n"
                     f"Не отвлекайся — я напишу когда время выйдет 🔕",
@@ -6475,8 +6483,8 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     stats_hint = f"\n\n⏱ Сегодня в фокусе: *{mins_today} мин*" if mins_today > 0 else ""
 
-    await _edit_or_send(
-        q,
+    await send_tracked_notification(
+        ctx.bot, uid, "focus_timer",
         f"🍅 *Фокус-режим*\n\n"
         f"📝 *Перед стартом:* возьми листок бумаги и положи рядом.\n"
         f"Это «бумажка гениальных мыслей» — когда во время работы придёт посторонняя идея или мысль, просто запиши её и сразу возвращайся к задаче. Не нужно ничего обдумывать прямо сейчас. Так мозг отпускает мысль и не тратит силы держать её в голове.\n\n"
@@ -6539,7 +6547,8 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     current_task = next_undone_task(morning_data, done_set)
     task_hint = f"\n📌 Задача: *{current_task}*" if current_task else ""
 
-    await q.message.reply_text(
+    await send_tracked_notification(
+        ctx.bot, uid, "focus_timer",
         f"🍅 *Таймер запущен на {minutes} мин*\n\n"
         f"Конец в *{end_str}*.{task_hint}\n\n"
         f"Удачи — не отвлекайся 🔕\n"
@@ -6576,16 +6585,28 @@ async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=mins_today, focus_date=today)
 
     worked_note = f" — {worked_mins} мин в фокусе" if worked_mins else ""
-    await q.message.reply_text(
+    await send_tracked_notification(
+        ctx.bot, uid, "focus_timer",
         f"⏹ *Таймер остановлен*{worked_note}\n\n"
         f"Сегодня в фокусе: *{mins_today} мин*\n\n"
         f"Хочешь начать новый раунд?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🍅 Новый раунд", callback_data="go_focus")],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="focus_end_menu")],
         ])
     )
+
+async def focus_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"◀️ Меню"/"✅ Хватит на сегодня" на экранах фокус-таймера — обычный
+    go_menu редактирует ЭТО ЖЕ сообщение под главное меню (см.
+    _render_tracked), но трекинг канала "focus_timer" в БД (см.
+    notif_msg_ids) при этом не снимается. Без явной очистки следующий
+    запуск таймера (send_tracked_notification) нашёл бы это же
+    сообщение по старому id и удалил бы уже показанное там меню —
+    вместо давно неактуального экрана таймера."""
+    _clear_notif_msg_id(update.effective_user.id, "focus_timer")
+    await go_menu(update, ctx)
 
 async def send_focus_end(app, uid: int, minutes: int, expected_end_time: str):
     """Вызывается из check_notifications когда таймер истёк.
@@ -6613,17 +6634,15 @@ async def send_focus_end(app, uid: int, minutes: int, expected_end_time: str):
         # send_focus_end повторно для этого таймера — человек так и не узнавал,
         # что фокус закончился, хотя минуты уже молча засчитались. Пишем в БД
         # только после успешной отправки, как и другие уведомления в этом файле.
-        await app.bot.send_message(
-            chat_id=uid,
-            text=(
-                f"⏰ *Время вышло! {minutes} минут в фокусе — отлично!*\n\n"
-                f"Сделай перерыв 5 минут: встань, выпей воды, отойди от экрана.\n\n"
-                f"Сегодня в фокусе: *{new_mins} мин* 🎯"
-            ),
+        await send_tracked_notification(
+            app.bot, uid, "focus_timer",
+            f"⏰ *Время вышло! {minutes} минут в фокусе — отлично!*\n\n"
+            f"Сделай перерыв 5 минут: встань, выпей воды, отойди от экрана.\n\n"
+            f"Сегодня в фокусе: *{new_mins} мин* 🎯",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🍅 Ещё раунд", callback_data="go_focus")],
-                [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="go_menu")],
+                [InlineKeyboardButton("✅ Хватит на сегодня", callback_data="focus_end_menu")],
             ])
         )
         update_user(uid, focus_active=0, focus_end_time="", focus_minutes_today=new_mins, focus_date=today)
@@ -8958,6 +8977,7 @@ def main():
     app.add_handler(CallbackQueryHandler(go_focus,          pattern="^go_focus$"))
     app.add_handler(CallbackQueryHandler(focus_start_callback, pattern="^focus_start_\\d+$"))
     app.add_handler(CallbackQueryHandler(focus_stop_callback,  pattern="^focus_stop$"))
+    app.add_handler(CallbackQueryHandler(focus_menu_callback,  pattern="^focus_end_menu$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Уведомления (UTC время)
