@@ -5269,7 +5269,6 @@ def _tasks_text_and_kb(morning, done_set, gender):
     buttons.append([InlineKeyboardButton("✏️ Поставить/изменить задачи", callback_data="walk_tasks")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
-        [InlineKeyboardButton(personalize("🆘 Застрял(а)?", gender), callback_data="mid_coach")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ]
     return text, InlineKeyboardMarkup(kb_rows)
@@ -5799,15 +5798,23 @@ async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def send_pool_delete_menu(message, uid, items=None):
     """items (опционально) — конкретный список кандидатов для показа вместо
     всего пула (см. handle_delete_pool_intent: при неоднозначном совпадении
-    переспрашиваем максимум парой похожих, а не всем списком дел)."""
+    переспрашиваем максимум парой похожих, а не всем списком дел).
+
+    Реальный запрос: удаление дела слало НОВОЕ сообщение со всем списком
+    каждый раз — и открытие "Что удалить?", и повторный показ после
+    каждого удаления. Редактируем message на месте (как и остальные
+    callback-экраны) — падает обратно на новое сообщение, если редактировать
+    нечего (например, message пришло из свободного текста, а не из кнопки,
+    см. handle_delete_pool_intent — редактировать сообщение самого
+    пользователя нельзя, Telegram это отклонит)."""
     pool = get_pool_tasks(uid)
     if not pool:
-        await message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
+        await _edit_msg_or_send(message, task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
         return
     shown = items if items is not None else pool
     rows = [[InlineKeyboardButton(f"🗑 {t['text'][:35]}", callback_data=f"pooldel_{t['id']}")] for t in shown]
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_task_pool")])
-    await message.reply_text("Что удалить?", reply_markup=InlineKeyboardMarkup(rows))
+    await _edit_msg_or_send(message, "Что удалить?", reply_markup=InlineKeyboardMarkup(rows))
 
 async def show_task_pool_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
