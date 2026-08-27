@@ -2251,6 +2251,24 @@ async def _mark_notif_answered(bot, chat_id, message_id, *channels):
                 pass
             return
 
+def _clear_notif_tracking(chat_id, message_id, *channels):
+    """Как _mark_notif_answered, но НЕ удаляет само сообщение — только
+    снимает трекинг канала. Нужна там, где вызывающий код сам сейчас же
+    отредактирует это сообщение в экран-ответ (_edit_or_send/
+    _render_ritual_step и т.п.) — само редактирование уже достигает цели
+    "уведомление исчезает, как только на него ответили" (кнопки
+    уведомления заменяются кнопками ответа на месте). Удалять его перед
+    этим бессмысленно и вредно: редактировать уже удалённое сообщение
+    нельзя, и код молча падает обратно на отправку нового — то самое
+    накопление сообщений, которого редактирование на месте должно
+    избегать."""
+    if message_id is None:
+        return
+    for channel in channels:
+        if _get_notif_msg_id(chat_id, channel) == message_id:
+            _clear_notif_msg_id(chat_id, channel)
+            return
+
 async def sweep_scheduled_deletions(app):
     now_iso = datetime.now().isoformat()
     conn = sqlite3.connect(DB_PATH)
@@ -2331,9 +2349,11 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     # Реальный запрос: "☀️ Заполнить утро" — это ответ на утреннее
     # уведомление (morning_notification) ИЛИ на "+2ч, утро ещё не закрыто"
-    # (morning_reminder) — если пришли отсюда, оно больше не нужно,
-    # удаляем вместо того чтобы оставлять висеть рядом.
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning", "morning_reminder")
+    # (morning_reminder) — если пришли отсюда, само уведомление сейчас же
+    # отредактируется в первый шаг ритуала (см. _render_ritual_step ниже),
+    # поэтому здесь только снимаем трекинг канала, не удаляя сообщение —
+    # удалять нечего редактировать было бы уже нечего.
+    _clear_notif_tracking(uid, getattr(q.message, "message_id", None), "morning", "morning_reminder")
     user = get_user(uid)
     today_iso = datetime.now(get_user_tz(user)).date().isoformat()
 
@@ -3234,9 +3254,11 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
     # Реальный запрос: "🌙 Закрыть день" — это ответ на вечернее
-    # уведомление (evening_notification), если пришли отсюда — оно больше
-    # не нужно, удаляем вместо того чтобы оставлять висеть рядом.
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "evening")
+    # уведомление (evening_notification) — если пришли отсюда, само
+    # уведомление сейчас же отредактируется в первое приветствие ритуала
+    # (см. _render_ritual_step ниже), поэтому только снимаем трекинг
+    # канала, не удаляя сообщение.
+    _clear_notif_tracking(uid, getattr(q.message, "message_id", None), "evening")
     user = get_user(uid)
     today = evening_day(get_user_tz(user)).isoformat()
 
@@ -5322,10 +5344,12 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     # "📋 Поставить задачи" на "+2ч, задачи не поставлены" ведёт прямо сюда
-    # (а не в morning_start) — раз пришли отсюда, само напоминание больше
-    # не нужно и не должно висеть отслеживаемым каналом (иначе следующий
-    # реальный morning_reminder попытается удалить давно неактуальный id).
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning_reminder")
+    # (а не в morning_start) — раз пришли отсюда, само напоминание сейчас
+    # же отредактируется в экран задач (см. _edit_or_send ниже), поэтому
+    # только снимаем трекинг канала, не удаляя сообщение (иначе следующий
+    # реальный morning_reminder попытается удалить давно неактуальный id
+    # ИЛИ редактирование ниже упадёт на уже удалённом сообщении).
+    _clear_notif_tracking(uid, getattr(q.message, "message_id", None), "morning_reminder")
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     done_data = get_diary(uid, "tasks_done", today)
@@ -7706,9 +7730,12 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     # Реальный запрос: маячок/уведомление исчезает, как только на него
     # ответили — эта клавиатура общая и для дневного чекина (channel
-    # "midday"), маячка задач (channel "task_beacon") и resume-check
-    # после "☕ Отдыхаю" (channel "resume_check", см. send_resume_check).
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "midday", "task_beacon", "resume_check")
+    # "midday"), маячка задач (channel "task_beacon") и resume-check после
+    # "☕ Отдыхаю" (channel "resume_check", см. send_resume_check). Каждая
+    # ветка ниже сейчас же редактирует это же сообщение в свой ответ (см.
+    # _edit_or_send), поэтому здесь только снимаем трекинг канала — не
+    # удаляем сообщение, иначе редактировать будет уже нечего.
+    _clear_notif_tracking(uid, getattr(q.message, "message_id", None), "midday", "task_beacon", "resume_check")
     user = get_user(uid)
     name = md_escape(user["name"])
     gender = user["gender"]
@@ -7750,14 +7777,14 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
 
     if action == "mid_ok":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"💪 *Отлично, {name}!*\n\nПродолжай. Помни про перерывы — 5-10 минут каждые 25-30 минут.\n_Гиперфокус истощает — не пропускай отдых._\n\nДо вечера! 🌙",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_procr":
         struggles = [s for s in (user.get("struggles") or "").split(",") if s]
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"Окей, разберёмся. Что происходит?\n\n_{focus}_",
             parse_mode="Markdown",
             reply_markup=mid_procr_kb(struggles, user["gender"])
@@ -7765,7 +7792,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "mid_a_done_b":
         mark_tasks_done(uid, ["focus"], today)
-        await q.message.reply_text(
+        await _edit_or_send(q,
             "🎉 *А сделана — это главное!*\n\n"
             "Самое важное уже выполнено. Работай над Б в своём темпе.\n\n"
             "Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
@@ -7774,7 +7801,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "mid_ab_done_c":
         mark_tasks_done(uid, ["focus", "b1", "b2"], today)
-        await q.message.reply_text(
+        await _edit_or_send(q,
             "🏆 *А и Б сделаны — отличный день!*\n\n"
             "Всё важное выполнено, В — это бонус. Работай спокойно.\n\n"
             "Помни про перерывы — 5-10 мин каждые 25-30 мин. До вечера! 🌙",
@@ -7784,7 +7811,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_all_done":
         all_keys = [k for k, _ in TASK_FIELDS if morning.get(k)]
         mark_tasks_done(uid, all_keys, today)
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"🎉 *Все задачи дня выполнены — отличная работа, {name}!*\n\n"
             f"Можно отдыхать спокойно. Не забудь закрыть день вечером 🌙",
             parse_mode="Markdown", reply_markup=menu_button_kb()
@@ -7792,14 +7819,14 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "mid_resting":
         schedule_resume_check(uid, get_user_tz(user))
-        await q.message.reply_text(
+        await _edit_or_send(q,
             "☕ *Окей, отдыхай!*\n\nНапишу снова через 10-15 минут — вернёшься со свежей головой 💪",
             parse_mode="Markdown"
         )
 
     elif action == "mid_a_skipped":
         a_task = md_escape(morning.get("focus", "А-задача"))
-        await q.message.reply_text(
+        await _edit_or_send(q,
             personalize(
                 f"⚠️ *Стоп — А-задача важнее*\n\n"
                 f"_{a_task}_\n\n"
@@ -7821,7 +7848,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_nostart":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"❓ *Непонятно с чего начать*\n\nЗадача: _{focus}_\n\n"
             "Проверенные техники для этой ситуации:\n\n"
             "👣 *Выделить первый шаг* — одно конкретное действие. Что нужно сделать в первую очередь?\n\n"
@@ -7834,7 +7861,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_scary":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"😰 *Задача подавляет — это исполнительная дисфункция, не лень*\n\nЗадача: _{focus}_\n\n"
             "👣 *Найди шаг, который не фрустрирует* — уменьшай пока не исчезнет желание отложить\n\n"
             "🛑 *СТОП* — остановись, дыши, осмотрись прежде чем действовать\n\n"
@@ -7847,7 +7874,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_waiting":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             personalize(
                 "⏳ *«Начну когда буду готов(а)»*\n\nЭтот момент обычно не наступает — это ловушка.\n\n"
                 "🤲 *Ладони + 5 чувств* — возвращает в настоящий момент\n\n"
@@ -7863,7 +7890,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_perfect":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             personalize(
                 f"🎯 *Перфекционизм — страх сделать недостаточно хорошо*\n\nЗадача: _{focus}_\n\n"
                 "💩 *Поставь цель «сделать плохо»* — буквально. Разреши себе черновик.\n\n"
@@ -7880,7 +7907,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_resist":
-        await q.message.reply_text(
+        await _edit_or_send(q,
             "🧱 *Внутреннее сопротивление*\n\nЗнаешь что надо, но не можешь начать. Пробуй по списку:\n\n"
             "🛌 *Пойти поспать 20 минут* — иногда это честный ответ\n\n"
             "🏋️ *Зарядка/движение* — физическая активность запускает дофамин\n\n"
@@ -7895,7 +7922,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif action == "mid_time":
         tasks = build_tasks_summary(morning, done_set)
-        await q.message.reply_text(
+        await _edit_or_send(q,
             "⚡ *Мало времени — расставляем приоритеты*\n\n"
             f"Твои задачи:\n{tasks}\n\n"
             f"*Сфокусируйся только на этом:* _{focus}_\n\n"
@@ -7917,7 +7944,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Иду работать", callback_data="mid_ok")],
             [InlineKeyboardButton("🤖 Нужна помощь", callback_data="mid_coach")],
         ]
-        await q.message.reply_text(
+        await _edit_or_send(q,
             personalize(
                 "📱 *Поймал(а) себя — это уже победа!*\n\n"
                 "Навык *СТОП*:\n"
@@ -7936,7 +7963,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_coach":
         clear_awaiting_flags(ctx, update)
         ctx.user_data["coach_mode"] = True
-        await q.message.reply_text(
+        await _edit_or_send(q,
             f"🤖 *Коуч на связи, {name}.* Что происходит?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
@@ -7950,7 +7977,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "mid_buddy":
         buddy = md_escape(user.get("buddy_name",""))
         if buddy:
-            await q.message.reply_text(
+            await _edit_or_send(q,
                 "👥 *Бадди-режим!*\n\n"
                 f"Напиши {buddy} прямо сейчас:\n\n"
                 f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Даже просто видеозвонок с тишиной.»_\n\n"
@@ -7959,7 +7986,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
             )
         else:
-            await q.message.reply_text("👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
+            await _edit_or_send(q, "👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
 async def morning_notification(app, uid):
