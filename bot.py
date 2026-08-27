@@ -4192,18 +4192,29 @@ async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_coach(q.message, prompt, q.from_user.id, ctx)
 
 # ── SKILL OF THE DAY ───────────────────────────────────────────────────────
-def skills_list_kb():
-    rows = [[InlineKeyboardButton(s["name"], callback_data=f"skill_{i}")] for i, s in enumerate(SKILLS)]
+SKILLS_PAGE_SIZE = (len(SKILLS) + 1) // 2  # 2 экрана — по тому же принципу листания, что и 📖 О СДВГ
+
+def skills_list_kb(page=0):
+    """Список навыков разбит на 2 страницы точками-переключателями (●/○) —
+    тот же принцип листания, что и у 📖 О СДВГ (см. send_guide_section):
+    19 навыков одним списком требовали бесконечной прокрутки одного
+    экрана."""
+    start = page * SKILLS_PAGE_SIZE
+    page_skills = SKILLS[start:start + SKILLS_PAGE_SIZE]
+    rows = [[InlineKeyboardButton(s["name"], callback_data=f"skill_{start + i}")] for i, s in enumerate(page_skills)]
+    page_count = 2 if SKILLS[SKILLS_PAGE_SIZE:] else 1
+    if page_count > 1:
+        rows.append([
+            InlineKeyboardButton("●" if p == page else "○", callback_data=f"skills_page_{p}")
+            for p in range(page_count)
+        ])
     rows.append([InlineKeyboardButton("👥 Бадди — совместная работа рядом", callback_data="go_buddy")])
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     return InlineKeyboardMarkup(rows)
 
-async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
-    uid = q.from_user.id
+async def _render_skills_screen(q, uid, page=0):
     daily = get_daily_skill(uid)
-    rows = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + list(skills_list_kb().inline_keyboard)
+    rows = [[InlineKeyboardButton("🔄 Поменять навык", callback_data="reroll_skill")]] + list(skills_list_kb(page).inline_keyboard)
     kb = InlineKeyboardMarkup(rows)
     await _edit_or_send(
         q,
@@ -4214,6 +4225,16 @@ async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=kb
     )
+
+async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
+    await _render_skills_screen(q, q.from_user.id, page=0)
+
+async def skills_page_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    page = int(q.data.replace("skills_page_", ""))
+    await _render_skills_screen(q, q.from_user.id, page=page)
 
 async def reroll_skill_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """«🔄 Поменять навык» — берёт следующий навык из того же пула
@@ -8299,7 +8320,11 @@ async def send_guide_section(message, section_id):
 
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
 
-    await message.reply_text(
+    # Реальный запрос: 📖 О СДВГ листался НОВЫМИ сообщениями на каждую
+    # секцию — редактируем то же сообщение на месте, как и остальные
+    # callback-экраны, с fallback на новое при неудаче.
+    await _edit_msg_or_send(
+        message,
         section["text"],
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons)
@@ -9025,6 +9050,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
+    app.add_handler(CallbackQueryHandler(skills_page_nav, pattern="^skills_page_"))
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
     app.add_handler(CallbackQueryHandler(reroll_skill_callback, pattern="^reroll_skill$"))
     app.add_handler(CallbackQueryHandler(use_yesterday_plan_callback, pattern="^use_yesterday_plan$"))
