@@ -6238,7 +6238,7 @@ async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tab = q.data[len("go_tab_"):]
     await q.answer()
     user = get_user(q.from_user.id)
-    titles = {"today": "Сегодня", "tools": "🧩 Инструменты", "me": "⚙️ Настройки"}
+    titles = {"today": "📅 Сегодня", "tools": "🧩 Инструменты", "me": "⚙️ Настройки"}
     text = titles.get(tab, "Меню")
     kb = menu_tab_kb(tab, user)
     await _render_tracked(q.message, ctx, "menu", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
