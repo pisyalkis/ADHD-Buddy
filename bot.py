@@ -4103,7 +4103,8 @@ async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "🎛 *Редактировать отчёты*\n\n"
         "Отметь, что не нужно спрашивать — бот не будет предлагать заполнить эти поля.\n\n"
         "_Задачи A/B/C, чек-лист выполненного и уровень энергии отключить нельзя — "
@@ -4168,7 +4169,8 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "🎯 *Типы техник*\n\n"
         "Выбери, какие короткие техники предлагать в напоминаниях с навыками "
         "(частота настраивается отдельно, в ⚙️ Общие → 🔔 Уведомления → 📳 Маячки внимания).\n\n"
@@ -4204,7 +4206,8 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         prompt = f"Введи время для {labels.get(block,'')} уведомления"
         cancel_target = "go_settings_notifications"
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"{prompt}\n\n"
         "Формат: *ЧЧ:ММ* (например: `08:30` или `20:00`)",
         parse_mode="Markdown",
@@ -4217,7 +4220,8 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     user = get_user(q.from_user.id)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"✏️ *Как мне тебя называть?*\n\nСейчас: {md_escape(user['name']) if user['name'] else '—'}\n\nНапиши новое имя:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -4229,7 +4233,8 @@ async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "🌍 *Из какого ты города?*\n\n"
         "По названию города бот определит твою таймзону, "
         "чтобы уведомления приходили по местному времени.\n\n"
