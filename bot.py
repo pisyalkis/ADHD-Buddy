@@ -2095,12 +2095,19 @@ async def sweep_scheduled_deletions(app):
         except Exception:
             pass
 
-async def _finish_ritual_cleanup(ctx, message, uid, kind):
+async def _finish_ritual_cleanup(ctx, message, uid, kind, extra_text=None, extra_kb=None):
     """Вызывается из finish_morning/finish_evening, когда ритуал реально
     завершён: удаляет весь накопленный Q&A-хвост и шлёт короткое
     самоудаляющееся подтверждение вместо него — содержимое уже видно в
     закреплённом сообщении (утро) / итоговой сводке (вечер), а полный
     список ответов — в 🗂 Карточке дня.
+
+    extra_text/extra_kb — реальный запрос: следом за этим подтверждением
+    в утреннем сценарии всегда шло ОТДЕЛЬНОЕ сообщение "📋 Поставить
+    задачи на сегодня?" (см. finish_morning) — два коротких сообщения
+    подряд читались как дубль. Если передан реальный вопрос с кнопками,
+    он приклеивается к этому же сообщению вместо отдельного — и тогда
+    сообщение НЕ самоудаляется: на открытый вопрос ещё не ответили.
 
     chat_id берём из uid, а не message.chat_id — это личный чат с ботом,
     id пользователя и id чата всегда совпадают (та же логика, что и в
@@ -2116,9 +2123,13 @@ async def _finish_ritual_cleanup(ctx, message, uid, kind):
         except Exception:
             pass
     label = "Утро записано" if kind == "morning" else "Вечер записан"
+    text = f"✅ {label} — всё видно в 🗂 Карточке дня."
+    if extra_text:
+        text += f"\n\n{extra_text}"
     try:
-        sent = await bot.send_message(chat_id=chat_id, text=f"✅ {label} — всё видно в 🗂 Карточке дня.")
-        schedule_message_deletion(chat_id, sent.message_id, RITUAL_CONFIRM_TTL_SEC)
+        sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=extra_kb)
+        if not extra_kb:
+            schedule_message_deletion(chat_id, sent.message_id, RITUAL_CONFIRM_TTL_SEC)
     except Exception:
         pass
 
@@ -2384,7 +2395,6 @@ async def morning_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["m_gratitude"] = ""
     ctx.user_data["m_child"] = ""
     await finish_morning(q.message, q.from_user.id, ctx)
-    await send_morning_task_offer(q.message, q.from_user.id)
     return ConversationHandler.END
 
 async def ask_writing(message, uid):
@@ -2493,7 +2503,6 @@ async def advance_morning(ctx, message, gender, uid, from_key=None):
         await ask_fn(message, ctx, gender, uid)
         return state
     await finish_morning(message, uid, ctx)
-    await send_morning_task_offer(message, uid)
     return ConversationHandler.END
 
 async def pin_today_tasks(ctx, uid, sent_message, pinned_keys=None, ai_msg=""):
@@ -2783,9 +2792,13 @@ async def finish_morning(message, uid, ctx):
     if sent is not None and will_pin:
         await pin_today_tasks(ctx, uid, sent, pinned_keys=pinned_keys, ai_msg=ai_msg_raw)
 
-    await _finish_ritual_cleanup(ctx, message, uid, "morning")
+    # Реальный запрос: следом шло отдельное сообщение "📋 Поставить задачи
+    # на сегодня?" — два коротких сообщения подряд читались как дубль.
+    # Склеены в одно через extra_text/extra_kb (см. _finish_ritual_cleanup).
+    offer_text, offer_kb = _morning_task_offer_text_and_kb(uid)
+    await _finish_ritual_cleanup(ctx, message, uid, "morning", extra_text=offer_text, extra_kb=offer_kb)
 
-async def send_morning_task_offer(message, uid):
+def _morning_task_offer_text_and_kb(uid):
     """После утреннего ритуала (только практики) — отдельное необязательное
     предложение поставить задачи, а не встроенный шаг того же диалога. По
     просьбе Анны: «ритуалы отдельно, задачки отдельно».
@@ -2796,15 +2809,18 @@ async def send_morning_task_offer(message, uid):
     сегодня" ДО того как дошли до конца ритуала — сама сводка "Утро
     записано!" уже показывает A/B1/B2 прямо над этим предложением).
     Спрашивать "поставить?" про уже поставленные задачи сбивает с толку —
-    выглядит как будто бот не заметил то, что только что сам показал."""
+    выглядит как будто бот не заметил то, что только что сам показал.
+
+    Возвращает (None, None), если предлагать нечего — вызывающий код
+    (_finish_ritual_cleanup) в этом случае просто не добавляет вопрос."""
     user = get_user(uid)
     today = datetime.now(get_user_tz(user)).date().isoformat()
     morning = get_diary(uid, "morning", today)
     if any(morning.get(k) for k, _ in TASK_FIELDS):
-        return
-    await message.reply_text(
+        return None, None
+    return (
         "📋 Поставить задачи на сегодня?",
-        reply_markup=InlineKeyboardMarkup([
+        InlineKeyboardMarkup([
             [InlineKeyboardButton("Да, поставить", callback_data="morning_tasks_yes")],
             [InlineKeyboardButton("Не сейчас", callback_data="morning_tasks_no")],
         ])
