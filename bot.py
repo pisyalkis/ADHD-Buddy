@@ -2330,6 +2330,36 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     today_iso = datetime.now(get_user_tz(user)).date().isoformat()
 
+    # Протухшие с давних времён ключи старого пошагового ритуала (см.
+    # _merged_task_fields) — сами по себе больше не читаются, но чистим при
+    # каждом заходе в ☀️ Утро на случай, если у пользователя они годами
+    # лежат в персистентном user_data с версий бота до этого рефакторинга.
+    # Именно эта чистка (а не единственная точка внизу "нового дня") нужна
+    # безусловно — ветки ниже теперь могут вернуться раньше неё.
+    for key in TASK_KEYS:
+        ctx.user_data.pop(f"m_{key}", None)
+
+    # Реальный баг (живой отчёт): "прошёл полный ритуал (письмо/
+    # благодарность/ребёнок), отказался сразу ставить задачи. Через пару
+    # часов пришло «+2ч, утро ещё не закрыто» с кнопкой «Заполнить утро» —
+    # нажал, и всё пошло заново с разминки" — второй проход ритуала
+    # затирал в БД уже сохранённые ответы пустыми. Раньше эта проверка
+    # morning_filled_at жила ТОЛЬКО внутри ветки resuming ниже, которая
+    # целиком зависит от ctx.user_data (сколько шагов уже пройдено СЕГОДНЯ
+    # по мнению именно этого процесса) — а не от единственного надёжного,
+    # хранящегося в БД признака "утро реально закрыто сегодня". Если
+    # ctx.user_data по любой причине не помнит прогресс (например, тик
+    # утреннего напоминания пришёл уже после рестарта процесса) —
+    # resuming ложно равнялось False, и код ниже перезапускал ритуал с
+    # нуля, хотя morning_filled_at уже стоит на сегодня. Проверяем это
+    # единственное надёжное условие ПЕРВЫМ, независимо от ctx.user_data.
+    if (user.get("morning_filled_at") or "")[:10] == today_iso:
+        await q.message.reply_text(
+            "☀️ Утро уже заполнено сегодня — осталось только поставить задачи на день:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")]])
+        )
+        return ConversationHandler.END
+
     # Если сегодняшнее утро уже начато (пройден хотя бы один шаг), но не
     # закончено — продолжаем с первого непройденного шага, а не заново с
     # разминки. Раньше повторный заход (например по кнопке в напоминании)
@@ -2346,24 +2376,8 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.5)
                 await ask_fn(q.message, ctx, user["gender"], uid)
                 return state
-        # Реальный баг (живой отчёт): "заполнил утро, но не задал цели.
-        # Пришло напоминание с кнопкой «Заполнить утро» — нажал, а там всё
-        # по новой, разминка". finish_morning не чистит RESUME_FIELDS из
-        # ctx.user_data после завершения ритуала — цикл выше не находит
-        # "недостающий" шаг просто потому, что все они реально пройдены
-        # сегодня, а не потому что finish_morning не успел отработать (как
-        # предполагал старый комментарий ниже). Раньше это всё равно
-        # трактовалось как крах и запускало ритуал заново с разминки,
-        # стирая уже данные ответы. Явно проверяем morning_filled_at —
-        # если утро сегодня реально закрыто, ведём сразу к постановке
-        # задач (единственное, чего не хватает), а не переспрашиваем всё.
-        if (user.get("morning_filled_at") or "")[:10] == today_iso:
-            await q.message.reply_text(
-                "☀️ Утро уже заполнено сегодня — осталось только поставить задачи на день:",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")]])
-            )
-            return ConversationHandler.END
-        # Все шаги уже пройдены, а morning_filled_at всё же не сегодня —
+        # Все RESUME_FIELDS пройдены (по мнению ctx.user_data), а
+        # morning_filled_at всё же не сегодня (мы бы уже вернулись выше) —
         # редкий крайний случай (finish_morning реально не успел
         # отработать) — начинаем заново, ниже.
 
@@ -2380,12 +2394,6 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for key, _, _ in RESUME_FIELDS:
         ctx.user_data.pop(key, None)
     ctx.user_data.pop("quick_morning", None)
-    # Протухшие с давних времён ключи старого пошагового ритуала (см.
-    # _merged_task_fields) — сами по себе больше не читаются, но чистим на
-    # каждый новый день на случай, если у пользователя они годами лежат
-    # в персистентном user_data с версий бота до этого рефакторинга.
-    for key in TASK_KEYS:
-        ctx.user_data.pop(f"m_{key}", None)
 
     name = md_escape(user["name"])
     gender = user["gender"]
@@ -2911,6 +2919,24 @@ def _merged_task_fields(ctx, existing):
     единообразия сигнатуры, но больше не используется)."""
     return {key: existing.get(key, "") for key in TASK_KEYS}
 
+SOFT_RITUAL_KEYS = ("writing", "gratitude", "child")
+
+def _merged_soft_fields(ctx, existing):
+    """Свободное письмо/благодарность/внутренний ребёнок — в отличие от
+    задач, ЭТИ поля реально приходят из ctx.user_data (см. got_writing и
+    т.д.), не из БД. Но брать ctx.user_data.get(f"m_{key}", "") напрямую
+    небезопасно: если ключа нет вообще (этот шаг в ТЕКУЩЕМ проходе не
+    пройден — например, morning_start перезапустил ритуал с нуля, потому
+    что ctx.user_data потерял бухгалтерию прогресса, хотя morning_filled_at
+    в БД уже стоит на сегодня), это не то же самое, что осознанный skip
+    (skip_m_* тоже пишет "", но ключ при этом ПРИСУТСТВУЕТ). Разница
+    между "не проходили этот шаг" и "явно пропустили" — наличие ключа."""
+    result = {}
+    for key in SOFT_RITUAL_KEYS:
+        m_key = f"m_{key}"
+        result[key] = ctx.user_data[m_key] if m_key in ctx.user_data else existing.get(key, "")
+    return result
+
 def checkpoint_morning_progress(ctx, uid, for_date):
     """Сохраняет недописанное утро, прерванное и не продолженное в тот же
     день, в дневник этого дня как есть — без стрика и без сброса tasks_done
@@ -2918,9 +2944,7 @@ def checkpoint_morning_progress(ctx, uid, for_date):
     existing = get_diary(uid, "morning", for_date)
     save_diary(uid, "morning", {
         **_merged_task_fields(ctx, existing),
-        "writing":  ctx.user_data.get("m_writing", ""),
-        "gratitude":ctx.user_data.get("m_gratitude", ""),
-        "child":    ctx.user_data.get("m_child", ""),
+        **_merged_soft_fields(ctx, existing),
     }, for_date=for_date)
 
 async def finish_morning(message, uid, ctx):
@@ -2938,9 +2962,7 @@ async def finish_morning(message, uid, ctx):
 
     save_diary(uid, "morning", {
         **task_fields,
-        "writing":  ctx.user_data.get("m_writing", ""),
-        "gratitude":ctx.user_data.get("m_gratitude", ""),
-        "child":    ctx.user_data.get("m_child", ""),
+        **_merged_soft_fields(ctx, existing),
     }, for_date=today)
     # Отметки "выполнено" сбрасываем только для полей, текст которых
     # реально поменялся — иначе стираем честные отметки, поставленные
