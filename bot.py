@@ -5694,33 +5694,30 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
         return
     await apply_task_edit(message, ctx, uid, key, text)
 
-async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
+async def apply_task_edit(message, ctx, uid, key, text):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
-    свободного ввода (handle_text), и для выбора готового дела из пула.
+    свободного ввода (handle_text), и для выбора готового дела из пула
+    (pool_use_item удаляет выбранный пункт из пула сам, ДО вызова этой
+    функции — здесь только сохранение текста задачи).
 
     awaiting_task_edit чистим здесь безусловно: путь через handle_text уже
     сам его снимает перед вызовом, а путь через выбор пункта из пула
     (pool_use_item) — нет, так что флаг оставался висеть и перехватывал
     следующее не связанное с задачами сообщение пользователя.
 
-    pool_item_id (по фидбеку Виктории) — если задача пришла из «Список
-    дел», запоминаем связь со слотом, а не удаляем пункт сразу при выборе:
-    он пропадёт из пула только когда эту задачу реально отметят ✅ (см.
-    task_done_callback). Если слот потом перезаписывают — вручную набранным
-    текстом или другим пунктом пула — старая связь тут же затирается,
-    иначе отметка "выполнено" по новому тексту задачи удалила бы чужой,
-    больше не связанный с ней пункт списка дел."""
+    _pool_link_{key} — ключ ещё встречается в дневниках, сохранённых до
+    того, как выбор пункта из пула стал удалять его сразу (раньше связь
+    хранилась здесь и пункт пропадал из пула только при отметке ✅, см.
+    task_done_callback/walk_clear_callback/finish_evening) — гасим его тут
+    же, если слот перезаписывают, чтобы отметка "выполнено" по НОВОМУ
+    тексту задачи не удалила чужой, больше не связанный с ней пункт пула."""
     ctx.user_data.pop("awaiting_task_edit", None)
     now_dt = datetime.now(get_user_tz(get_user(uid)))
     today = now_dt.date().isoformat()
     morning = get_diary(uid, "morning", today)
     was_filled = bool(morning.get(key))
     morning[key] = text
-    link_key = f"_pool_link_{key}"
-    if pool_item_id is not None:
-        morning[link_key] = pool_item_id
-    else:
-        morning.pop(link_key, None)
+    morning.pop(f"_pool_link_{key}", None)
     save_diary(uid, "morning", morning, for_date=today)
     # Реальный баг (14-й чекап): morning_filled_at раньше выставлялся только
     # в finish_morning (полный утренний ритуал) — send_task_beacon использует
@@ -5775,7 +5772,12 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if item is None:
         await q.message.reply_text("Это дело уже не в списке — выбери другое или напиши текст.")
         return
-    await apply_task_edit(q.message, ctx, uid, key, item["text"], pool_item_id=item["id"])
+    # Реальный запрос: выбор дела в задачи дня раньше не убирал его из
+    # 📥 Список дел сразу — пункт висел там же до тех пор, пока задачу не
+    # отмечали ✅ выполненной. Теперь пункт пропадает из пула сразу же, в
+    # момент выбора, а не только при отметке "сделано".
+    delete_pool_task(uid, item["id"])
+    await apply_task_edit(q.message, ctx, uid, key, item["text"])
 
 def task_pool_kb(pool):
     rows = []
