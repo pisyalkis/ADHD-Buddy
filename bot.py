@@ -4603,6 +4603,13 @@ async def send_task_beacon(app, user):
         # предотвращать по собственному комментарию выше.
         today_iso, morning, done_set = get_today_context(user)
         if not any(morning.get(k) for k, _ in TASK_FIELDS): return
+        # Реальный фидбек: "выполнила все дела из списка задач ещё до обеда...
+        # бот продолжал спрашивать о нём оставшийся день". Задачи не
+        # исчезают из morning, когда их отмечают выполненными — маячок
+        # "что сейчас делаешь?" бессмысленно спрашивать про задачи дня,
+        # если делать по ним уже нечего.
+        undone = [k for k, _ in TASK_FIELDS if morning.get(k) and k not in done_set]
+        if not undone: return
         tasks = build_tasks_summary(morning, done_set)
 
         beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
@@ -5191,7 +5198,9 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
     key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), None)
     if key is None:
         await message.reply_text(
-            "Все шесть слотов задач на сегодня уже заняты — открой 📋 Задачи, чтобы что-то поменять.",
+            "Все шесть слотов задач на сегодня уже заняты — открой 📋 Задачи, чтобы что-то поменять.\n\n"
+            "Можно и текстом: назови слот прямо в сообщении, например «поставь как задачу B1 — "
+            "новое дело» — перезапишет именно его.",
             reply_markup=menu_button_kb()
         )
         return
@@ -5294,7 +5303,8 @@ async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_pool_add"] = True
     await q.message.reply_text(
-        "Что добавить в список дел?",
+        "Что добавить в список дел?\n\n_Если несколько дел — каждое с новой строки._",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
     )
 
@@ -7314,6 +7324,17 @@ async def morning_notification(app, uid):
 async def evening_notification(app, uid):
     try:
         user = get_user(uid)
+        # Реальный фидбек: "я закрыла день раньше 9 вечера, так как бот
+        # предложил это сделать. Но в 9 мне снова пришло предложение закрыть
+        # день". evening_sent_date защищает только от повторной ОТПРАВКИ
+        # этого же планового уведомления — не от того, что вечер уже закрыт
+        # (finish_evening) независимо от него, раньше по времени. Не шлём,
+        # если сегодняшний вечер уже реально закрыт.
+        tz = get_user_tz(user)
+        today = evening_day(tz).isoformat()
+        evening = get_diary(uid, "evening", today)
+        if any(evening.values()):
+            return True
         name = md_escape(user.get("name", ""))
         await app.bot.send_message(
             uid,
