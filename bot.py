@@ -1360,19 +1360,64 @@ async def send_with_privacy_hint(message, text, kb, uid, key):
     if show_hint:
         _mark_privacy_hint_seen(uid, key, user)
 
-async def _edit_or_send(q, text, **kwargs):
-    """Редактирует то же сообщение вместо отправки нового — та же механика,
-    что у переключения вкладок меню (go_tab) и ⚙️ Общие (go_settings): тапнул
-    на кнопку раздела — экран обновился на месте, а не заспамил чат новыми
-    сообщениями. Падает обратно на новое сообщение, если редактирование
-    невозможно (сообщение слишком старое, или это не текстовое сообщение —
-    например, с картинкой/видео). Возвращает итоговое сообщение (отредактированное
-    или заново отправленное) — нужно вызывающему коду, которому важно знать
-    его актуальный message_id (см. _settings_render)."""
+async def _edit_msg_or_send(message, text, **kwargs):
+    """Редактирует конкретное сообщение вместо отправки нового — падает
+    обратно на новое сообщение, если редактирование невозможно (сообщение
+    слишком старое, или это не текстовое сообщение — например, с картинкой/
+    видео). Возвращает итоговое сообщение (отредактированное или заново
+    отправленное) — нужно вызывающему коду, которому важно знать его
+    актуальный message_id (см. _render_tracked)."""
     try:
-        return await q.message.edit_text(text, **kwargs)
+        return await message.edit_text(text, **kwargs)
     except Exception:
-        return await q.message.reply_text(text, **kwargs)
+        return await message.reply_text(text, **kwargs)
+
+async def _edit_or_send(q, text, **kwargs):
+    """Та же механика, что у переключения вкладок меню (go_tab) и ⚙️ Общие
+    (go_settings): тапнул на кнопку раздела — экран обновился на месте, а
+    не заспамил чат новыми сообщениями."""
+    return await _edit_msg_or_send(q.message, text, **kwargs)
+
+async def _render_tracked(message, ctx, track_key, text, ttl_seconds=None, **kwargs):
+    """Общая точка входа для любого экрана в боте, который должен вести
+    себя как единственное, самообновляющееся сообщение (⚙️ Общие, ◀️ Меню,
+    правка задачи, 📥 Список дел, ⏰ Напоминания, 💬 Обратная связь):
+    редактирует message на месте (_edit_msg_or_send) и запоминает итоговый
+    id/чат в ctx.user_data под ключом track_key — чтобы handle_text (там
+    нет callback_query) мог позже отредактировать именно это сообщение при
+    ответе текстом, вместо отправки нового. При ttl_seconds — планирует
+    самоудаление экрана после этого периода бездействия (сбрасывается при
+    каждом новом взаимодействии, см. schedule_message_deletion)."""
+    msg = await _edit_msg_or_send(message, text, **kwargs)
+    if msg is None:
+        msg = message
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if chat_id is not None and mid is not None:
+        ctx.user_data[f"{track_key}_msg_id"] = mid
+        ctx.user_data[f"{track_key}_chat_id"] = chat_id
+        if ttl_seconds:
+            schedule_message_deletion(chat_id, mid, ttl_seconds)
+    return msg
+
+async def _edit_tracked_msg(ctx, track_key, text, ttl_seconds=None, **kwargs):
+    """Редактирует сообщение, отслеживаемое под track_key (см.
+    _render_tracked) — используется там, где нет callback_query (ответ
+    пришёл текстом). Возвращает True при успехе; иначе вызывающий код сам
+    шлёт новое сообщение, как раньше (например, если экран уже успел
+    самоудалиться, или его вообще не открывали через отслеживаемый путь)."""
+    bot = getattr(ctx, "bot", None)
+    chat_id = ctx.user_data.get(f"{track_key}_chat_id")
+    mid = ctx.user_data.get(f"{track_key}_msg_id")
+    if not bot or not chat_id or not mid:
+        return False
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=mid, text=text, **kwargs)
+        if ttl_seconds:
+            schedule_message_deletion(chat_id, mid, ttl_seconds)
+        return True
+    except Exception:
+        return False
 
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
@@ -3956,24 +4001,17 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # отвечали новым сообщением, а не редактировали экран настроек — и само
 # самоудаляться через некоторое время бездействия, чтобы не копиться в
 # чате навсегда (та же db-очередь, что и у ритуального Q&A-хвоста, см.
-# schedule_message_deletion/sweep_scheduled_deletions).
+# schedule_message_deletion/sweep_scheduled_deletions). Тот же принцип
+# (один экран = одно сообщение + самоудаление) распространён и на другие
+# места с тем же классом накопления сообщений: ◀️ Меню, правка задачи,
+# 📥 Список дел, ⏰ Напоминания, 💬 Обратная связь — см. _render_tracked/
+# _edit_tracked_msg (общие примитивы) и INACTIVE_SCREEN_TTL_SEC ниже.
 SETTINGS_MENU_TTL_SEC = 900  # 15 минут без взаимодействия
+INACTIVE_SCREEN_TTL_SEC = SETTINGS_MENU_TTL_SEC
 
 async def _settings_render(q, ctx, text, **kwargs):
-    """Общая точка входа для КАЖДОГО экрана/действия внутри ⚙️ Общие:
-    редактирует текущее сообщение (_edit_or_send), запоминает его id/чат
-    в ctx.user_data — чтобы handle_text мог отредактировать именно его при
-    вводе имени/города/времени, там нет callback_query для _edit_or_send —
-    и сбрасывает таймер самоудаления."""
-    msg = await _edit_or_send(q, text, **kwargs)
-    if msg is None:
-        msg = q.message
-    chat_id = getattr(msg, "chat_id", None)
-    mid = getattr(msg, "message_id", None)
-    if chat_id is not None and mid is not None:
-        ctx.user_data["settings_msg_id"] = mid
-        ctx.user_data["settings_chat_id"] = chat_id
-        schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
+    """⚙️ Общие поверх общего _render_tracked (track_key="settings")."""
+    await _render_tracked(q.message, ctx, "settings", text, ttl_seconds=SETTINGS_MENU_TTL_SEC, **kwargs)
 
 def _bump_settings_ttl(ctx):
     """Сбрасывает таймер самоудаления без перерисовки экрана целиком —
@@ -3986,22 +4024,8 @@ def _bump_settings_ttl(ctx):
         schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
 
 async def _edit_settings_msg(ctx, text, **kwargs):
-    """Редактирует отслеживаемое сообщение экрана ⚙️ Общие вместо отправки
-    нового — используется из handle_text, где нет callback_query (ответ
-    пришёл текстом: имя/город/время). Возвращает True при успехе; иначе
-    вызывающий код сам шлёт новое сообщение, как раньше (тот же откат, что
-    и в _edit_or_send — например, если сообщение уже успело самоудалиться)."""
-    bot = getattr(ctx, "bot", None)
-    chat_id = ctx.user_data.get("settings_chat_id")
-    mid = ctx.user_data.get("settings_msg_id")
-    if not bot or not chat_id or not mid:
-        return False
-    try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=mid, text=text, **kwargs)
-        schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
-        return True
-    except Exception:
-        return False
+    """⚙️ Общие поверх общего _edit_tracked_msg (track_key="settings")."""
+    return await _edit_tracked_msg(ctx, "settings", text, ttl_seconds=SETTINGS_MENU_TTL_SEC, **kwargs)
 
 def _settings_main_text_and_kb(user):
     """Реальный запрос: экран ⚙️ Общие был одной длинной свалкой (утро/день/
@@ -4922,14 +4946,23 @@ async def _offer_task_input(message, ctx, uid, key):
     Приглашение явно разрешает и печатать текст сразу, минуя кнопки —
     поэтому awaiting_task_edit нужно взводить в обеих ветках, не только
     в ask_task_text (иначе такой текст улетал не туда, в роутер свободных
-    сообщений)."""
+    сообщений).
+
+    Вне последовательного прохода по всем слотам (task_walk) экран
+    редактируется на месте и запоминается (track_key="task_edit") — чтобы
+    подтверждение после ввода текста тоже легло в то же сообщение, а не
+    создало новое (см. apply_task_edit). Внутри прохода поведение не
+    трогаем — там свой пошаговый сценарий с отдельным сообщением на
+    каждый шаг (см. _walk_to_step)."""
     ctx.user_data["awaiting_task_edit"] = key
     pool = get_pool_tasks(uid)
     if pool:
-        await message.reply_text(
-            f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:",
-            reply_markup=pool_suggestions_kb(key, pool)
-        )
+        text = f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:"
+        kb = pool_suggestions_kb(key, pool)
+        if ctx.user_data.get("task_walk"):
+            await message.reply_text(text, reply_markup=kb)
+        else:
+            await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
     else:
         await ask_task_text(message, ctx, key)
 
@@ -5068,10 +5101,12 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
     label = TASK_LABELS.get(key, key)
-    await message.reply_text(
-        f"{label}\n\nВведи текст задачи:",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
-    )
+    text = f"{label}\n\nВведи текст задачи:"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
+    if ctx.user_data.get("task_walk"):
+        await message.reply_text(text, reply_markup=kb)
+    else:
+        await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
 
 def pool_suggestions_kb(key, pool, offset=0, limit=8):
     """Клавиатура выбора готовой формулировки из "Списка дел" при постановке
@@ -5116,12 +5151,14 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     key = q.data.replace("poolwrite_", "")
     await ask_task_text(q.message, ctx, key)
 
-async def add_pool_and_reply(message, uid, items):
-    """Общая логика и для явного экрана «📥 Список дел», и для роутера
-    свободного текста (route_free_text). items — одна строка или список
-    строк: одним сообщением можно закинуть сразу несколько дел (например
-    списком, по одному на строку), каждое становится отдельным пунктом,
-    а не одним пунктом со всем текстом целиком."""
+async def add_pool_and_reply(message, uid, items, ctx=None):
+    """Общая логика и для явного экрана «📥 Список дел» (ctx передан —
+    правит отслеживаемое сообщение экрана, см. show_task_pool/pool_add_start),
+    и для роутера свободного текста (ctx не передан — там нет своего
+    экрана, куда возвращаться, поэтому просто обычный ответ, как раньше).
+    items — одна строка или список строк: одним сообщением можно закинуть
+    сразу несколько дел (например списком, по одному на строку), каждое
+    становится отдельным пунктом, а не одним пунктом со всем текстом целиком."""
     if isinstance(items, str):
         items = [items]
     items = [t.strip() for t in items if t and t.strip()]
@@ -5131,23 +5168,25 @@ async def add_pool_and_reply(message, uid, items):
     # "✅ Добавил в список дел." для операции, которая ничего не сделала.
     if not items:
         pool = get_pool_tasks(uid)
-        await message.reply_text(
-            "Не увидел текста дела — напиши ещё раз.\n\n" + task_pool_text(pool),
-            parse_mode="Markdown", reply_markup=task_pool_kb(pool)
-        )
+        retry_text = "Не увидел текста дела — напиши ещё раз.\n\n" + task_pool_text(pool)
+        kb = task_pool_kb(pool)
+        if ctx is None or not await _edit_tracked_msg(ctx, "task_pool", retry_text, parse_mode="Markdown", reply_markup=kb):
+            await message.reply_text(retry_text, parse_mode="Markdown", reply_markup=kb)
         return
     for text in items:
         add_pool_task(uid, text)
     pool = get_pool_tasks(uid)
     prefix = "✅ Добавил в список дел.\n\n" if len(items) <= 1 else f"✅ Добавил {len(items)} дел в список.\n\n"
-    await message.reply_text(
-        prefix + task_pool_text(pool),
-        parse_mode="Markdown", reply_markup=task_pool_kb(pool)
-    )
+    confirm_text = prefix + task_pool_text(pool)
+    kb = task_pool_kb(pool)
+    if ctx is None or not await _edit_tracked_msg(ctx, "task_pool", confirm_text, parse_mode="Markdown", reply_markup=kb):
+        await message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
 
-async def create_reminder_and_reply(message, uid, remind_at_key, rem_text, recur=""):
-    """Общая логика и для явного экрана «⏰ Напоминания», и для роутера
-    свободного текста (route_free_text)."""
+async def create_reminder_and_reply(message, uid, remind_at_key, rem_text, recur="", ctx=None):
+    """Общая логика и для явного экрана «⏰ Напоминания» (ctx передан —
+    правит отслеживаемое сообщение экрана, см. show_reminders/
+    reminder_add_start), и для роутера свободного текста (ctx не передан —
+    там нет своего экрана, куда возвращаться)."""
     add_reminder(uid, rem_text, remind_at_key, recur)
     when = datetime.fromisoformat(remind_at_key)
     reminders = get_reminders(uid)
@@ -5155,10 +5194,9 @@ async def create_reminder_and_reply(message, uid, remind_at_key, rem_text, recur
     label = recur_label(remind_at_key, recur)
     when_str = f"{label}, начиная с {when.strftime('%d.%m')}, в {when.strftime('%H:%M')}" if label \
         else f"{when.strftime('%d.%m в %H:%M')}"
-    await message.reply_text(
-        f"✅ Напомню {when_str}: {md_escape(rem_text)}\n\n" + text,
-        parse_mode="Markdown", reply_markup=kb
-    )
+    confirm_text = f"✅ Напомню {when_str}: {md_escape(rem_text)}\n\n" + text
+    if ctx is None or not await _edit_tracked_msg(ctx, "reminders", confirm_text, parse_mode="Markdown", reply_markup=kb):
+        await message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
 
 def _match_by_text(items, query):
     """Нестрогий поиск по подстроке для удаления по свободной фразе — items
@@ -5300,11 +5338,18 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
         # Идём последовательным проходом по слотам (walk_tasks_start) —
         # после сохранения сами переходим к следующему, а не возвращаем
         # на полный список с решением "что дальше" за пользователем.
-        await message.reply_text(prefix + out_text, parse_mode="Markdown")
+        # (task_edit-трекинг тут не заводился — см. _offer_task_input/
+        # ask_task_text — поэтому _edit_tracked_msg ниже просто не найдёт
+        # что редактировать и упадёт на обычный reply_text, как и раньше.)
+        confirm_text = prefix + out_text
+        if not await _edit_tracked_msg(ctx, "task_edit", confirm_text, parse_mode="Markdown"):
+            await message.reply_text(confirm_text, parse_mode="Markdown")
         await _walk_to_step(message, ctx, uid, _next_task_key(key))
         return
 
-    await message.reply_text(prefix + out_text, parse_mode="Markdown", reply_markup=kb)
+    confirm_text = prefix + out_text
+    if not await _edit_tracked_msg(ctx, "task_edit", confirm_text, parse_mode="Markdown", reply_markup=kb):
+        await message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
 
 async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -5337,14 +5382,17 @@ async def show_task_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     pool = get_pool_tasks(q.from_user.id)
-    await q.message.reply_text(task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
+    await _render_tracked(q.message, ctx, "task_pool", task_pool_text(pool),
+                           ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown", reply_markup=task_pool_kb(pool))
 
 async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_pool_add"] = True
-    await q.message.reply_text(
+    await _render_tracked(
+        q.message, ctx, "task_pool",
         "Что добавить в список дел?\n\n_Если несколько дел — каждое с новой строки._",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
     )
@@ -5463,7 +5511,7 @@ async def show_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+    await _render_tracked(q.message, ctx, "reminders", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown", reply_markup=kb)
 
 async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -5475,10 +5523,12 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     ctx.user_data["awaiting_reminder_add"] = True
-    await q.message.reply_text(
+    await _render_tracked(
+        q.message, ctx, "reminders",
         "Когда и о чём напомнить? Напиши свободно, например:\n"
         "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`\n"
         "`каждый день в 9 пить воду`\n`каждый вторник звонить маме`",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
     )
@@ -5490,7 +5540,7 @@ async def reminder_cancel_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cancel_reminder(q.from_user.id, rem_id)
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _render_tracked(q.message, ctx, "reminders", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown", reply_markup=kb)
 
 async def ask_reminder_edit(message, ctx, rem):
     """Общий вход в правку напоминания — и с явной кнопки ✏️ на экране
@@ -5502,9 +5552,11 @@ async def ask_reminder_edit(message, ctx, rem):
         when_str = rem["remind_at"]
     label = recur_label(rem["remind_at"], rem.get("recur") or "")
     when_str += f" (🔁 {label})" if label else ""
-    await message.reply_text(
+    await _render_tracked(
+        message, ctx, "reminders",
         f"✏️ Сейчас: *{md_escape(rem['text'])}* — {when_str}\n\nНапиши новое время и текст, например:\n"
         "`через 20 минут проверить почту`\n`каждый день в 9 пить воду`\n`каждый вторник звонить маме`",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
     )
@@ -5710,13 +5762,15 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.reply_text("Главное меню", reply_markup=main_menu(get_user(q.from_user.id)))
+    await _render_tracked(q.message, ctx, "menu", "Главное меню",
+                           ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=main_menu(get_user(q.from_user.id)))
 
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await q.message.reply_text("🧩 Инструменты", reply_markup=menu_tab_kb("tools", user))
+    await _render_tracked(q.message, ctx, "menu", "🧩 Инструменты",
+                           ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=menu_tab_kb("tools", user))
 
 async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Переключение вкладок меню — редактирует то же сообщение, а не шлёт
@@ -5729,10 +5783,7 @@ async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     titles = {"today": "Сегодня", "tools": "🧩 Инструменты", "me": "⚙️ Настройки"}
     text = titles.get(tab, "Меню")
     kb = menu_tab_kb(tab, user)
-    try:
-        await q.message.edit_text(text, reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, reply_markup=kb)
+    await _render_tracked(q.message, ctx, "menu", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -5890,10 +5941,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 print(f"Не удалось переслать обратную связь: {e}")
-        await update.message.reply_text(
-            "Спасибо! Идея записана 🙏",
-            reply_markup=menu_button_kb()
-        )
+        confirm_text = "Спасибо! Идея записана 🙏"
+        confirm_kb = menu_button_kb()
+        if not await _edit_tracked_msg(ctx, "feedback", confirm_text, reply_markup=confirm_kb):
+            await update.message.reply_text(confirm_text, reply_markup=confirm_kb)
     elif ctx.user_data.get("awaiting_promo_code"):
         ctx.user_data["awaiting_promo_code"] = False
         code = update.message.text.strip().upper()
@@ -5910,32 +5961,28 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Каждая непустая строка — отдельное дело, а не один пункт со всем
         # вставленным текстом целиком (удобно, если вставляешь список).
         items = update.message.text.strip().split("\n")
-        await add_pool_and_reply(update.message, uid, items)
+        await add_pool_and_reply(update.message, uid, items, ctx=ctx)
     elif ctx.user_data.get("awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
         now_dt = datetime.now(get_user_tz(get_user(uid)))
         parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
         if parsed is None:
             ctx.user_data["awaiting_reminder_add"] = True
-            await update.message.reply_text(
-                "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n"
-                "`через 20 минут проверить почту`",
-                parse_mode="Markdown"
-            )
+            retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
+            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown"):
+                await update.message.reply_text(retry_text, parse_mode="Markdown")
         else:
             remind_at_key, rem_text, recur = parsed
-            await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text, recur)
+            await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text, recur, ctx=ctx)
     elif ctx.user_data.get("awaiting_reminder_edit"):
         rem_id = ctx.user_data.pop("awaiting_reminder_edit")
         now_dt = datetime.now(get_user_tz(get_user(uid)))
         parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
         if parsed is None:
             ctx.user_data["awaiting_reminder_edit"] = rem_id
-            await update.message.reply_text(
-                "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n"
-                "`через 20 минут проверить почту`",
-                parse_mode="Markdown"
-            )
+            retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
+            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown"):
+                await update.message.reply_text(retry_text, parse_mode="Markdown")
         else:
             remind_at_key, rem_text, recur = parsed
             # Если новая фраза не упоминает повтор явно ("перенеси на 20:00"
@@ -5953,10 +6000,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             label = recur_label(remind_at_key, recur)
             when_str = f"{label}, начиная с {when.strftime('%d.%m')}, в {when.strftime('%H:%M')}" if label \
                 else f"{when.strftime('%d.%m в %H:%M')}"
-            await update.message.reply_text(
-                f"✅ Изменил: {md_escape(rem_text)} — {when_str}\n\n" + text,
-                parse_mode="Markdown", reply_markup=kb
-            )
+            confirm_text = f"✅ Изменил: {md_escape(rem_text)} — {when_str}\n\n" + text
+            if not await _edit_tracked_msg(ctx, "reminders", confirm_text, parse_mode="Markdown", reply_markup=kb):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
     elif ctx.user_data.get("awaiting_work_start"):
         ctx.user_data["awaiting_work_start"] = False
         text = update.message.text.strip()
@@ -6601,10 +6647,11 @@ async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
-    await _edit_or_send(
-        q,
+    await _render_tracked(
+        q.message, ctx, "feedback",
         "💬 *Обратная связь*\n\n"
         "Напиши что улучшить, что не работает, или какая функция нужна — читаю всё.",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
     )
