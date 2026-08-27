@@ -5216,11 +5216,20 @@ def _tasks_text_and_kb(morning, done_set, gender):
     кнопке-действии (▫️/✅), который можно тапнуть в обе стороны.
 
     Реальный фидбек: "неудобно, что не могу отредактировать задачу сразу
-    текстом" — рядом с каждой задачей отдельная кнопка "✏️" ведёт прямиком
-    в edit_task_callback (правка именно этого слота — текстом или из
-    списка дел), без последовательного прохода по остальным пяти."""
+    текстом" — отдельная кнопка "✏️ <метка>" ведёт прямиком в
+    edit_task_callback (правка именно этого слота — текстом или из списка
+    дел), без последовательного прохода по остальным пяти.
+
+    Реальный фидбек (по скриншоту): раньше "✏️" стояла в одном ряду с
+    чекбоксом задачи — Telegram делит ряд из двух кнопок ПОПОЛАМ
+    независимо от длины текста, так что короткая "✏️" занимала полэкрана
+    рядом с длинным текстом задачи. Чекбоксы теперь каждый на всю ширину
+    отдельной строкой, а все "✏️ <метка>" — в одном общем компактном ряду
+    ниже: несколько коротких кнопок в одном ряду делят его между собой,
+    а не с длинным текстом."""
     lines = []
-    buttons = []
+    checkbox_rows = []
+    edit_buttons = []
     for key, icon in TASK_FIELDS:
         val = morning.get(key, "")
         if not val:
@@ -5228,10 +5237,8 @@ def _tasks_text_and_kb(morning, done_set, gender):
         lines.append(f"{icon}: {md_escape(val)}")
         mark = "✅" if key in done_set else "▫️"
         button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
-        buttons.append([
-            InlineKeyboardButton(button_text, callback_data=f"task_done_{key}"),
-            InlineKeyboardButton("✏️", callback_data=f"edit_task_{key}"),
-        ])
+        checkbox_rows.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
+        edit_buttons.append(InlineKeyboardButton(f"✏️ {SHORT_TASK_LABELS[key]}", callback_data=f"edit_task_{key}"))
 
     # Реальный запрос: нигде на этом экране (и в описании навыка
     # "Приоритеты A, B, C") не было ни слова о том, что задачу на сегодня
@@ -5240,9 +5247,12 @@ def _tasks_text_and_kb(morning, done_set, gender):
     # Список дел, только для задач.
     hint = "_Можно и просто написать в чат «поставь задачу — ...» или «задача B1: ...», без этого меню._"
     text = "📋 *Задачи на сегодня*\n\n" + ("\n".join(lines) if lines else "_задачи ещё не заданы — можно добавить прямо здесь_") + f"\n\n{hint}"
+    buttons = checkbox_rows
+    if edit_buttons:
+        buttons.append(edit_buttons)
     # Проход по всем слотам (walk_tasks_start) остаётся отдельной кнопкой —
     # удобен для ПОСТАНОВКИ (в т.ч. пустых слотов подряд), а не только правки
-    # уже заполненной задачи, для которой теперь есть прямая "✏️" выше.
+    # уже заполненной задачи, для которой теперь есть прямые "✏️ <метка>" выше.
     buttons.append([InlineKeyboardButton("✏️ Поставить/изменить задачи", callback_data="walk_tasks")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
