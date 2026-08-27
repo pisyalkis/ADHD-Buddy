@@ -5453,12 +5453,16 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
         # Идём последовательным проходом по слотам (walk_tasks_start) —
         # после сохранения сами переходим к следующему, а не возвращаем
         # на полный список с решением "что дальше" за пользователем.
-        # (task_edit-трекинг тут не заводился — см. _offer_task_input/
-        # ask_task_text — поэтому _edit_tracked_msg ниже просто не найдёт
-        # что редактировать и упадёт на обычный reply_text, как и раньше.)
+        # Реальный баг: track_key="task_edit" — это трекинг НЕ этого шага
+        # (walk-режим его сам никогда не заводит — см. _offer_task_input/
+        # ask_task_text), а отдельного одиночного экрана правки (✏️ на
+        # конкретном слоте вне прохода). Если человек им пользовался
+        # раньше в ЭТОМ ЖЕ ctx.user_data (значение не чистится нигде),
+        # _edit_tracked_msg находил и правил ТОТ старый, никак не
+        # связанный экран — а сообщение, которое человек только что
+        # тапнул (со списком дел), молча оставалось как было.
         confirm_text = prefix + out_text
-        if not await _edit_tracked_msg(ctx, "task_edit", confirm_text, parse_mode="Markdown"):
-            await message.reply_text(confirm_text, parse_mode="Markdown")
+        await message.reply_text(confirm_text, parse_mode="Markdown")
         await _walk_to_step(message, ctx, uid, _next_task_key(key))
         return
 
