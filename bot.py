@@ -7415,9 +7415,9 @@ async def send_resume_check(bot, uid) -> bool:
         _, morning, done_set = get_today_context(user)
         tasks = build_tasks_summary(morning, done_set)
         returned = g(user["gender"], "Вернулся", "Вернулась")
-        await bot.send_message(
-            chat_id=uid,
-            text=f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\n{returned} к работе?",
+        await send_tracked_notification(
+            bot, uid, "resume_check",
+            f"⏰ *Отдых закончен?*\n\nЗадачи дня:\n{tasks}\n\n{returned} к работе?",
             parse_mode="Markdown",
             reply_markup=midday_kb(morning, done_set)
         )
@@ -7481,8 +7481,9 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     # Реальный запрос: маячок/уведомление исчезает, как только на него
     # ответили — эта клавиатура общая и для дневного чекина (channel
-    # "midday"), и для маячка задач (channel "task_beacon").
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "midday", "task_beacon")
+    # "midday"), маячка задач (channel "task_beacon") и resume-check
+    # после "☕ Отдыхаю" (channel "resume_check", см. send_resume_check).
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "midday", "task_beacon", "resume_check")
     user = get_user(uid)
     name = md_escape(user["name"])
     gender = user["gender"]
