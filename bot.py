@@ -559,6 +559,15 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER, message_id INTEGER
     )""")
+    # Реальный запрос: маячки/уведомления должны вести себя как одно
+    # актуальное сообщение на канал (маячок задач/навыков, дневной чекин,
+    # утро/вечер) — старое удаляется, когда пришло новое того же канала
+    # (см. send_tracked_notification). channel — "task_beacon"/"skill_beacon"/
+    # "midday"/"morning"/"evening".
+    c.execute("""CREATE TABLE IF NOT EXISTS notif_msg_ids (
+        chat_id INTEGER, channel TEXT, message_id INTEGER,
+        PRIMARY KEY (chat_id, channel)
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -2148,6 +2157,81 @@ def schedule_message_deletion(chat_id, message_id, delay_seconds):
     conn.commit()
     conn.close()
 
+def _get_notif_msg_id(chat_id, channel):
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT message_id FROM notif_msg_ids WHERE chat_id=? AND channel=?", (chat_id, channel)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def _set_notif_msg_id(chat_id, channel, message_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM notif_msg_ids WHERE chat_id=? AND channel=?", (chat_id, channel))
+    conn.execute(
+        "INSERT INTO notif_msg_ids(chat_id, channel, message_id) VALUES (?, ?, ?)",
+        (chat_id, channel, message_id)
+    )
+    conn.commit()
+    conn.close()
+
+def _clear_notif_msg_id(chat_id, channel):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM notif_msg_ids WHERE chat_id=? AND channel=?", (chat_id, channel))
+    conn.commit()
+    conn.close()
+
+async def send_tracked_notification(bot, chat_id, channel, text, **kwargs):
+    """Отправляет уведомление конкретного канала (маячок задач/навыков,
+    дневной чекин, утро/вечер — см. notif_msg_ids) как единственное
+    актуальное сообщение этого канала.
+
+    Реальный запрос: маячки/уведомления копились в чате один за другим,
+    если человек не успевал ответить до следующего — теперь предыдущее
+    сообщение ЭТОГО ЖЕ канала удаляется перед отправкой нового. Само
+    сообщение дополнительно самоудаляется после INACTIVE_SCREEN_TTL_SEC
+    (15 минут) тишины — тот же принцип и та же БД-очередь
+    (schedule_message_deletion), что и у остальных отслеживаемых экранов
+    (см. _render_tracked/_render_step_msg), а не таймер в памяти.
+
+    "Ответил(а)" (третий триггер удаления из того же запроса) — забота
+    вызывающего кода: конкретный обработчик кнопки-ответа должен сам
+    вызвать _clear_notif_msg_id (и, если нужно, удалить сообщение) для
+    своего канала — см. midday_callback/beacon_technique_done/
+    morning_start/evening_start."""
+    prev_mid = _get_notif_msg_id(chat_id, channel)
+    if prev_mid is not None:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_mid)
+        except Exception:
+            pass
+    sent = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    mid = getattr(sent, "message_id", None)
+    if mid is not None:
+        _set_notif_msg_id(chat_id, channel, mid)
+        schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
+    return sent
+
+async def _mark_notif_answered(bot, chat_id, message_id, *channels):
+    """Реальный запрос: маячок/уведомление должно исчезать, как только на
+    него ответили — а не висеть рядом с ответом с уже неактуальными
+    кнопками. message_id сверяется с каждым из channels (одно сообщение
+    может числиться максимум под одним из них); при совпадении само
+    сообщение удаляется и трекинг канала снимается. Несколько каналов
+    передаются, если один и тот же обработчик отвечает за клавиатуру,
+    общую для разных уведомлений (см. midday_callback: "midday" и
+    "task_beacon" используют одну и ту же midday_kb)."""
+    if message_id is None:
+        return
+    for channel in channels:
+        if _get_notif_msg_id(chat_id, channel) == message_id:
+            _clear_notif_msg_id(chat_id, channel)
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+            return
+
 async def sweep_scheduled_deletions(app):
     now_iso = datetime.now().isoformat()
     conn = sqlite3.connect(DB_PATH)
@@ -2226,6 +2310,10 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if _evening_conv is not None:
         _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
+    # Реальный запрос: "☀️ Заполнить утро" — это ответ на утреннее
+    # уведомление (morning_notification), если пришли отсюда — оно больше
+    # не нужно, удаляем вместо того чтобы оставлять висеть рядом.
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning")
     user = get_user(uid)
     today_iso = datetime.now(get_user_tz(user)).date().isoformat()
 
@@ -3054,6 +3142,10 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if _morning_conv is not None:
         _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
+    # Реальный запрос: "🌙 Закрыть день" — это ответ на вечернее
+    # уведомление (evening_notification), если пришли отсюда — оно больше
+    # не нужно, удаляем вместо того чтобы оставлять висеть рядом.
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "evening")
     user = get_user(uid)
     today = evening_day(get_user_tz(user)).isoformat()
 
@@ -4761,6 +4853,7 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     await _cleanup_why_msg(ctx, uid, "beacon_technique")
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "skill_beacon")
     user = get_user(uid)
     _, morning, done_set = get_today_context(user)
     tasks = build_tasks_summary(morning, done_set)
@@ -4850,9 +4943,8 @@ async def send_task_beacon(app, user):
         # раз момент, когда человек может задаться вопросом "а что это и
         # можно ли настроить интервал/выключить".
         beacon_text += "\n\n_Настроить интервал или выключить — ⚙️ Настройки_"
-        await app.bot.send_message(
-            chat_id=uid,
-            text=beacon_text,
+        await send_tracked_notification(
+            app.bot, uid, "task_beacon", beacon_text,
             parse_mode="Markdown",
             reply_markup=_append_row(midday_kb(morning, done_set), disable_notif_row("beacon"))
         )
@@ -4963,9 +5055,8 @@ async def send_skill_beacon(app, user):
                 print(f"Ошибка отправки анимации маячка {skill_name}: {e}")
 
         done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
-        await app.bot.send_message(
-            chat_id=uid,
-            text=BEACON_TECHNIQUE_PROMPTS[slot],
+        await send_tracked_notification(
+            app.bot, uid, "skill_beacon", BEACON_TECHNIQUE_PROMPTS[slot],
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(done_label, callback_data="beacon_technique_done")],
@@ -7328,7 +7419,8 @@ async def midday_notification(app, uid):
         today, morning, done_set = get_today_context(user)
 
         if not morning:
-            await app.bot.send_message(uid,
+            await send_tracked_notification(
+                app.bot, uid, "midday",
                 f"☕ *{name}, как дела?*\n\nУтренний дневник не заполнен — и это нормально. Как сейчас?",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
@@ -7340,7 +7432,8 @@ async def midday_notification(app, uid):
             return True
 
         tasks = build_tasks_summary(morning, done_set)
-        await app.bot.send_message(uid,
+        await send_tracked_notification(
+            app.bot, uid, "midday",
             f"☕ *Дневной чекин, {name}!*\n\n"
             f"Твои задачи на сегодня:\n{tasks}\n\n"
             f"Над чем работаешь сейчас?\n\n"
@@ -7362,6 +7455,10 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # нажат уже после того, как открыли другой awaiting_*.
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
+    # Реальный запрос: маячок/уведомление исчезает, как только на него
+    # ответили — эта клавиатура общая и для дневного чекина (channel
+    # "midday"), и для маячка задач (channel "task_beacon").
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "midday", "task_beacon")
     user = get_user(uid)
     name = md_escape(user["name"])
     gender = user["gender"]
@@ -7651,8 +7748,8 @@ async def morning_notification(app, uid):
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
             disable_notif_row("morning"),
         ])
-        await app.bot.send_message(
-            uid,
+        await send_tracked_notification(
+            app.bot, uid, "morning",
             f"☀️ *Доброе утро, {name}!*\n\n"
             f"_{motiv}_{plan_text}{energy_note}\n\n"
             f"💡 *Навык дня:* {skill['name']}\n"
@@ -7681,8 +7778,8 @@ async def evening_notification(app, uid):
         if any(evening.values()):
             return True
         name = md_escape(user.get("name", ""))
-        await app.bot.send_message(
-            uid,
+        await send_tracked_notification(
+            app.bot, uid, "evening",
             f"🌙 *Привет, {name}!*\n\n"
             "День заканчивается. Время закрыть его и поставить планы на завтра.\n\n"
             "5 минут — и голова свободна 👇",
