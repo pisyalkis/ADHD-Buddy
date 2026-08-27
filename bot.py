@@ -421,11 +421,11 @@ async def send_problem_group(message, ctx, group_idx):
     title, _ = PROBLEM_GROUPS[group_idx]
     selected = ctx.user_data.get("onboard_problems", [])
     intro = PROBLEM_GROUP_INTRO.get(group_idx, "Бывают у тебя такие ситуации?")
-    await message.reply_text(
+    _onboard_track(ctx, await message.reply_text(
         f"*{title}*\n\n{intro}",
         parse_mode="Markdown",
         reply_markup=problem_group_kb(group_idx, selected)
-    )
+    ))
 
 MID_PROCR_OPTIONS = [
     ("mid_nostart", "❓ Непонятно с чего начать"),
@@ -1705,6 +1705,36 @@ def reroll_daily_skill(uid):
     return next_skill
 
 # ── ONBOARDING ─────────────────────────────────────────────────────────────
+# Реальный запрос: онбординг — намеренно цепочка отдельных сообщений
+# (иногда несколько подряд с паузой между ними), имитирующая живой диалог —
+# в отличие от остального бота, здесь это осознанно НЕ переделано в одно
+# редактируемое сообщение (первое впечатление важнее визуальной чистоты).
+# Но чат не должен копить весь онбординг целиком к моменту его завершения:
+# как только начинается СЛЕДУЮЩИЙ шаг, сообщения предыдущего шага исчезают.
+# ctx.user_data (не БД, как у ritual_msg_ids) — тот же уровень надёжности,
+# что уже используют task_edit/buddy/promo/ritual_step и другие
+# отслеживаемые экраны в этом боте (переживает рестарт через
+# PicklePersistence), и здесь этого достаточно: максимум, что теряется
+# при рестарте ровно между шагами — одно старое сообщение не удалится.
+async def _onboard_clear_prev(ctx, bot, chat_id):
+    ids = ctx.user_data.pop("onboard_step_msg_ids", None)
+    if not ids or bot is None or chat_id is None:
+        return
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
+
+def _onboard_track(ctx, msg):
+    """Запоминает id сообщения текущего онбординг-шага — несколько вызовов
+    подряд (см. got_gender: приветствие + вопрос) копятся в одном и том же
+    списке и удаляются вместе при следующем _onboard_clear_prev."""
+    mid = getattr(msg, "message_id", None)
+    if mid is not None:
+        ctx.user_data.setdefault("onboard_step_msg_ids", []).append(mid)
+    return msg
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     init_db()
@@ -1731,7 +1761,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return ConversationHandler.END
 
-    await update.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, update.effective_chat.id)
+    _onboard_track(ctx, await update.message.reply_text(
         "👋 Привет! Я *ADHD Buddy* — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
         "🧠 *Чем помогу:*\n"
         "• Преодолевать фрустрацию и прокрастинацию\n"
@@ -1739,25 +1770,26 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Замечать прогресс и не терять мотивацию\n\n"
         "Как тебя зовут?",
         parse_mode="Markdown"
-    )
+    ))
     return ONBOARD_NAME
 
 async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
     if len(name) > 30:
-        await update.message.reply_text("Имя слишком длинное, напиши покороче:")
+        _onboard_track(ctx, await update.message.reply_text("Имя слишком длинное, напиши покороче:"))
         return ONBOARD_NAME
     ctx.user_data["onboard_name"] = name
     # Сохраняем имя в БД сразу — чтобы оно не потерялось при перезапуске бота
     update_user(update.effective_user.id, name=name)
-    await update.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, update.effective_chat.id)
+    _onboard_track(ctx, await update.message.reply_text(
         f"Отлично, {name}! Как мне к тебе обращаться?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Как к нему", callback_data="gender_M"),
              InlineKeyboardButton("Как к ней", callback_data="gender_F")],
             [InlineKeyboardButton("Другое", callback_data="gender_N")],
         ])
-    )
+    ))
     return ONBOARD_GENDER
 
 async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1769,14 +1801,15 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     gender = "M" if q.data == "gender_M" else ("F" if q.data == "gender_F" else "N")
     update_user(uid, gender=gender)  # имя уже сохранено в got_name, не перезаписываем
 
-    await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂")
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    _onboard_track(ctx, await q.message.reply_text(f"Приятно познакомиться, {name}! 🙂"))
     await asyncio.sleep(0.4)
     # Дальше — развилка по факту знакомства с ДБТ/тренингом навыков, а не по
     # диагнозу самому по себе: диагноз ни на что в онбординге не влияет,
     # влияет только то, знает ли человек матчасть. Прошедшим тренинг не
     # нужно объяснять СДВГ и ДБТ — сразу к делу; не проходившим — сначала
     # ввести в курс через 4 отобранных секции гайда (см. onboard_trained_no).
-    await q.message.reply_text(
+    _onboard_track(ctx, await q.message.reply_text(
         "Ты уже проходил(а) тренинг навыков для СДВГ (ДБТ или похожую программу) — "
         "или пока не сталкивался(-лась) с этим?",
         reply_markup=InlineKeyboardMarkup([
@@ -1788,18 +1821,19 @@ async def got_gender(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(personalize("Да, проходил(а) — сразу к делу", gender), callback_data="ob_trained_yes")],
             [InlineKeyboardButton("Нет, хочу разобраться", callback_data="ob_trained_no")],
         ])
-    )
+    ))
     return ConversationHandler.END
 
 async def start_problem_checklist(message, ctx):
     """Общий хвост обеих онбординг-веток (проходил/не проходил тренинг) —
     чек-лист trudnosti нужен обеим одинаково, он про персонализацию, а не
-    про объяснение матчасти."""
+    про объяснение матчасти. Не чистит предыдущий шаг сама — вызывающий
+    код (onboard_trained_yes/onboard_guide_done) уже почистил свой."""
     ctx.user_data["onboard_problems"] = []
-    await message.reply_text(
+    _onboard_track(ctx, await message.reply_text(
         "С чем тебе труднее всего? Пройдёмся по нескольким темам, отметь то, что откликается — "
         "по этому я подскажу конкретные вещи под тебя, а не буду грузить всем подряд.",
-    )
+    ))
     await asyncio.sleep(0.3)
     await send_problem_group(message, ctx, 0)
 
@@ -1807,7 +1841,8 @@ async def onboard_trained_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, skills_trained="1")
-    await q.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    _onboard_track(ctx, await q.message.reply_text(
         "Отлично, тогда СДВГ и ДБТ объяснять не буду — сразу к сути.\n\n"
         "Моя задача — помочь внедрить то, что ты уже знаешь, в привычку: не разовое применение "
         "навыка, когда вспомнил, а структура дня, в которую он встроен сам собой.\n\n"
@@ -1817,7 +1852,7 @@ async def onboard_trained_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "решать, применять его или нет.\n\n"
         "Дальше — пара вопросов, чтобы понять, где тебе сложнее всего, и настроить бота под это.",
         parse_mode="Markdown"
-    )
+    ))
     await asyncio.sleep(0.3)
     await start_problem_checklist(q.message, ctx)
 
@@ -1825,16 +1860,17 @@ async def onboard_trained_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, skills_trained="0")
-    await q.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    _onboard_track(ctx, await q.message.reply_text(
         "Тогда сначала коротко объясню, что вообще происходит — а дальше сам(а) решишь, что "
         "читать, можно пролистать не всё.\n\n"
         "Ниже — темы: что такое СДВГ, какие бывают симптомы, методы лечения (медикаменты, "
         "терапия, тренинг навыков), что реально помогает, и каким может стать твой день с ботом. "
         "Листай стрелкой или точками, можно пропустить.",
         parse_mode="Markdown"
-    )
+    ))
     await asyncio.sleep(0.3)
-    await send_onboarding_guide_section(q.message, "what")
+    await send_onboarding_guide_section(q.message, ctx, "what")
 
 # Curated-подмножество полного гайда GUIDE_SECTIONS (там 8 секций) — для
 # онбординга нарочно только 5, не все 8: что такое СДВГ → какие симптомы →
@@ -1846,7 +1882,7 @@ async def onboard_trained_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # доступны позже через 📖 О СДВГ (🧩 Ещё) целиком.
 ONBOARD_GUIDE_ORDER = ["what", "problems", "diagnosis", "fixes", "bot"]
 
-async def send_onboarding_guide_section(message, section_id):
+async def send_onboarding_guide_section(message, ctx, section_id):
     section = GUIDE_SECTIONS.get(section_id)
     if not section or section_id not in ONBOARD_GUIDE_ORDER:
         return
@@ -1863,16 +1899,18 @@ async def send_onboarding_guide_section(message, section_id):
     else:
         buttons.append([InlineKeyboardButton("Дальше →", callback_data="obguide_done")])
 
-    await message.reply_text(section["text"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    _onboard_track(ctx, await message.reply_text(section["text"], parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons)))
 
 async def onboard_guide_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     section_id = q.data.replace("obguide_", "")
-    await send_onboarding_guide_section(q.message, section_id)
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    await send_onboarding_guide_section(q.message, ctx, section_id)
 
 async def onboard_guide_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await q.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    _onboard_track(ctx, await q.message.reply_text(
         "Вот теперь на одном языке.\n\n"
         "*До бота:* трудности списывались на характер — казалось, дело в лени или недостатке "
         "дисциплины, хотя просто не было подходящего метода.\n"
@@ -1880,7 +1918,7 @@ async def onboard_guide_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "день, а не пытаешься «просто стараться сильнее».\n\n"
         "Дальше — пара вопросов, чтобы понять, где тебе сложнее всего, и настроить бота под это.",
         parse_mode="Markdown"
-    )
+    ))
     await asyncio.sleep(0.3)
     await start_problem_checklist(q.message, ctx)
 
@@ -1898,6 +1936,7 @@ async def toggle_problem(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def problem_group_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     next_idx = int(q.data.replace("pn_", "")) + 1
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     await send_problem_group(q.message, ctx, next_idx)
 
 async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1905,20 +1944,23 @@ async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     selected = ctx.user_data.get("onboard_problems", [])
     update_user(uid, struggles=",".join(selected))
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     if not selected:
         await _onboard_prompt_city(q, ctx, update)
         return
     name = ctx.user_data.get("onboard_name") or get_user(uid).get("name", "")
-    await q.message.reply_text(
+    _onboard_track(ctx, await q.message.reply_text(
         f"{name}, рассказать, как именно я помогу с этим?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Расскажи", callback_data="onboard_explain_yes")],
             [InlineKeyboardButton("Не надо, давай сразу", callback_data="onboard_explain_no")],
         ])
-    )
+    ))
 
 async def _onboard_prompt_city(q, ctx, update):
-    await q.message.reply_text(
+    """Не чистит предыдущий шаг сама — все вызывающие уже почистили свой
+    (problems_done/onboard_explain_no/send_explain_step)."""
+    _onboard_track(ctx, await q.message.reply_text(
         "🌍 *Из какого ты города?*\n\n"
         "Это нужно для правильного времени уведомлений — "
         "чтобы утреннее уведомление приходило в 9 утра *твоего* города, "
@@ -1928,12 +1970,13 @@ async def _onboard_prompt_city(q, ctx, update):
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
-    )
+    ))
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_city"] = True
 
 async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     await _onboard_prompt_city(q, ctx, update)
 
 # Текст объяснения "как я работаю" собран отдельными шагами (а не одним
@@ -1952,6 +1995,11 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
         s for s in (get_user(uid).get("struggles") or "").split(",") if s
     ]
     lines = [PROBLEM_HELP_TEXT[k] for k in selected if k in PROBLEM_HELP_TEXT]
+    # Общая функция и для реального онбординга (then="city"), и для
+    # позднего "Расскажи" уже после него (then="cta", отдельная точка
+    # входа) — трекинг безобиден в обоих случаях: вне онбординга
+    # onboard_step_msg_ids обычно и так пуст.
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
 
     if step == 1:
         if lines:
@@ -1972,10 +2020,10 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
                 "толкает начать, даже без прилива энергии или гиперфокуса. Это и есть моя работа "
                 "каждый день:"
             )
-        await q.message.reply_text(
+        _onboard_track(ctx, await q.message.reply_text(
             text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Логично", callback_data=f"expl_2_{then}")]])
-        )
+        ))
         return
 
     if step == 2:
@@ -1997,10 +2045,10 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
         # достаточно, чтобы человек знал заранее, что вопрос об этом
         # уместен и на него есть ответ.
         text += "\n\n_🔒 Всё, что пишешь, — приватно. Подробнее: «О боте → Приватность»._"
-        await q.message.reply_text(
+        _onboard_track(ctx, await q.message.reply_text(
             personalize(text, gender), parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ясно", callback_data=f"expl_3_{then}")]])
-        )
+        ))
         return
 
     # step == 3 — финал, дальше ведём к реальному следующему шагу (город/CTA),
@@ -2011,7 +2059,7 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
         # "Слишком много в голове" решается через коуча, а не отдельной фичей —
         # даём прямую кнопку туда, а не только упоминание в тексте.
         goal_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Открыть коуча", callback_data="go_coach")]]) if "overload" in selected else None
-        await q.message.reply_text(
+        _onboard_track(ctx, await q.message.reply_text(
             f"Цель — не просто пережить сегодня, а натренировать навык: {goals_text}. "
             "Со временем это начинает получаться само, без подсказок.\n\n"
             "В основе — не мотивационные фразы, а конкретные техники из DBT-тренинга для взрослых с СДВГ "
@@ -2020,9 +2068,9 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
             "⚙️ Настройки → Редактировать отчёты._",
             parse_mode="Markdown",
             reply_markup=goal_kb
-        )
+        ))
     else:
-        await q.message.reply_text(
+        _onboard_track(ctx, await q.message.reply_text(
             personalize(
                 "Общая задача — сформировать привычку: строить структуру дня, мягко входить в него, "
                 "держать фокус на приоритетах и замечать всё хорошее, что было. И по кругу, день за днём.\n\n"
@@ -2033,7 +2081,7 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
                 gender
             ),
             parse_mode="Markdown"
-        )
+        ))
 
     await asyncio.sleep(0.4)
     if then == "city":
@@ -2041,7 +2089,7 @@ async def send_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE, step
     else:
         user = get_user(uid)
         text, kb = onboard_cta_text_and_kb(datetime.now(get_user_tz(user)).hour)
-        await q.message.reply_text(text, reply_markup=kb)
+        _onboard_track(ctx, await q.message.reply_text(text, reply_markup=kb))
 
 async def onboard_explain_step(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -2062,7 +2110,8 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     ctx.user_data["awaiting_city"] = False
-    await q.message.reply_text(
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    _onboard_track(ctx, await q.message.reply_text(
         "🔔 *Последний шаг — уведомления*\n\n"
         "Бот пишет три раза в день: утром, днём и вечером "
         "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
@@ -2072,7 +2121,7 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
             [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
         ])
-    )
+    ))
 
 PIN_CHAT_TIP = (
     "📌 *Совет напоследок*\n\n"
@@ -2085,6 +2134,7 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, notif_enabled=1)
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     await q.message.reply_text(
         "✅ *Уведомления включены!*\n\n"
         "По умолчанию: ☀️ 09:00 · ☕ 13:00 · 🌙 21:00\n"
@@ -2098,6 +2148,7 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, notif_enabled=0)
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     await q.message.reply_text(
         "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки."
     )
@@ -6402,7 +6453,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
             return
         # Определяем таймзону по городу (онбординг — отдельные сообщения,
-        # это ещё не экран ⚙️ Общие)
+        # это ещё не экран ⚙️ Общие) — предыдущий шаг ("🌍 Из какого ты
+        # города?") чистим здесь же, раз ответом на него был именно текст,
+        # а не кнопка (см. _onboard_clear_prev/_onboard_track выше).
+        await _onboard_clear_prev(ctx, ctx.bot, update.effective_chat.id)
         thinking = await update.message.reply_text(f"📍 Ищу {city}...")
         tz_name = await get_timezone_from_city(city)
         if tz_name:
@@ -6424,8 +6478,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
                 f"Можно изменить в ⚙️ Настройки позже."
             )
+        _onboard_track(ctx, thinking)
         # Показываем настройку уведомлений
-        await update.message.reply_text(
+        _onboard_track(ctx, await update.message.reply_text(
             "🔔 *Последний шаг — уведомления*\n\n"
             "Бот пишет три раза в день: утром, днём и вечером "
             "(по умолчанию: 09:00 · 13:00 · 21:00) — они уже включены.\n\n"
@@ -6435,7 +6490,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("✅ Оставить включёнными", callback_data="onboard_notif_on")],
                 [InlineKeyboardButton("🔕 Отключить", callback_data="onboard_notif_skip")],
             ])
-        )
+        ))
         return
     elif ctx.user_data.get("awaiting_feedback"):
         ctx.user_data["awaiting_feedback"] = False
