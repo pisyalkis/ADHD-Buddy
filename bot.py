@@ -4880,7 +4880,14 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _, morning, done_set = get_today_context(user)
     tasks = build_tasks_summary(morning, done_set)
     beacon_text = personalize(random.choice(BEACON_TEXTS).format(tasks=tasks), user["gender"])
-    await q.message.reply_text(beacon_text, parse_mode="Markdown", reply_markup=midday_kb(morning, done_set))
+    # Трекаем как канал "task_beacon" (не голый reply_text) — это по сути
+    # тот же вопрос "что сейчас делаешь?", только сразу после техники, а не
+    # по расписанию: тап по чекбоксу задачи на НЁМ должен обновлять его же
+    # на месте (см. task_done_callback), а не превращать в меню правки задач.
+    await send_tracked_notification(
+        ctx.bot, uid, "task_beacon", beacon_text,
+        parse_mode="Markdown", reply_markup=midday_kb(morning, done_set)
+    )
 
 def _in_beacon_hours(user, now):
     """Рабочие часы маячка — общие для обоих блоков напоминаний (задачи и
@@ -5807,16 +5814,37 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     if item["text"].strip().lower() == task_text:
                         delete_pool_task(uid, item["id"])
     done_set = set(done_list)
-    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
 
-    all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
-    if all_keys and all_keys <= done_set:
-        text += "\n\n🎉 *Все задачи выполнены! Отличный день!*"
+    # Реальный баг: этот же чекбокс "▫️/✅" тапают и с маячка задач/дневного
+    # чекина/resume-check (клавиатура midday_kb) — их текст ("что сейчас
+    # делаешь?" и т.п.) никак не связан с экраном 📋 Задачи. Раньше тап по
+    # чекбоксу ВСЕГДА перестраивал сообщение в _tasks_text_and_kb — маячок
+    # на глазах превращался в незнакомое меню правки задач с "✏️" вместо
+    # того, чтобы просто отразить отметку на месте.
+    chat_id = getattr(q.message, "chat_id", None)
+    mid = getattr(q.message, "message_id", None)
+    notif_channel = next(
+        (ch for ch in ("task_beacon", "midday", "resume_check")
+         if chat_id is not None and _get_notif_msg_id(chat_id, ch) == mid),
+        None
+    )
+    if notif_channel:
+        try:
+            await q.message.edit_reply_markup(reply_markup=midday_kb(morning, done_set))
+        except Exception:
+            pass
+        schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
+    else:
+        text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
 
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+        all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
+        if all_keys and all_keys <= done_set:
+            text += "\n\n🎉 *Все задачи выполнены! Отличный день!*"
+
+        try:
+            await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
     # По запросу: закреплённое утреннее сообщение оставляем "в изначальном
     # виде" (не добавляем в него новые задачи), но отметку о выполнении —
