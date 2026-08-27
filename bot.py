@@ -1537,6 +1537,7 @@ def menu_tab_kb(tab, user=None):
     elif tab == "tools":
         rows += [
             [InlineKeyboardButton("📔 Мой дневник", callback_data="go_daycard")],
+            [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
             [InlineKeyboardButton("⏰ Напоминания", callback_data="go_reminders")],
             [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
             [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
