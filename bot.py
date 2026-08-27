@@ -3059,12 +3059,19 @@ async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_work_start"] = True
-    await q.message.reply_text(
+    # Отдельное новое сообщение (не редактируем q.message — это финал
+    # ритуала, его текст должен остаться), но само оно отслеживается под
+    # track_key="work_start", чтобы ответ текстом ниже редактировал именно
+    # его, а не плодил ещё одно сообщение.
+    prompt_msg = await q.message.reply_text(
         "🚪 Во сколько сегодня начинаешь работать?\n\n"
         "Пришлю напоминание с задачами в это время. Формат: *ЧЧ:ММ* (например `10:00`)",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Не сейчас", callback_data="skip_work_start")]])
     )
+    ctx.user_data["work_start_msg_id"] = prompt_msg.message_id
+    ctx.user_data["work_start_chat_id"] = prompt_msg.chat_id
+    schedule_message_deletion(prompt_msg.chat_id, prompt_msg.message_id, INACTIVE_SCREEN_TTL_SEC)
 
 async def morning_task_offer_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -3076,7 +3083,7 @@ async def morning_task_offer_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def skip_work_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["awaiting_work_start"] = False
-    await q.message.reply_text("Окей, без напоминания.", reply_markup=menu_button_kb())
+    await _edit_or_send(q, "Окей, без напоминания.", reply_markup=menu_button_kb())
 
 # ── EVENING FLOW ───────────────────────────────────────────────────────────
 
@@ -6364,15 +6371,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # после того как человек только что ответил на этот же вопрос.
             work_start_sent_date = today if (h, m) <= (now_tz.hour, now_tz.minute) else ""
             update_user(uid, work_start_time=text, work_start_date=today, work_start_sent_date=work_start_sent_date)
-            await update.message.reply_text(
-                f"🚪 Хорошо — в *{text}* пришлю напоминание с задачами.",
-                parse_mode="Markdown", reply_markup=menu_button_kb()
-            )
+            confirm_text = f"🚪 Хорошо — в *{text}* пришлю напоминание с задачами."
+            confirm_kb = menu_button_kb()
+            if not await _edit_tracked_msg(ctx, "work_start", confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
         else:
-            await update.message.reply_text(
-                "Неверный формат. Введи время в формате ЧЧ:ММ, например: `10:00`",
-                parse_mode="Markdown"
-            )
+            retry_text = "Неверный формат. Введи время в формате ЧЧ:ММ, например: `10:00`"
+            if not await _edit_tracked_msg(ctx, "work_start", retry_text, parse_mode="Markdown"):
+                await update.message.reply_text(retry_text, parse_mode="Markdown")
             ctx.user_data["awaiting_work_start"] = True
     elif ctx.user_data.get("admin_msg_target"):
         target_id = ctx.user_data.pop("admin_msg_target")
