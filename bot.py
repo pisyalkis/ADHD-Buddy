@@ -2181,24 +2181,28 @@ def _clear_notif_msg_id(chat_id, channel):
     conn.commit()
     conn.close()
 
-async def send_tracked_notification(bot, chat_id, channel, text, **kwargs):
+async def send_tracked_notification(bot, chat_id, channel, text, ttl_seconds=None, **kwargs):
     """Отправляет уведомление конкретного канала (маячок задач/навыков,
-    дневной чекин, утро/вечер — см. notif_msg_ids) как единственное
-    актуальное сообщение этого канала.
+    дневной чекин, утро/вечер, напоминание "утро ещё не закрыто" — см.
+    notif_msg_ids) как единственное актуальное сообщение этого канала.
 
     Реальный запрос: маячки/уведомления копились в чате один за другим,
     если человек не успевал ответить до следующего — теперь предыдущее
     сообщение ЭТОГО ЖЕ канала удаляется перед отправкой нового. Само
-    сообщение дополнительно самоудаляется после INACTIVE_SCREEN_TTL_SEC
-    (15 минут) тишины — тот же принцип и та же БД-очередь
-    (schedule_message_deletion), что и у остальных отслеживаемых экранов
-    (см. _render_tracked/_render_step_msg), а не таймер в памяти.
+    сообщение дополнительно самоудаляется после ttl_seconds (по умолчанию
+    INACTIVE_SCREEN_TTL_SEC, 15 минут — но, например, у "morning_reminder"
+    по отдельной просьбе 30 минут) тишины — тот же принцип и та же
+    БД-очередь (schedule_message_deletion), что и у остальных
+    отслеживаемых экранов (см. _render_tracked/_render_step_msg), а не
+    таймер в памяти.
 
     "Ответил(а)" (третий триггер удаления из того же запроса) — забота
     вызывающего кода: конкретный обработчик кнопки-ответа должен сам
     вызвать _clear_notif_msg_id (и, если нужно, удалить сообщение) для
     своего канала — см. midday_callback/beacon_technique_done/
     morning_start/evening_start."""
+    if ttl_seconds is None:
+        ttl_seconds = INACTIVE_SCREEN_TTL_SEC
     prev_mid = _get_notif_msg_id(chat_id, channel)
     if prev_mid is not None:
         try:
@@ -2209,7 +2213,7 @@ async def send_tracked_notification(bot, chat_id, channel, text, **kwargs):
     mid = getattr(sent, "message_id", None)
     if mid is not None:
         _set_notif_msg_id(chat_id, channel, mid)
-        schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
+        schedule_message_deletion(chat_id, mid, ttl_seconds)
     return sent
 
 async def _mark_notif_answered(bot, chat_id, message_id, *channels):
@@ -2311,9 +2315,10 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
     clear_awaiting_flags(ctx, update)
     # Реальный запрос: "☀️ Заполнить утро" — это ответ на утреннее
-    # уведомление (morning_notification), если пришли отсюда — оно больше
-    # не нужно, удаляем вместо того чтобы оставлять висеть рядом.
-    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning")
+    # уведомление (morning_notification) ИЛИ на "+2ч, утро ещё не закрыто"
+    # (morning_reminder) — если пришли отсюда, оно больше не нужно,
+    # удаляем вместо того чтобы оставлять висеть рядом.
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning", "morning_reminder")
     user = get_user(uid)
     today_iso = datetime.now(get_user_tz(user)).date().isoformat()
 
@@ -8278,9 +8283,12 @@ async def check_notifications(app):
                         # "отправлено" только после реального успеха, а не до
                         # (раньше было наоборот: временный сбой отправки навсегда
                         # съедал это напоминание на весь день без единой попытки).
-                        await app.bot.send_message(
-                            chat_id=uid,
-                            text="☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                        # По отдельной просьбе — самоудаление через 30 минут
+                        # (а не общие 15, как у остальных каналов).
+                        await send_tracked_notification(
+                            app.bot, uid, "morning_reminder",
+                            "☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                            ttl_seconds=1800,
                             parse_mode="Markdown",
                             reply_markup=InlineKeyboardMarkup([[
                                 InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
