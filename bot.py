@@ -1443,6 +1443,31 @@ async def _edit_tracked_msg(ctx, track_key, text, ttl_seconds=None, **kwargs):
     except Exception:
         return False
 
+async def _render_walk_step(message, ctx, text, ttl_seconds=None, **kwargs):
+    """Общая точка входа для каждого шага последовательного прохода по
+    задачам (walk_tasks_start/_walk_to_step) — по фидбеку: в любой момент
+    должно быть видно только одно актуальное сообщение прохода, а не
+    цепочку из отдельных сообщений на каждый шаг.
+
+    track_key="walk_step" отдельно от "task_edit" (тот — для одиночной
+    правки вне прохода). Работает одинаково и когда текущее взаимодействие
+    пришло с кнопки (message — само отслеживаемое сообщение бота), и
+    когда текстом (message — сообщение пользователя, редактировать его
+    нельзя): в обоих случаях правим ПО ЗАПОМНЕННЫМ id уже показанное
+    сообщение прохода; message используется только как источник chat_id
+    для отправки нового, если редактировать оказалось нечего (самый
+    первый шаг, либо старое сообщение уже недоступно)."""
+    if await _edit_tracked_msg(ctx, "walk_step", text, ttl_seconds=ttl_seconds, **kwargs):
+        return
+    sent = await message.reply_text(text, **kwargs)
+    chat_id = getattr(sent, "chat_id", None)
+    mid = getattr(sent, "message_id", None)
+    if chat_id is not None and mid is not None:
+        ctx.user_data["walk_step_msg_id"] = mid
+        ctx.user_data["walk_step_chat_id"] = chat_id
+        if ttl_seconds:
+            schedule_message_deletion(chat_id, mid, ttl_seconds)
+
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
 
@@ -5066,16 +5091,15 @@ async def _offer_task_input(message, ctx, uid, key):
     Вне последовательного прохода по всем слотам (task_walk) экран
     редактируется на месте и запоминается (track_key="task_edit") — чтобы
     подтверждение после ввода текста тоже легло в то же сообщение, а не
-    создало новое (см. apply_task_edit). Внутри прохода поведение не
-    трогаем — там свой пошаговый сценарий с отдельным сообщением на
-    каждый шаг (см. _walk_to_step)."""
+    создало новое (см. apply_task_edit). Внутри прохода — свой трекинг,
+    track_key="walk_step" (см. _render_walk_step), по той же причине."""
     ctx.user_data["awaiting_task_edit"] = key
     pool = get_pool_tasks(uid)
     if pool:
         text = f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:"
         kb = pool_suggestions_kb(key, pool)
         if ctx.user_data.get("task_walk"):
-            await message.reply_text(text, reply_markup=kb)
+            await _render_walk_step(message, ctx, text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
         else:
             await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
     else:
@@ -5125,7 +5149,9 @@ async def _walk_to_step(message, ctx, uid, key):
     # ввод текста задачи.
     clear_awaiting_flags(ctx)
     if key is None:
-        await message.reply_text("Прошлись по всем задачам ✅", reply_markup=menu_button_kb())
+        await _render_walk_step(message, ctx, "Прошлись по всем задачам ✅", reply_markup=menu_button_kb())
+        ctx.user_data.pop("walk_step_msg_id", None)
+        ctx.user_data.pop("walk_step_chat_id", None)
         return
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
@@ -5135,8 +5161,10 @@ async def _walk_to_step(message, ctx, uid, key):
         await _offer_task_input(message, ctx, uid, key)
         return
     label = TASK_LABELS.get(key, key)
-    await message.reply_text(
+    await _render_walk_step(
+        message, ctx,
         f"{label}\n\n{md_escape(val)}",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➡️ Пропустить", callback_data=f"walk_skip_{key}")],
@@ -5167,7 +5195,6 @@ async def walk_clear_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     done_list = [k for k in done_data.get("done", []) if k != key]
     if len(done_list) != len(done_data.get("done", [])):
         save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
-    await q.message.reply_text(f"🗑 Убрал: {TASK_LABELS.get(key, key)}")
     await _refresh_pinned_tasks_message(ctx, uid)
     await _walk_to_step(q.message, ctx, uid, _next_task_key(key))
 
@@ -5180,10 +5207,16 @@ async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     заполнены, приходилось тапать «Пропустить» по каждой из них, чтобы
     дойти до реально нужной. Начинаем сразу с первого незаполненного
     слота — если такой есть; если все шесть уже заняты, идти незачем
-    "к следующей" и проход как раньше стартует с A для полного обзора/правки."""
+    "к следующей" и проход как раньше стартует с A для полного обзора/правки.
+
+    Запоминаем текущее сообщение как track_key="walk_step" ДО первого
+    шага — иначе он ушёл бы отдельным новым сообщением, а экран, с
+    которого стартовали проход, остался бы висеть рядом нетронутым."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
+    ctx.user_data["walk_step_msg_id"] = q.message.message_id
+    ctx.user_data["walk_step_chat_id"] = q.message.chat_id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     start_key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), TASK_FIELDS[0][0])
@@ -5220,7 +5253,9 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     morning = get_diary(uid, "morning", today)
     done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _render_walk_step(q.message, ctx, text, parse_mode="Markdown", reply_markup=kb)
+    ctx.user_data.pop("walk_step_msg_id", None)
+    ctx.user_data.pop("walk_step_chat_id", None)
 
 async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
@@ -5228,7 +5263,7 @@ async def ask_task_text(message, ctx, key):
     text = f"{label}\n\nВведи текст задачи:"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
     if ctx.user_data.get("task_walk"):
-        await message.reply_text(text, reply_markup=kb)
+        await _render_walk_step(message, ctx, text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
     else:
         await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
 
@@ -5259,7 +5294,14 @@ def pool_suggestions_kb(key, pool, offset=0, limit=8):
 
 async def pool_change_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    # Реальный баг: clear_awaiting_flags гасит task_walk безусловно (см.
+    # ниже, pool_use_item/pool_write_own) — если листать страницы пула
+    # посреди прохода по задачам, следующий тап по пункту пула уже не
+    # застанет task_walk=True.
+    was_walk = ctx.user_data.get("task_walk", False)
     clear_awaiting_flags(ctx, update)
+    if was_walk:
+        ctx.user_data["task_walk"] = True
     key, offset_s = q.data[len("poolpage_"):].rsplit("_", 1)
     pool = get_pool_tasks(q.from_user.id)
     await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
@@ -5271,7 +5313,15 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # появляется сразу после чужого clear_awaiting_flags, но если сначала
     # открыть какой-то другой awaiting_* и вернуться к старой кнопке,
     # ask_task_text выставляет awaiting_task_edit НЕ гася остальные флаги.
+    #
+    # Реальный баг: clear_awaiting_flags заодно безусловно гасит и
+    # task_walk — посреди прохода по задачам (walk_tasks_start) это тихо
+    # выбивало из прохода: ask_task_text ниже переставал видеть
+    # task_walk=True и уходил в одиночный (не walk) экран правки.
+    was_walk = ctx.user_data.get("task_walk", False)
     clear_awaiting_flags(ctx, update)
+    if was_walk:
+        ctx.user_data["task_walk"] = True
     key = q.data.replace("poolwrite_", "")
     await ask_task_text(q.message, ctx, key)
 
@@ -5462,16 +5512,10 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
         # Идём последовательным проходом по слотам (walk_tasks_start) —
         # после сохранения сами переходим к следующему, а не возвращаем
         # на полный список с решением "что дальше" за пользователем.
-        # Реальный баг: track_key="task_edit" — это трекинг НЕ этого шага
-        # (walk-режим его сам никогда не заводит — см. _offer_task_input/
-        # ask_task_text), а отдельного одиночного экрана правки (✏️ на
-        # конкретном слоте вне прохода). Если человек им пользовался
-        # раньше в ЭТОМ ЖЕ ctx.user_data (значение не чистится нигде),
-        # _edit_tracked_msg находил и правил ТОТ старый, никак не
-        # связанный экран — а сообщение, которое человек только что
-        # тапнул (со списком дел), молча оставалось как было.
+        # Подтверждение — тем же track_key="walk_step" сообщением прохода
+        # (см. _render_walk_step), а не отдельным новым.
         confirm_text = prefix + out_text
-        await message.reply_text(confirm_text, parse_mode="Markdown")
+        await _render_walk_step(message, ctx, confirm_text, parse_mode="Markdown")
         await _walk_to_step(message, ctx, uid, _next_task_key(key))
         return
 
@@ -5480,8 +5524,15 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
         await message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
 
 async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Реальный баг (проход по задачам "зависал" на выборе из списка дел):
+    clear_awaiting_flags гасит task_walk безусловно — apply_task_edit
+    ниже больше не видел, что это шаг прохода, и вместо продолжения
+    последовательности молча уходил в одиночный (не walk) экран правки."""
     q = update.callback_query; await q.answer()
+    was_walk = ctx.user_data.get("task_walk", False)
     clear_awaiting_flags(ctx, update)
+    if was_walk:
+        ctx.user_data["task_walk"] = True
     key, id_s = q.data[len("pooluse_"):].rsplit("_", 1)
     uid = q.from_user.id
     pool = get_pool_tasks(uid)
