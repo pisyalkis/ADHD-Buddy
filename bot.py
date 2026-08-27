@@ -5257,6 +5257,11 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
+    # "📋 Поставить задачи" на "+2ч, задачи не поставлены" ведёт прямо сюда
+    # (а не в morning_start) — раз пришли отсюда, само напоминание больше
+    # не нужно и не должно висеть отслеживаемым каналом (иначе следующий
+    # реальный morning_reminder попытается удалить давно неактуальный id).
+    await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "morning_reminder")
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     done_data = get_diary(uid, "tasks_done", today)
@@ -8390,13 +8395,25 @@ async def check_notifications(app):
                         # съедал это напоминание на весь день без единой попытки).
                         # По отдельной просьбе — самоудаление через 30 минут
                         # (а не общие 15, как у остальных каналов).
+                        # Реальный запрос: условие срабатывания — именно
+                        # отсутствие задач (см. комментарий выше), а не
+                        # "утро не закрыто" — но текст говорил про утро, и
+                        # кнопка "Заполнить утро" вела в morning_start,
+                        # который (даже пройдя ритуал целиком) перезапускал
+                        # его заново, если ctx.user_data не помнил прогресс.
+                        # Текст и кнопка теперь говорят о том, что реально
+                        # не сделано — задачи — и ведут сразу в 📋 Задачи,
+                        # без лишнего обхода через утренний ритуал.
                         await send_tracked_notification(
                             app.bot, uid, "morning_reminder",
-                            "☀️ *Утро ещё не закрыто*\n\nЕщё не поздно поставить задачи на день — займёт 2 минуты.",
+                            "📋 *Задачи на сегодня ещё не поставлены*\n\n"
+                            "Без конкретной цели день с СДВГ-мозгом легко расползается на десяток "
+                            "начатых и брошенных дел. Даже одна главная задача — это точка, к которой "
+                            "можно вернуться, когда потерялся(ась). Займёт 2 минуты.",
                             ttl_seconds=1800,
                             parse_mode="Markdown",
                             reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton("☀️ Заполнить утро", callback_data="go_morning")
+                                InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")
                             ]])
                         )
                         update_user(uid, morning_reminder_sent_date=day_key)
