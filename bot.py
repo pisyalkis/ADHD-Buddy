@@ -7019,6 +7019,92 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# Реальный запрос: "О боте" был одним длинным сплошным текстом — разбит
+# на страницы по тому же принципу листания точками (●/○), что и 📖 О СДВГ
+# (см. GUIDE_SECTIONS/send_guide_section).
+ABOUT_SECTIONS = {
+    "what": {
+        "title": "ℹ️ Как это работает",
+        "text": (
+            "ℹ️ *О боте*\n\n"
+            "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
+            "и помогаю, если начинаешь фрустрироваться.\n\n"
+            "Мозг с СДВГ живёт интересом и срочностью, а не важностью — "
+            "поэтому важное откладывается. Я держу структуру дня вместо тебя."
+        ),
+        "next": "day_structure"
+    },
+    "day_structure": {
+        "title": "🕐 Структура дня",
+        "text": (
+            "🕐 *Структура дня*\n\n"
+            "☀️ *Утром* — настройка на день.\n"
+            "☕ *Днём* — самая активная фаза: делаем задачи и практикуем навыки.\n"
+            "🌙 *Вечером* — закрываем день, подводим итоги."
+        ),
+        "next": "tools"
+    },
+    "tools": {
+        "title": "🧰 Инструменты",
+        "text": (
+            "🧰 *Инструменты*\n\n"
+            "📥 *Список дел* — кидай сюда идеи в течение дня, а когда ставишь задачи — "
+            "выбирай из готового, а не придумывай с нуля.\n\n"
+            "⏰ *Напоминания* — свободной фразой, разово или на повтор («каждый день», "
+            "«каждый вторник»).\n\n"
+            "💬 Кстати, необязательно через меню — большинство просьб можно просто "
+            "написать текстом: «напомни...», «добавь в список дел...», «поставь задачу "
+            "на сегодня...», «удали...» — разберусь, что делать."
+        ),
+        "next": "focus_coach"
+    },
+    "focus_coach": {
+        "title": "🍅 Фокус и поддержка",
+        "text": (
+            "🍅 *Фокус и поддержка*\n\n"
+            "🍅 *Фокус-режим* — запускаешь таймер когда нужно поработать без отвлечений. "
+            "Бот напишет когда время вышло и предложит перерыв. "
+            "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
+            "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз."
+        ),
+        "next": "science"
+    },
+    "science": {
+        "title": "📚 Основа метода",
+        "text": (
+            "📚 *Основа метода*\n\n"
+            "В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
+            "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
+            "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._"
+        ),
+        "next": None
+    },
+}
+
+async def send_about_section(message, section_id, gender):
+    section = ABOUT_SECTIONS.get(section_id)
+    if not section: return
+
+    dot_row = [
+        InlineKeyboardButton("●" if key == section_id else "○", callback_data=f"about_{key}")
+        for key in ABOUT_SECTIONS
+    ]
+    buttons = [dot_row]
+
+    if section["next"]:
+        next_title = ABOUT_SECTIONS[section["next"]]["title"]
+        buttons.append([InlineKeyboardButton(f"Далее: {next_title} →", callback_data=f"about_{section['next']}")])
+
+    buttons.append([InlineKeyboardButton("🔒 А что с приватностью?", callback_data="go_privacy")])
+    buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+
+    await _edit_msg_or_send(
+        message,
+        personalize(section["text"], gender),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
 async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     # Реальный баг (14-й чекап, тот же класс, что уже задокументирован в
@@ -7029,39 +7115,13 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # обычное сообщение пользователя.
     clear_awaiting_flags(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
-    await _edit_or_send(
-        q,
-        personalize(
-            "ℹ️ *О боте*\n\n"
-            "Каждый день напоминаю ставить задачи на день, предлагаю навык дня "
-            "и помогаю, если начинаешь фрустрироваться.\n\n"
-            "Мозг с СДВГ живёт интересом и срочностью, а не важностью — "
-            "поэтому важное откладывается. Я держу структуру дня вместо тебя.\n\n"
-            "☀️ *Утром* — настройка на день.\n"
-            "☕ *Днём* — самая активная фаза: делаем задачи и практикуем навыки.\n"
-            "🌙 *Вечером* — закрываем день, подводим итоги.\n\n"
-            "📥 *Список дел* — кидай сюда идеи в течение дня, а когда ставишь задачи — "
-            "выбирай из готового, а не придумывай с нуля.\n\n"
-            "⏰ *Напоминания* — свободной фразой, разово или на повтор («каждый день», "
-            "«каждый вторник»).\n\n"
-            "💬 Кстати, необязательно через меню — большинство просьб можно просто "
-            "написать текстом: «напомни...», «добавь в список дел...», «поставь задачу "
-            "на сегодня...», «удали...» — разберусь, что делать.\n\n"
-            "🍅 *Фокус-режим* — запускаешь таймер когда нужно поработать без отвлечений. "
-            "Бот напишет когда время вышло и предложит перерыв. "
-            "В конце дня видишь сколько минут провёл(а) в фокусе.\n\n"
-            "🤖 *Коуч* и 🧠 *Навыки* — на случай когда трудно начать, тревожно или перегруз.\n\n"
-            "📚 В основе — программа *«Mastering Your Adult ADHD»* (Safren), доказанный протокол "
-            "когнитивно-поведенческой терапии для взрослых с СДВГ.\n\n"
-            "_Польза не в дисциплине, а в том, чтобы мозгу было на что опереться каждый день._",
-            gender
-        ),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔒 А что с приватностью?", callback_data="go_privacy")],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ])
-    )
+    await send_about_section(q.message, "what", gender)
+
+async def about_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    section_id = q.data.replace("about_", "")
+    gender = get_user(q.from_user.id)["gender"]
+    await send_about_section(q.message, section_id, gender)
 
 def _whats_new_kb(user):
     notify_on = int(user.get("notify_updates") if user.get("notify_updates") is not None else 0)
@@ -9127,6 +9187,7 @@ def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     app.add_handler(CallbackQueryHandler(go_about,         pattern="^go_about$"))
+    app.add_handler(CallbackQueryHandler(about_section,    pattern="^about_"))
     app.add_handler(CallbackQueryHandler(show_whats_new,   pattern="^go_whats_new$"))
     app.add_handler(CallbackQueryHandler(toggle_notify_updates, pattern="^toggle_notify_updates$"))
     app.add_handler(CallbackQueryHandler(go_privacy,       pattern="^go_privacy$"))
