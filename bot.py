@@ -7185,7 +7185,8 @@ async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     в Коуче, чтобы не перегружать экран быстрой помощи."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         "🔒 *А что с приватностью?*\n\n"
         "*Где что хранится.* Дневник, задачи и настройки — в закрытой базе "
         "на нашем сервере. Мы не продаём и никому не передаём эти данные.\n\n"
