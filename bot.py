@@ -1301,12 +1301,32 @@ def skip_why_kb(skip_cb, why_key):
 
 async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показывает объяснение пользы поля, не сбрасывая вопрос — можно
-    ответить или пропустить и после этого, ничего не теряется."""
+    ответить или пропустить и после этого, ничего не теряется. Само
+    объяснение запоминается в ctx.user_data и удаляется сразу же, как
+    только поле отвечено текстом или пропущено (см. _cleanup_why_msg) —
+    реальный запрос: оно не должно оставаться в чате после того, как поле
+    уже заполнено."""
     q = update.callback_query; await q.answer()
     key = q.data.replace("why_", "")
     explanation = WHY_EXPLANATIONS.get(key, "")
     if explanation:
-        await q.message.reply_text(f"{explanation}\n\nНу что, делаем? 🙂")
+        sent = await q.message.reply_text(f"{explanation}\n\nНу что, делаем? 🙂")
+        mid = getattr(sent, "message_id", None)
+        if mid is not None:
+            ctx.user_data[f"why_msg_{key}"] = mid
+
+async def _cleanup_why_msg(ctx, uid, key):
+    """Удаляет объяснение "❓ Зачем это?" для конкретного поля (см.
+    why_callback), если оно было показано перед тем, как поле ответили
+    текстом или пропустили — без этого explanation-сообщение оставалось
+    висеть в чате навсегда, даже когда поле уже заполнено."""
+    mid = ctx.user_data.pop(f"why_msg_{key}", None)
+    bot = getattr(ctx, "bot", None)
+    if mid is not None and bot is not None:
+        try:
+            await bot.delete_message(chat_id=uid, message_id=mid)
+        except Exception:
+            pass
 
 # Подсказка про приватность у "уязвимых" текстовых полей — реальный отзыв
 # тестировщицы: заполняя свободное письмо, "подумала, что кто-то это
@@ -2401,6 +2421,7 @@ async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["m_gratitude"] = update.message.text
     uid = update.effective_user.id
+    await _cleanup_why_msg(ctx, uid, "m_gratitude")
     reset_skip_streak(uid, "m_gratitude")
     return await advance_morning(ctx, update.message, get_user(uid)["gender"], uid, "m_gratitude")
 
@@ -2408,6 +2429,7 @@ async def skip_m_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_gratitude"] = ""
     uid = q.from_user.id
+    await _cleanup_why_msg(ctx, uid, "m_gratitude")
     result = await advance_morning(ctx, q.message, get_user(uid)["gender"], uid, "m_gratitude")
     await maybe_send_skip_nudge(q.message, uid, "m_gratitude")
     return result
@@ -2424,6 +2446,7 @@ async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["m_child"] = update.message.text
     uid = update.effective_user.id
+    await _cleanup_why_msg(ctx, uid, "m_child")
     reset_skip_streak(uid, "m_child")
     return await advance_morning(ctx, update.message, get_user(uid)["gender"], uid, "m_child")
 
@@ -2431,6 +2454,7 @@ async def skip_m_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["m_child"] = ""
     uid = q.from_user.id
+    await _cleanup_why_msg(ctx, uid, "m_child")
     result = await advance_morning(ctx, q.message, get_user(uid)["gender"], uid, "m_child")
     await maybe_send_skip_nudge(q.message, uid, "m_child")
     return result
@@ -3026,6 +3050,7 @@ async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _track_ritual_msg(update.message)
     ctx.user_data["e_praise"] = update.message.text
     uid = update.effective_user.id
+    await _cleanup_why_msg(ctx, uid, "e_praise")
     reset_skip_streak(uid, "e_praise")
     return await advance_evening(ctx, update.message, get_user(uid)["gender"], uid, "e_praise")
 
@@ -3033,6 +3058,7 @@ async def skip_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ctx.user_data["e_praise"] = ""
     uid = q.from_user.id
+    await _cleanup_why_msg(ctx, uid, "e_praise")
     result = await advance_evening(ctx, q.message, get_user(uid)["gender"], uid, "e_praise")
     await maybe_send_skip_nudge(q.message, uid, "e_praise")
     return result
@@ -4583,6 +4609,7 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
+    await _cleanup_why_msg(ctx, uid, "beacon_technique")
     user = get_user(uid)
     _, morning, done_set = get_today_context(user)
     tasks = build_tasks_summary(morning, done_set)
