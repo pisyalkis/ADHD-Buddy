@@ -6423,6 +6423,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if day:
                     save_research(uid, day, f"day{day}_text", text)
                     update_user(uid, research_awaiting=0)
+                    # Реальный запрос (одно актуальное сообщение) — открытый
+                    # вопрос (channel "research") отвечен текстом, а не
+                    # тапом по своей же кнопке, так что _mark_notif_answered
+                    # тут сверять message_id не с чем — раз research_awaiting
+                    # реально был взведён, значит именно это сообщение и
+                    # отвечали, удаляем его напрямую.
+                    research_bot = getattr(ctx, "bot", None)
+                    research_mid = _get_notif_msg_id(uid, "research")
+                    if research_bot is not None and research_mid is not None:
+                        _clear_notif_msg_id(uid, "research")
+                        try:
+                            await research_bot.delete_message(chat_id=uid, message_id=research_mid)
+                        except Exception:
+                            pass
                     ru = get_user(uid)
                     if NOTIFY_USER_ID:
                         q_text = embedded_q or RESEARCH_QUESTION_LABELS.get(f"day{day}_text", "")
@@ -6684,13 +6698,11 @@ async def send_research_question(app, uid, day):
     if str(day) in research_done.split(","): return  # уже ответил
 
     if day == 3:
-        await app.bot.send_message(
-            chat_id=uid,
-            text=(
-                f"🔬 *{name}, короткий вопрос!*\n\n"
-                f"Ты используешь бота уже 3 дня. Как ощущения?\n\n"
-                f"Оцени насколько бот полезен прямо сейчас:"
-            ),
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, короткий вопрос!*\n\n"
+            f"Ты используешь бота уже 3 дня. Как ощущения?\n\n"
+            f"Оцени насколько бот полезен прямо сейчас:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("1 😕", callback_data="research_3_1"),
@@ -6714,12 +6726,10 @@ async def send_research_question(app, uid, day):
 
     elif day == 7:
         thought = g(user["gender"], "подумал", "подумала")
-        await app.bot.send_message(
-            chat_id=uid,
-            text=(
-                f"🔬 *{name}, ты с ботом уже неделю!*\n\n"
-                f"Был ли момент когда {thought} «о, это работает»?"
-            ),
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, ты с ботом уже неделю!*\n\n"
+            f"Был ли момент когда {thought} «о, это работает»?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Да, был такой момент", callback_data="research_7_yes")],
@@ -6729,13 +6739,11 @@ async def send_research_question(app, uid, day):
         )
 
     elif day == 14:
-        await app.bot.send_message(
-            chat_id=uid,
-            text=(
-                f"🔬 *{name}, 2 недели вместе!*\n\n"
-                f"Насколько вероятно что порекомендуешь бота другу с СДВГ?\n\n"
-                f"0 — точно не порекомендую, 10 — точно порекомендую"
-            ),
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, 2 недели вместе!*\n\n"
+            f"Насколько вероятно что порекомендуешь бота другу с СДВГ?\n\n"
+            f"0 — точно не порекомендую, 10 — точно порекомендую",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(str(i), callback_data=f"research_14_{i}") for i in range(0, 6)],
@@ -6748,12 +6756,10 @@ async def send_research_question(app, uid, day):
         # research_callback, уже после клика.
 
     elif day == 30:
-        await app.bot.send_message(
-            chat_id=uid,
-            text=(
-                f"🔬 *{name}, месяц с ботом!*\n\n"
-                f"Если бот перестанет работать — как ты к этому отнесёшься?"
-            ),
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, месяц с ботом!*\n\n"
+            f"Если бот перестанет работать — как ты к этому отнесёшься?",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("😢 Очень расстроюсь", callback_data="research_30_sad")],
@@ -6848,7 +6854,11 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # флаг взведённым, а пользователь так и не увидел, на какой вопрос
         # отвечает; его следующее обычное сообщение молча уходило бы как
         # "ответ" на вопрос, которого он не видел.
-        await q.message.reply_text(followup, parse_mode="Markdown")
+        #
+        # По просьбе (одно актуальное сообщение) — открытый вопрос заменяет
+        # ту же самую отслеживаемую reseach-карточку (channel "research"),
+        # а не создаёт отдельное сообщение рядом с уже отвеченной оценкой.
+        await send_tracked_notification(getattr(ctx, "bot", None), uid, "research", followup, parse_mode="Markdown")
         update_user(uid, research_awaiting=f"3_open:{open_q}")
     elif day == 7:
         # Реальный баг (19-й чекап): первое сообщение читалось как финал
@@ -6858,23 +6868,31 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # ответ, попадал в go_menu → clear_awaiting_flags → research_awaiting
         # молча сбрасывался в 0, и открытый вопрос дня 7 терялся навсегда
         # (в отличие от веток day==3/14, которые не предлагают уйти до
-        # открытого вопроса). Убрали кнопку "Меню" из первого сообщения.
-        await q.message.reply_text(
-            "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного."
-        )
-        await q.message.reply_text(
+        # открытого вопроса). Убрали кнопку "Меню" из первого сообщения —
+        # и, по той же логике "одно сообщение", свернули оба текста (запись
+        # ответа + открытый вопрос) в одно сообщение вместо двух подряд.
+        await send_tracked_notification(
+            getattr(ctx, "bot", None), uid, "research",
+            "Записал! Спасибо за честный ответ 🙏\n\nПродолжай — впереди ещё много интересного.\n\n"
             f"*И ещё:* {RESEARCH_OPEN_Q_DAY7}\n\nОтветь текстом.",
             parse_mode="Markdown"
         )
         update_user(uid, research_awaiting=f"7_open:{RESEARCH_OPEN_Q_DAY7}")
     elif day == 14:
-        await q.message.reply_text(
+        await send_tracked_notification(
+            getattr(ctx, "bot", None), uid, "research",
             f"NPS {value} — записал!\n\n"
             f"*И последнее — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY14}",
             parse_mode="Markdown"
         )
         update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
     elif day == 30:
+        # Терминальная ветка — открытого вопроса дальше нет, поэтому
+        # трекнутая research-карточка тут не заменяется новым сообщением
+        # того же канала, а просто удаляется (см. _mark_notif_answered),
+        # и финальное "Спасибо" — уже обычное, самостоятельное сообщение
+        # (тот же принцип, что и итоговые сводки ритуала).
+        await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "research")
         await q.message.reply_text(
             "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
             reply_markup=menu_button_kb()
