@@ -2118,7 +2118,7 @@ async def sweep_scheduled_deletions(app):
         except Exception:
             pass
 
-async def _finish_ritual_cleanup(ctx, message, uid, kind, extra_text=None, extra_kb=None):
+async def _finish_ritual_cleanup(ctx, message, uid, extra_text=None, extra_kb=None):
     """Вызывается из finish_morning/finish_evening, когда ритуал реально
     завершён: удаляет весь накопленный Q&A-хвост и шлёт короткое
     самоудаляющееся подтверждение вместо него — содержимое уже видно в
@@ -2131,6 +2131,13 @@ async def _finish_ritual_cleanup(ctx, message, uid, kind, extra_text=None, extra
     подряд читались как дубль. Если передан реальный вопрос с кнопками,
     он приклеивается к этому же сообщению вместо отдельного — и тогда
     сообщение НЕ самоудаляется: на открытый вопрос ещё не ответили.
+
+    Реальный отзыв: "два сообщения утро записано утро записано" — текст
+    этого подтверждения раньше начинался с того же "Утро записано"/"Вечер
+    записан", что и сама сводка (см. finish_morning/finish_evening),
+    отправленная прямо перед этим — читалось как буквальный дубль одной
+    и той же фразы в двух подряд идущих сообщениях. Без повторного
+    "Утро/Вечер ..." — сводка уже сказала это.
 
     chat_id берём из uid, а не message.chat_id — это личный чат с ботом,
     id пользователя и id чата всегда совпадают (та же логика, что и в
@@ -2145,8 +2152,7 @@ async def _finish_ritual_cleanup(ctx, message, uid, kind, extra_text=None, extra
             await bot.delete_message(chat_id=chat_id, message_id=mid)
         except Exception:
             pass
-    label = "Утро записано" if kind == "morning" else "Вечер записан"
-    text = f"✅ {label} — всё видно в 🗂 Карточке дня."
+    text = "📔 Всё видно в 🗂 Карточке дня."
     if extra_text:
         text += f"\n\n{extra_text}"
     try:
@@ -2838,7 +2844,7 @@ async def finish_morning(message, uid, ctx):
     # на сегодня?" — два коротких сообщения подряд читались как дубль.
     # Склеены в одно через extra_text/extra_kb (см. _finish_ritual_cleanup).
     offer_text, offer_kb = _morning_task_offer_text_and_kb(uid)
-    await _finish_ritual_cleanup(ctx, message, uid, "morning", extra_text=offer_text, extra_kb=offer_kb)
+    await _finish_ritual_cleanup(ctx, message, uid, extra_text=offer_text, extra_kb=offer_kb)
 
 def _morning_task_offer_text_and_kb(uid):
     """После утреннего ритуала (только практики) — отдельное необязательное
@@ -3633,7 +3639,7 @@ async def finish_evening(message, uid, ctx):
             reply_markup=menu_button_kb()
         )
 
-    await _finish_ritual_cleanup(ctx, message, uid, "evening")
+    await _finish_ritual_cleanup(ctx, message, uid)
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
 async def parse_reminder_request(text, now_dt):
@@ -4561,7 +4567,7 @@ def _append_row(kb, row):
     return InlineKeyboardMarkup(list(kb.inline_keyboard) + [row])
 
 def disable_notif_row(kind):
-    return [InlineKeyboardButton("🔕 Выключить это уведомление", callback_data=f"disable_notif_{kind}")]
+    return [InlineKeyboardButton("🔕 Выключить такие уведомления", callback_data=f"disable_notif_{kind}")]
 
 async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
