@@ -4180,7 +4180,8 @@ async def reroll_skill_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     skill = reroll_daily_skill(uid)
     skill_idx = SKILLS.index(skill)
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"🔄 *Новый навык дня:* {skill['name']}\n_{skill['desc']}_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
@@ -4213,7 +4214,8 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.insert(0, [InlineKeyboardButton("🔲 Дыхание квадратом (4-4-4-4)", callback_data="skill_box_breathing")])
     buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     gender = get_user(q.from_user.id)["gender"]
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"🧠 *{skill['name']}*\n\n"
         f"📖 *Описание*\n{personalize(skill['explanation'], gender)}\n\n"
         f"✅ *Инструкция*\n{personalize(skill['instructions'], gender)}\n\n"
@@ -6189,10 +6191,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_buddy"] = False
         bname = update.message.text.strip()
         update_user(uid, buddy_name=bname)
-        await update.message.reply_text(
-            f"👥 *Бадди добавлен: {md_escape(bname)}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях.",
-            parse_mode="Markdown", reply_markup=menu_button_kb()
-        )
+        confirm_text = f"👥 *Бадди добавлен: {md_escape(bname)}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях."
+        confirm_kb = menu_button_kb()
+        if not await _edit_tracked_msg(ctx, "buddy", confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+            await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
     elif ctx.user_data.get("awaiting_city"):
         ctx.user_data["awaiting_city"] = False
         from_settings = ctx.user_data.pop("city_from_settings", False)
@@ -6284,10 +6286,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_promo_code"] = False
         code = update.message.text.strip().upper()
         ok, msg = redeem_promo_code(uid, code)
-        await update.message.reply_text(
-            ("✅ " if ok else "⚠️ ") + msg,
-            reply_markup=menu_button_kb()
-        )
+        confirm_text = ("✅ " if ok else "⚠️ ") + msg
+        confirm_kb = menu_button_kb()
+        if not await _edit_tracked_msg(ctx, "promo", confirm_text, reply_markup=confirm_kb):
+            await update.message.reply_text(confirm_text, reply_markup=confirm_kb)
     elif ctx.user_data.get("awaiting_task_edit"):
         key = ctx.user_data.pop("awaiting_task_edit")
         await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
@@ -7117,8 +7119,10 @@ async def go_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_promo_code"] = True
-    await q.message.reply_text(
+    await _render_tracked(
+        q.message, ctx, "promo",
         "🎁 *Промокод*\n\nВведи код текстом:",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
     )
@@ -7128,7 +7132,7 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         clear_awaiting_flags(ctx, update)
         ctx.user_data["awaiting_promo_code"] = True
-        await update.message.reply_text("🎁 Введи промокод текстом:")
+        await _render_tracked(update.message, ctx, "promo", "🎁 Введи промокод текстом:", ttl_seconds=INACTIVE_SCREEN_TTL_SEC)
         return
     # Реальный баг (16-й чекап): ветка с аргументом (/promo CODE — именно
     # так советует вводить код /blogger) не гасила awaiting_*, в отличие
@@ -7399,13 +7403,14 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("➕ Добавить бадди", callback_data="buddy_set")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ]
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    await _render_tracked(q.message, ctx, "buddy", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+                           parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_buddy"] = True
-    await q.message.reply_text("Напиши имя своего бадди:")
+    await _render_tracked(q.message, ctx, "buddy", "Напиши имя своего бадди:", ttl_seconds=INACTIVE_SCREEN_TTL_SEC)
 
 async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -7414,7 +7419,8 @@ async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     buddy = md_escape(user.get("buddy_name","бадди"))
     _, morning, done_set = get_today_context(user)
     focus = next_undone_task(morning, done_set) or "моя главная задача"
-    await q.message.reply_text(
+    await _edit_or_send(
+        q,
         f"👥 *Шаблон для {buddy}:*\n\n"
         f"_«{buddy}, привет! Работаю над: {focus}. Поработаем вместе 25 минут? Можно просто видеозвонок с тишиной.»_\n\n"
         "Скопируй и отправь! Совместная работа рядом работает даже онлайн.",
