@@ -1366,11 +1366,13 @@ async def _edit_or_send(q, text, **kwargs):
     на кнопку раздела — экран обновился на месте, а не заспамил чат новыми
     сообщениями. Падает обратно на новое сообщение, если редактирование
     невозможно (сообщение слишком старое, или это не текстовое сообщение —
-    например, с картинкой/видео)."""
+    например, с картинкой/видео). Возвращает итоговое сообщение (отредактированное
+    или заново отправленное) — нужно вызывающему коду, которому важно знать
+    его актуальный message_id (см. _settings_render)."""
     try:
-        await q.message.edit_text(text, **kwargs)
+        return await q.message.edit_text(text, **kwargs)
     except Exception:
-        await q.message.reply_text(text, **kwargs)
+        return await q.message.reply_text(text, **kwargs)
 
 MENU_TABS = ("today", "tools", "me")
 MENU_TAB_LABELS = {"today": "Сегодня", "tools": "Инструменты", "me": "Настройки"}
@@ -1996,9 +1998,15 @@ def schedule_message_deletion(chat_id, message_id, delay_seconds):
     """Планирует удаление сообщения через delay_seconds — не через таймер в
     памяти (сгорит, если watchdog перезапустит процесс раньше срока), а
     строкой в БД, которую выметает тот же ежеминутный тик планировщика, что
-    уже гоняет check_notifications (см. sweep_scheduled_deletions)."""
+    уже гоняет check_notifications (см. sweep_scheduled_deletions).
+
+    Сначала убирает любую уже запланированную запись для ЭТОГО ЖЕ
+    сообщения — иначе повторный вызов (сброс таймера бездействия, см.
+    _settings_render) не отменял бы более раннее удаление, и сообщение
+    пропадало бы по старому, более раннему сроку, а не по новому."""
     delete_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM scheduled_deletions WHERE chat_id=? AND message_id=?", (chat_id, message_id))
     conn.execute(
         "INSERT INTO scheduled_deletions(chat_id, message_id, delete_at) VALUES (?, ?, ?)",
         (chat_id, message_id, delete_at)
@@ -3943,6 +3951,58 @@ async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── GENERAL CALLBACKS ──────────────────────────────────────────────────────
 # ── SETTINGS: NOTIFICATION TIMES ───────────────────────────────────────────
+# Реальный запрос: весь раздел ⚙️ Общие должен всегда оставаться ОДНИМ
+# сообщением — включая вводы текстом (имя/город/время), которые раньше
+# отвечали новым сообщением, а не редактировали экран настроек — и само
+# самоудаляться через некоторое время бездействия, чтобы не копиться в
+# чате навсегда (та же db-очередь, что и у ритуального Q&A-хвоста, см.
+# schedule_message_deletion/sweep_scheduled_deletions).
+SETTINGS_MENU_TTL_SEC = 900  # 15 минут без взаимодействия
+
+async def _settings_render(q, ctx, text, **kwargs):
+    """Общая точка входа для КАЖДОГО экрана/действия внутри ⚙️ Общие:
+    редактирует текущее сообщение (_edit_or_send), запоминает его id/чат
+    в ctx.user_data — чтобы handle_text мог отредактировать именно его при
+    вводе имени/города/времени, там нет callback_query для _edit_or_send —
+    и сбрасывает таймер самоудаления."""
+    msg = await _edit_or_send(q, text, **kwargs)
+    if msg is None:
+        msg = q.message
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if chat_id is not None and mid is not None:
+        ctx.user_data["settings_msg_id"] = mid
+        ctx.user_data["settings_chat_id"] = chat_id
+        schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
+
+def _bump_settings_ttl(ctx):
+    """Сбрасывает таймер самоудаления без перерисовки экрана целиком —
+    для действий, которые правят только разметку на месте (toggle_field_
+    callback/toggle_beacon_type_callback), но всё равно являются
+    взаимодействием с открытым экраном настроек."""
+    chat_id = ctx.user_data.get("settings_chat_id")
+    mid = ctx.user_data.get("settings_msg_id")
+    if chat_id and mid:
+        schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
+
+async def _edit_settings_msg(ctx, text, **kwargs):
+    """Редактирует отслеживаемое сообщение экрана ⚙️ Общие вместо отправки
+    нового — используется из handle_text, где нет callback_query (ответ
+    пришёл текстом: имя/город/время). Возвращает True при успехе; иначе
+    вызывающий код сам шлёт новое сообщение, как раньше (тот же откат, что
+    и в _edit_or_send — например, если сообщение уже успело самоудалиться)."""
+    bot = getattr(ctx, "bot", None)
+    chat_id = ctx.user_data.get("settings_chat_id")
+    mid = ctx.user_data.get("settings_msg_id")
+    if not bot or not chat_id or not mid:
+        return False
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=mid, text=text, **kwargs)
+        schedule_message_deletion(chat_id, mid, SETTINGS_MENU_TTL_SEC)
+        return True
+    except Exception:
+        return False
+
 def _settings_main_text_and_kb(user):
     """Реальный запрос: экран ⚙️ Общие был одной длинной свалкой (утро/день/
     вечер, оба маячка, имя, город, редактор отчётов, стрик — всё в одном
@@ -4084,7 +4144,7 @@ async def toggle_streak_visibility(update: Update, ctx: ContextTypes.DEFAULT_TYP
     new_val = 0 if int(user.get("streak_hidden") or 0) else 1
     update_user(uid, streak_hidden=new_val)
     text, kb = _settings_main_text_and_kb(get_user(uid))
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 def _edit_reports_kb(user):
     disabled = set((user.get("disabled_fields") or "").split(","))
@@ -4103,8 +4163,8 @@ async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await _edit_or_send(
-        q,
+    await _settings_render(
+        q, ctx,
         "🎛 *Редактировать отчёты*\n\n"
         "Отметь, что не нужно спрашивать — бот не будет предлагать заполнить эти поля.\n\n"
         "_Задачи A/B/C, чек-лист выполненного и уровень энергии отключить нельзя — "
@@ -4134,6 +4194,7 @@ async def toggle_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         disabled.append(key)
     update_user(uid, disabled_fields=",".join(disabled))
     await q.message.edit_reply_markup(reply_markup=_edit_reports_kb(get_user(uid)))
+    _bump_settings_ttl(ctx)
 
 async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Кнопка «Отключить этот вопрос» в подсказке после нескольких пропусков
@@ -4169,8 +4230,8 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     user = get_user(q.from_user.id)
-    await _edit_or_send(
-        q,
+    await _settings_render(
+        q, ctx,
         "🎯 *Типы техник*\n\n"
         "Выбери, какие короткие техники предлагать в напоминаниях с навыками "
         "(частота настраивается отдельно, в ⚙️ Общие → 🔔 Уведомления → 📳 Маячки внимания).\n\n"
@@ -4192,6 +4253,7 @@ async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_
         enabled.append(key)
     update_user(uid, beacon_types=",".join(enabled))
     await q.message.edit_reply_markup(reply_markup=_beacon_types_kb(get_user(uid)))
+    _bump_settings_ttl(ctx)
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4206,8 +4268,8 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         prompt = f"Введи время для {labels.get(block,'')} уведомления"
         cancel_target = "go_settings_notifications"
-    await _edit_or_send(
-        q,
+    await _settings_render(
+        q, ctx,
         f"{prompt}\n\n"
         "Формат: *ЧЧ:ММ* (например: `08:30` или `20:00`)",
         parse_mode="Markdown",
@@ -4220,8 +4282,8 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     user = get_user(q.from_user.id)
-    await _edit_or_send(
-        q,
+    await _settings_render(
+        q, ctx,
         f"✏️ *Как мне тебя называть?*\n\nСейчас: {md_escape(user['name']) if user['name'] else '—'}\n\nНапиши новое имя:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
@@ -4233,8 +4295,8 @@ async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    await _edit_or_send(
-        q,
+    await _settings_render(
+        q, ctx,
         "🌍 *Из какого ты города?*\n\n"
         "По названию города бот определит твою таймзону, "
         "чтобы уведомления приходили по местному времени.\n\n"
@@ -4255,30 +4317,27 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = get_user(uid)
     new_val = 0 if user.get("notif_enabled", 0) else 1
     update_user(uid, notif_enabled=new_val)
-    status = "включены ✅" if new_val else "выключены ❌"
-    await q.message.reply_text(
-        f"Уведомления {status}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Уведомления", callback_data="go_settings_notifications")]])
-    )
+    text, kb = _settings_notifications_text_and_kb(get_user(uid))
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     text, kb = _settings_main_text_and_kb(get_user(uid))
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_settings_notifications(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     text, kb = _settings_notifications_text_and_kb(get_user(q.from_user.id))
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_settings_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     text, kb = _settings_beacon_text_and_kb(get_user(q.from_user.id))
-    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Включить/выключить конкретный блок уведомлений (утро/день/вечер)."""
@@ -4291,10 +4350,7 @@ async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cur = int(user.get(col) or 1)
     update_user(uid, **{col: 0 if cur else 1})
     text, kb = _settings_notifications_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4305,10 +4361,7 @@ async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cur = int(user.get("beacon_enabled") or 0)
     update_user(uid, beacon_enabled=0 if cur else 1)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4317,10 +4370,7 @@ async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     interval = int(q.data.split("_")[2])
     update_user(uid, beacon_interval=interval)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Вкл/выкл напоминаний с навыками — независимо от напоминаний по
@@ -4337,10 +4387,7 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kwargs["beacon_types"] = ",".join(k for k, _ in BEACON_TECHNIQUE_TYPES)
     update_user(uid, **kwargs)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4349,10 +4396,7 @@ async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     mode = "random" if q.data == "skill_mode_random" else "interval"
     update_user(uid, skill_beacon_mode=mode)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4361,10 +4405,7 @@ async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TY
     minutes = int(q.data.replace("skill_int_", ""))
     update_user(uid, skill_beacon_interval=minutes)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def set_skill_beacon_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -4373,10 +4414,7 @@ async def set_skill_beacon_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     count = int(q.data.replace("skill_count_", ""))
     update_user(uid, skill_beacon_daily_count=count)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
-    try:
-        await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-    except Exception:
-        await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def noop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -5714,11 +5752,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if block in ("beacon_start", "beacon_end"):
                 update_user(uid, **{block: text})
                 beacon_labels = {"beacon_start": "🌅 Начало", "beacon_end": "🌇 Конец"}
-                await update.message.reply_text(
-                    f"{beacon_labels.get(block,'')} рабочих часов «Маячков внимания» установлен на *{text}* ✅",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Маячки внимания", callback_data="go_settings_beacon")]])
-                )
+                confirm_text = f"{beacon_labels.get(block,'')} рабочих часов «Маячков внимания» установлен на *{text}* ✅"
+                confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Маячки внимания", callback_data="go_settings_beacon")]])
+                if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+                    await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
             else:
                 field = f"notif_{block}"
                 update_user(uid, **{field: text})
@@ -5734,32 +5771,34 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 if (new_h, new_m) <= (now_tz.hour, now_tz.minute):
                     update_user(uid, **{f"{block}_sent_date": now_tz.date().isoformat()})
                 labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
-                await update.message.reply_text(
-                    f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены.",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Уведомления", callback_data="go_settings_notifications")]])
-                )
+                confirm_text = f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены."
+                confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Уведомления", callback_data="go_settings_notifications")]])
+                if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+                    await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
         else:
-            await update.message.reply_text(
-                "Неверный формат. Введи время в формате ЧЧ:ММ, например: `08:30`",
-                parse_mode="Markdown"
-            )
+            retry_text = "Неверный формат. Введи время в формате ЧЧ:ММ, например: `08:30`"
+            if not await _edit_settings_msg(ctx, retry_text, parse_mode="Markdown"):
+                await update.message.reply_text(retry_text, parse_mode="Markdown")
             ctx.user_data["awaiting_time"] = True
     elif ctx.user_data.get("awaiting_name"):
         ctx.user_data["awaiting_name"] = False
         new_name = update.message.text.strip()
         if not new_name:
             ctx.user_data["awaiting_name"] = True
-            await update.message.reply_text("Имя не может быть пустым, напиши ещё раз:")
+            retry_text = "Имя не может быть пустым, напиши ещё раз:"
+            if not await _edit_settings_msg(ctx, retry_text):
+                await update.message.reply_text(retry_text)
         elif len(new_name) > 30:
             ctx.user_data["awaiting_name"] = True
-            await update.message.reply_text("Имя слишком длинное, напиши покороче:")
+            retry_text = "Имя слишком длинное, напиши покороче:"
+            if not await _edit_settings_msg(ctx, retry_text):
+                await update.message.reply_text(retry_text)
         else:
             update_user(uid, name=new_name)
-            await update.message.reply_text(
-                f"✅ Готово, буду звать тебя *{md_escape(new_name)}*.",
-                parse_mode="Markdown", reply_markup=menu_button_kb()
-            )
+            confirm_text = f"✅ Готово, буду звать тебя *{md_escape(new_name)}*."
+            confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Общие", callback_data="go_settings")]])
+            if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=menu_button_kb())
     elif ctx.user_data.get("awaiting_buddy"):
         ctx.user_data["awaiting_buddy"] = False
         bname = update.message.text.strip()
@@ -5773,7 +5812,36 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         from_settings = ctx.user_data.pop("city_from_settings", False)
         city = update.message.text.strip()
         update_user(uid, city=city)
-        # Определяем таймзону по городу
+        # Из ⚙️ Общие держим весь диалог одним и тем же сообщением экрана
+        # настроек (см. _settings_render/_edit_settings_msg) — ни отдельного
+        # "📍 Ищу...", ни отдельного финального экрана новыми сообщениями.
+        if from_settings:
+            if not await _edit_settings_msg(ctx, f"📍 Ищу {city}..."):
+                await update.message.reply_text(f"📍 Ищу {city}...")
+            tz_name = await get_timezone_from_city(city)
+            if tz_name:
+                update_user(uid, timezone=tz_name)
+                tz_obj = pytz.timezone(tz_name)
+                offset = datetime.now(tz_obj).strftime("%z")
+                offset_str = f"UTC{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
+                confirm_text = (
+                    f"📍 *{md_escape(city)}* — записал!\n"
+                    f"🕐 Твоя таймзона: *{tz_name}* ({offset_str})\n\n"
+                    f"Уведомления будут приходить по времени твоего города."
+                )
+            else:
+                confirm_text = (
+                    f"📍 {city} — записал!\n\n"
+                    f"⚠️ Не удалось определить таймзону автоматически — "
+                    f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
+                    f"Можно изменить в ⚙️ Общие позже."
+                )
+            confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Общие", callback_data="go_settings")]])
+            if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
+            return
+        # Определяем таймзону по городу (онбординг — отдельные сообщения,
+        # это ещё не экран ⚙️ Общие)
         thinking = await update.message.reply_text(f"📍 Ищу {city}...")
         tz_name = await get_timezone_from_city(city)
         if tz_name:
@@ -5795,10 +5863,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"уведомления будут по умолчанию ({USER_TIMEZONE}). "
                 f"Можно изменить в ⚙️ Настройки позже."
             )
-        if from_settings:
-            text, kb = _settings_main_text_and_kb(get_user(uid))
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-            return
         # Показываем настройку уведомлений
         await update.message.reply_text(
             "🔔 *Последний шаг — уведомления*\n\n"
