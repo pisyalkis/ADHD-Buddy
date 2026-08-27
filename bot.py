@@ -5103,8 +5103,8 @@ async def send_work_start_reminder(app, user):
         text = "🚪 *Пора начинать!*"
         if focus:
             text += f"\n\n🅰️ {md_escape(focus)}"
-        await app.bot.send_message(
-            chat_id=uid, text=text, parse_mode="Markdown",
+        await send_tracked_notification(
+            app.bot, uid, "work_start", text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📋 Все задачи на сегодня", callback_data="go_tasks")]])
         )
         update_user(uid, work_start_sent_date=today_iso)
