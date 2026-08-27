@@ -2594,7 +2594,15 @@ async def _refresh_pinned_tasks_message(ctx, uid):
     отметки/снятия отметки задачи выполненной (см. task_done_callback,
     walk_clear_callback) — список задач в нём НЕ меняется (не пополняется
     новыми задачами, поставленными позже), меняется только зачёркивание
-    уже показанных."""
+    уже показанных.
+
+    Реальный баг (живой отчёт: "обе кнопки маячков показывают 🔕 после
+    нажатия"): edit_message_text вызывался без reply_markup — а без явной
+    передачи Telegram сбрасывает клавиатуру сообщения, а не сохраняет
+    прежнюю. Каждая отметка задачи ✅/▫️ тихо стирала кнопки-переключатели
+    маячков с закреплённого сообщения (или сбрасывала их к пустому
+    состоянию), и то, что показывалось после этого, уже не отражало
+    реальные beacon_enabled/skill_beacon_enabled."""
     user = get_user(uid)
     pinned_msg_id = user.get("pinned_msg_id") or ""
     pinned_keys = [k for k in (user.get("pinned_task_keys") or "").split(",") if k]
@@ -2602,7 +2610,10 @@ async def _refresh_pinned_tasks_message(ctx, uid):
         return
     text = _build_pinned_tasks_text(user, pinned_keys, user.get("pinned_ai_msg") or "")
     try:
-        await ctx.bot.edit_message_text(chat_id=uid, message_id=int(pinned_msg_id), text=text, parse_mode="Markdown")
+        await ctx.bot.edit_message_text(
+            chat_id=uid, message_id=int(pinned_msg_id), text=text, parse_mode="Markdown",
+            reply_markup=daily_prefs_kb(user)
+        )
     except Exception:
         pass
 
