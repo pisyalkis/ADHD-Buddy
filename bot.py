@@ -2156,13 +2156,14 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await send_onboarding_final(q.message, uid)
 
 # ── RITUAL CLEANUP ─────────────────────────────────────────────────────────
-# Реальный запрос: утренний/вечерний ритуал — это вопрос за вопросом, каждый
-# отдельным сообщением, и весь этот черновик остаётся в чате навсегда, хотя
-# 📔 Мой дневник уже показывает все ответы. Решение (не удалять вопросы ПО
-# ХОДУ ритуала — тогда ответ пользователя повисает без контекста, что на
-# него отвечали) — копить id всех сообщений ритуала, а как только он
-# полностью завершён, удалить их разом и прислать короткое подтверждение,
-# которое само исчезнет через RITUAL_CONFIRM_TTL_SEC.
+# Реальный запрос: утренний/вечерний ритуал — это вопрос за вопросом. Вопрос
+# бота редактируется на месте по ходу всего ритуала (см. _render_ritual_step),
+# а свой ответ на него удаляется сразу же, вместе со следующим вопросом (см.
+# _delete_ritual_answer) — черновик Q&A не остаётся в чате, а полный список
+# ответов всё равно виден в 📔 Мой дневник. Что до сих пор может накопиться в
+# ritual_msg_ids к концу ритуала — редкие отдельные сообщения вроде нуджа
+# «Отключить этот вопрос» (см. maybe_send_skip_nudge) — подчищается разом
+# при завершении (см. _finish_ritual_cleanup).
 #
 # Реальный баг (живой отчёт): накопленные id хранились обычным dict в
 # памяти процесса — а этот бот за одну сессию правок передеплоивается
@@ -2172,7 +2173,6 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # только "хвост", начатый после рестарта — из всего Q&A удалялось только
 # последнее сообщение. Таблица БД (та же схема хранения, что и у
 # scheduled_deletions) переживает рестарт как любые другие данные.
-RITUAL_CONFIRM_TTL_SEC = 600
 
 def _track_ritual_msg(msg):
     chat_id = getattr(msg, "chat_id", None)
@@ -2355,26 +2355,13 @@ async def sweep_scheduled_deletions(app):
         except Exception:
             pass
 
-async def _finish_ritual_cleanup(ctx, message, uid, extra_text=None, extra_kb=None):
+async def _finish_ritual_cleanup(ctx, message, uid):
     """Вызывается из finish_morning/finish_evening, когда ритуал реально
-    завершён: удаляет весь накопленный Q&A-хвост и шлёт короткое
-    самоудаляющееся подтверждение вместо него — содержимое уже видно в
+    завершён: удаляет весь накопленный Q&A-хвост — содержимое уже видно в
     закреплённом сообщении (утро) / итоговой сводке (вечер), а полный
-    список ответов — в 🗂 Карточке дня.
-
-    extra_text/extra_kb — реальный запрос: следом за этим подтверждением
-    в утреннем сценарии всегда шло ОТДЕЛЬНОЕ сообщение "📋 Поставить
-    задачи на сегодня?" (см. finish_morning) — два коротких сообщения
-    подряд читались как дубль. Если передан реальный вопрос с кнопками,
-    он приклеивается к этому же сообщению вместо отдельного — и тогда
-    сообщение НЕ самоудаляется: на открытый вопрос ещё не ответили.
-
-    Реальный отзыв: "два сообщения утро записано утро записано" — текст
-    этого подтверждения раньше начинался с того же "Утро записано"/"Вечер
-    записан", что и сама сводка (см. finish_morning/finish_evening),
-    отправленная прямо перед этим — читалось как буквальный дубль одной
-    и той же фразы в двух подряд идущих сообщениях. Без повторного
-    "Утро/Вечер ..." — сводка уже сказала это.
+    список ответов — в 🗂 Карточке дня (упоминание об этом теперь строкой
+    внутри самой сводки, см. finish_morning/finish_evening/_build_pinned_tasks_text
+    — раньше было отдельным самоудаляющимся сообщением, читалось как дубль).
 
     chat_id берём из uid, а не message.chat_id — это личный чат с ботом,
     id пользователя и id чата всегда совпадают (та же логика, что и в
@@ -2401,15 +2388,6 @@ async def _finish_ritual_cleanup(ctx, message, uid, extra_text=None, extra_kb=No
             await bot.delete_message(chat_id=chat_id, message_id=mid)
         except Exception:
             pass
-    text = "📔 Всё видно в 🗂 Карточке дня."
-    if extra_text:
-        text += f"\n\n{extra_text}"
-    try:
-        sent = await bot.send_message(chat_id=chat_id, text=text, reply_markup=extra_kb)
-        if not extra_kb:
-            schedule_message_deletion(chat_id, sent.message_id, RITUAL_CONFIRM_TTL_SEC)
-    except Exception:
-        pass
 
 # ── MORNING FLOW ───────────────────────────────────────────────────────────
 async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2879,11 +2857,18 @@ def _build_pinned_tasks_text(user, pinned_keys, ai_msg_raw):
         lines.append(f"{icon}: {md_escape(display)}")
     tasks_text = "\n" + "\n".join(lines) if lines else "_(задачи не заданы)_"
     ai_part = f"\n\n🤖 _{ai_msg_raw}_" if ai_msg_raw else ""
+    # Реальный запрос: отдельное сообщение "Всё видно в Карточке дня" шло
+    # следом за этим сразу же — читалось как дубль. Задачи здесь уже видны
+    # напрямую, а вот сами мягкие практики (письмо/благодарность/ребёнок)
+    # — нет, поэтому упоминание карточки дня остаётся полезным, просто
+    # строкой в этом же сообщении вместо отдельного.
+    day_card_note = "\n\n📔 _Полные ответы — в 🗂 Карточке дня._"
     pin_note = "\n\n📌 _Закрепил это сообщение — будет перед глазами весь день._"
     return (
         f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
         f"{tasks_text}"
         f"{ai_part}"
+        f"{day_card_note}"
         f"{pin_note}\n\n"
         f"Вперёд, {md_escape(user['name'])}! 💪"
     )
@@ -3110,6 +3095,13 @@ async def finish_morning(message, uid, ctx):
     # удобно возвращаться"), а не редактировать текст вторым проходом.
     will_pin = any(morning_for_summary.values())
 
+    # Реальный запрос: сообщения "Утро записано!", "Всё видно в Карточке
+    # дня" и "Поставить задачи на сегодня?" шли следом друг за другом
+    # отдельными сообщениями — читались как дубль. Собраны в одно (когда
+    # задач нет — офер вместе с кнопками едет в это же сообщение; когда
+    # задачи уже есть, офера просто не бывает, см. _morning_task_offer_text_and_kb).
+    offer_text, offer_kb = _morning_task_offer_text_and_kb(uid)
+
     sent = None
     try:
         if will_pin:
@@ -3117,21 +3109,26 @@ async def finish_morning(message, uid, ctx):
             # что будет перерисовываться при каждой отметке ✅/▫️ (см.
             # task_done_callback), только пока без зачёркиваний.
             greeting_text = _build_pinned_tasks_text(user, pinned_keys, ai_msg_raw)
+            reply_markup = daily_prefs_kb(user)
         else:
             ai_part = f"\n\n🤖 _{ai_msg_raw}_" if ai_msg_raw else ""
             greeting_text = (
-                f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
-                "_(задачи не заданы)_"
+                f"✅ *Утро {g(user['gender'], 'записано', 'записана')} в 🗂 Карточку дня!* — _{today_str(tz)}_"
                 f"{ai_part}\n\n"
                 # Реальный баг (17-й чекап): "Вперёд" не склоняется по роду —
                 # g() с одинаковыми male/female всё равно приклеивала "(а)" для
                 # gender="N" ("Другое"), давая бессмысленное "Вперёд(а)".
                 f"Вперёд, {md_escape(user['name'])}! 💪"
             )
+            if offer_text:
+                greeting_text += f"\n\n{offer_text}"
+            reply_markup = InlineKeyboardMarkup(
+                (list(offer_kb.inline_keyboard) if offer_kb else []) + list(daily_prefs_kb(user).inline_keyboard)
+            )
         sent = await message.reply_text(
             greeting_text,
             parse_mode="Markdown",
-            reply_markup=daily_prefs_kb(user)
+            reply_markup=reply_markup
         )
     except Exception as e:
         # Даже если сборка Markdown-сообщения не удалась (например из-за
@@ -3147,11 +3144,7 @@ async def finish_morning(message, uid, ctx):
     if sent is not None and will_pin:
         await pin_today_tasks(ctx, uid, sent, pinned_keys=pinned_keys, ai_msg=ai_msg_raw)
 
-    # Реальный запрос: следом шло отдельное сообщение "📋 Поставить задачи
-    # на сегодня?" — два коротких сообщения подряд читались как дубль.
-    # Склеены в одно через extra_text/extra_kb (см. _finish_ritual_cleanup).
-    offer_text, offer_kb = _morning_task_offer_text_and_kb(uid)
-    await _finish_ritual_cleanup(ctx, message, uid, extra_text=offer_text, extra_kb=offer_kb)
+    await _finish_ritual_cleanup(ctx, message, uid)
 
 def _morning_task_offer_text_and_kb(uid):
     """После утреннего ритуала (только практики) — отдельное необязательное
@@ -3950,6 +3943,9 @@ async def finish_evening(message, uid, ctx):
 
     streak_line = "" if streak_hidden else f"🔥 Стрик: *{streak} {ru_days(streak)}*\n"
     try:
+        # Реальный запрос: следом отдельным сообщением шло "Всё видно в
+        # Карточке дня" — читалось как дубль сразу после этой сводки.
+        # Строкой в этом же сообщении вместо отдельного.
         await message.reply_text(
             "✅ *День закрыт!*\n\n"
             f"{streak_line}"
@@ -3957,6 +3953,7 @@ async def finish_evening(message, uid, ctx):
             f"\n\n{'📋 *Планы на завтра:*' + plans if plans else ''}"
             f"{selfcare_summary}"
             f"{ai_analysis}\n\n"
+            f"📔 _Полные ответы — в 🗂 Карточке дня._\n\n"
             f"_Молодец. До завтра, {user['name']}_ 👋",
             parse_mode="Markdown",
             reply_markup=menu_button_kb()
