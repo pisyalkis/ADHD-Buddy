@@ -2301,6 +2301,45 @@ async def send_tracked_notification(bot, chat_id, channel, text, ttl_seconds=Non
             schedule_message_deletion(chat_id, mid, ttl_seconds)
     return sent
 
+async def _send_tracked_animation(bot, chat_id, channel, animation, **kwargs):
+    """Как send_tracked_notification, но для гифки техники/навыка (см.
+    SKILL_ANIMATIONS) — animation нельзя отредактировать текстом, поэтому
+    тот же приём "удалить предыдущее сообщение этого канала перед отправкой
+    нового": реальный запрос — гифки не удалялись и копились в чате при
+    каждом открытии карточки навыка (show_skill_detail/show_box_breathing)
+    или каждом срабатывании маячка навыков (send_skill_beacon). Один и тот
+    же канал "skill_anim" для всех трёх источников — в любой момент в
+    чате нужна максимум одна гифка техники, независимо от того, откуда
+    она пришла. Использует тот же notif_msg_ids, что и текстовые каналы —
+    отдельной таблицы не нужно."""
+    prev_mid = _get_notif_msg_id(chat_id, channel)
+    if prev_mid is not None:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=prev_mid)
+        except Exception:
+            pass
+    sent = await bot.send_animation(chat_id=chat_id, animation=animation, **kwargs)
+    mid = getattr(sent, "message_id", None)
+    if mid is not None:
+        _set_notif_msg_id(chat_id, channel, mid)
+    return sent
+
+async def _delete_tracked_channel(bot, chat_id, channel):
+    """Удаляет текущее отслеживаемое сообщение канала (если есть) и снимает
+    трекинг — в отличие от _mark_notif_answered, не сверяется с id
+    сообщения, на которое нажали: нужна там, где ответом на действие
+    служит СОВСЕМ другое сообщение (см. beacon_technique_done — гифка
+    техники и текст-приглашение маячка это два разных сообщения одного
+    и того же напоминания)."""
+    mid = _get_notif_msg_id(chat_id, channel)
+    if mid is None:
+        return
+    _clear_notif_msg_id(chat_id, channel)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=mid)
+    except Exception:
+        pass
+
 async def _mark_notif_answered(bot, chat_id, message_id, *channels):
     """Реальный запрос: маячок/уведомление должно исчезать, как только на
     него ответили — а не висеть рядом с ответом с уже неактуальными
@@ -4379,7 +4418,9 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if animation_path:
         try:
             cached_id = _skill_animation_file_ids.get(skill["name"])
-            sent_anim = await q.message.reply_animation(animation=cached_id or open(animation_path, "rb"))
+            sent_anim = await _send_tracked_animation(
+                ctx.bot, q.from_user.id, "skill_anim", cached_id or open(animation_path, "rb")
+            )
             if not cached_id and sent_anim.animation:
                 _skill_animation_file_ids[skill["name"]] = sent_anim.animation.file_id
         except Exception as e:
@@ -4409,8 +4450,9 @@ async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     animation_path = os.path.join(ANIMATIONS_DIR, "box_breathing.gif")
     try:
         cached_id = _skill_animation_file_ids.get("box_breathing")
-        sent_anim = await q.message.reply_animation(
-            animation=cached_id or open(animation_path, "rb"),
+        sent_anim = await _send_tracked_animation(
+            ctx.bot, q.from_user.id, "skill_anim",
+            cached_id or open(animation_path, "rb"),
             caption=(
                 "🔲 *Дыхание квадратом*\n\n"
                 "Вдох 4 — задержка 4 — выдох 4 — задержка 4. Точка идёт по сторонам квадрата.\n\n"
@@ -5049,6 +5091,9 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     await _cleanup_why_msg(ctx, uid, "beacon_technique")
     await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "skill_beacon")
+    # Реальный запрос: гифка техники (если она была) должна исчезать вместе
+    # с самим приглашением техники, а не оставаться в чате после "Сделал(а)".
+    await _delete_tracked_channel(getattr(ctx, "bot", None), uid, "skill_anim")
     user = get_user(uid)
     _, morning, done_set = get_today_context(user)
     tasks = build_tasks_summary(morning, done_set)
@@ -5250,7 +5295,9 @@ async def send_skill_beacon(app, user):
         if animation_path:
             try:
                 cached_id = _skill_animation_file_ids.get(skill_name)
-                sent_anim = await app.bot.send_animation(chat_id=uid, animation=cached_id or open(animation_path, "rb"))
+                sent_anim = await _send_tracked_animation(
+                    app.bot, uid, "skill_anim", cached_id or open(animation_path, "rb")
+                )
                 if not cached_id and sent_anim.animation:
                     _skill_animation_file_ids[skill_name] = sent_anim.animation.file_id
             except Exception as e:
