@@ -1275,6 +1275,11 @@ def midday_kb(morning=None, done_set=None):
     # сделаны" показывалась и для дня без единой задачи, а mid_all_done
     # честно шлёт "🎉 Все задачи дня выполнены — отличная работа!" про
     # задачи, которых не существовало.
+    # Реальный запрос: не было нейтрального варианта "и так работаю" —
+    # только "всё сделано"/"отдыхаю"/"прокрастинирую", хотя чаще всего
+    # ответ именно такой. Обработчик mid_ok уже существует (используется в
+    # других клавиатурах чекина) — здесь просто подключаем его сюда же.
+    rows.append([InlineKeyboardButton("✅ Норм, работаю", callback_data="mid_ok")])
     if existing_keys and not all_done:
         rows.append([InlineKeyboardButton("🎉 Все задачи сделаны", callback_data="mid_all_done")])
     rows.append([InlineKeyboardButton("☕ Отдыхаю 10-15 мин", callback_data="mid_resting")])
