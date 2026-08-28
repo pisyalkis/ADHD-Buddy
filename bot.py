@@ -1492,10 +1492,10 @@ async def _render_walk_step(message, ctx, text, ttl_seconds=None, **kwargs):
 
 async def _render_ritual_step(message, ctx, text, ttl_seconds=None, **kwargs):
     """Утренний/вечерний ритуал (см. morning_start/evening_start и их
-    шаги) — track_key="ritual_step". Собственные типизированные ответы
-    пользователя (got_writing и т.п.) по-прежнему копятся отдельно через
-    _track_ritual_msg/ritual_msg_ids для массового удаления в конце (см.
-    _finish_ritual_cleanup) — сюда попадают только сообщения-вопросы бота."""
+    шаги) — track_key="ritual_step", сюда попадают только сообщения-вопросы
+    бота. Собственный текстовый ответ пользователя (got_writing и т.п.)
+    удаляется сразу же, вместе с вопросом (см. _delete_ritual_answer) — не
+    копится до конца ритуала."""
     await _render_step_msg(message, ctx, "ritual_step", text, ttl_seconds=ttl_seconds, **kwargs)
 
 async def _render_coach_msg(message, ctx, text, **kwargs):
@@ -2184,6 +2184,25 @@ def _track_ritual_msg(msg):
     conn.commit()
     conn.close()
 
+async def _delete_ritual_answer(ctx, msg):
+    """Реальный запрос: свой ответ на вопрос ритуала (утро/вечер) должен
+    исчезать вместе с вопросом, а не висеть в чате до самого конца ритуала.
+    Вопрос уже редактируется на месте (_render_ritual_step) — здесь просто
+    сразу удаляем то текстовое сообщение, которым пользователь на него
+    ответил, вместо того чтобы копить его в ritual_msg_ids до
+    _finish_ritual_cleanup. Синхронно внутри того же хендлера — в отличие
+    от _track_ritual_msg, риска потерять след при рестарте между шагами
+    нет: удаление происходит немедленно, а не откладывается."""
+    bot = getattr(ctx, "bot", None)
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if bot is None or chat_id is None or mid is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=mid)
+    except Exception:
+        pass
+
 def _pop_ritual_msg_ids(chat_id):
     """Возвращает и удаляет из БД все накопленные id сообщений ритуала для
     этого чата — атомарно в том смысле, что вызывающий код (см.
@@ -2361,8 +2380,10 @@ async def _finish_ritual_cleanup(ctx, message, uid, extra_text=None, extra_kb=No
     id пользователя и id чата всегда совпадают (та же логика, что и в
     unpin_chat_message(chat_id=uid, ...) в pin_today_tasks).
 
-    Помимо накопленного хвоста (собственные текстовые ответы человека —
-    _track_ritual_msg), сюда же попадает и последнее отслеживаемое
+    Собственные текстовые ответы человека удаляются сразу по ходу ритуала
+    (см. _delete_ritual_answer) — ritual_msg_ids к этому моменту хранит
+    только редкие отдельные сообщения вроде нуджа «Отключить этот вопрос»
+    (см. maybe_send_skip_nudge). Плюс последнее отслеживаемое
     сообщение-вопрос самого ритуала (track_key="ritual_step", см.
     _render_ritual_step) — по завершении ритуала оно уже не нужно,
     итог виден в отдельной сводке (finish_morning/finish_evening)."""
@@ -2706,7 +2727,7 @@ async def ask_writing(message, ctx, uid):
     )
 
 async def got_writing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["m_writing"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "m_writing")
@@ -2729,7 +2750,7 @@ async def ask_gratitude(message, ctx, gender, uid):
     )
 
 async def got_gratitude(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["m_gratitude"] = update.message.text
     uid = update.effective_user.id
     await _cleanup_why_msg(ctx, uid, "m_gratitude")
@@ -2754,7 +2775,7 @@ async def ask_child(message, ctx, gender, uid):
     )
 
 async def got_child(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["m_child"] = update.message.text
     uid = update.effective_user.id
     await _cleanup_why_msg(ctx, uid, "m_child")
@@ -3414,7 +3435,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return E_ACH
 
 async def got_e_ach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_ach"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "e_ach")
@@ -3438,7 +3459,7 @@ async def ask_praise(message, ctx, uid):
     )
 
 async def got_e_praise(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_praise"] = update.message.text
     uid = update.effective_user.id
     await _cleanup_why_msg(ctx, uid, "e_praise")
@@ -3462,7 +3483,7 @@ async def ask_highlights(message, ctx, uid):
     )
 
 async def got_e_highlights(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_highlights"] = update.message.text
     uid = update.effective_user.id
     reset_skip_streak(uid, "e_highlights")
@@ -3615,7 +3636,7 @@ async def ask_plan_a(message, ctx, uid):
     await ask_evening_plan_step(message, ctx, uid, "e_a")
 
 async def got_e_a(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_a"] = update.message.text
     await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_b1")
     return E_B1
@@ -3637,7 +3658,7 @@ async def skip_all_goals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def got_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_b1"] = update.message.text
     await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_b2")
     return E_B2
@@ -3649,7 +3670,7 @@ async def skip_e_b1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return E_B2
 
 async def got_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_b2"] = update.message.text
     await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c1")
     return E_C1
@@ -3661,19 +3682,19 @@ async def skip_e_b2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return E_C1
 
 async def got_e_c1(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_c1"] = update.message.text
     await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c2")
     return E_C2
 
 async def got_e_c2(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_c2"] = update.message.text
     await ask_evening_plan_step(update.message, ctx, update.effective_user.id, "e_c3")
     return E_C3
 
 async def got_e_c3(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    _track_ritual_msg(update.message)
+    await _delete_ritual_answer(ctx, update.message)
     ctx.user_data["e_c3"] = update.message.text
     await finish_evening(update.message, update.effective_user.id, ctx)
     return ConversationHandler.END
