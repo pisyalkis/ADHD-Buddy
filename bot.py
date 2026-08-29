@@ -7694,9 +7694,18 @@ async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Число дней должно быть числом (см. /grant без аргументов).")
         return
-    await _grant_and_notify(ctx, target_uid, days)
-    target = get_user(target_uid)
-    await update.message.reply_text(f"✅ {target.get('name') or target_uid}: +{days} дн.")
+    # Реальный баг (живой отчёт): в отличие от остальных /admin-команд
+    # (admin_stats/admin_users/admin_feedback и т.п.), здесь не было общего
+    # try/except — а глобальный error handler (on_error) только пишет в
+    # серверные логи, ничего не отвечает в чат. Любое исключение внутри
+    # (например, сбой отправки уведомления целевому пользователю) выглядело
+    # как полное отсутствие реакции на команду, без единого намёка на причину.
+    try:
+        await _grant_and_notify(ctx, target_uid, days)
+        target = get_user(target_uid)
+        await update.message.reply_text(f"✅ {target.get('name') or target_uid}: +{days} дн.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Кнопка «🎁 +30» в /users."""
