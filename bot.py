@@ -8162,6 +8162,16 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def morning_notification(app, uid):
     try:
         user = get_user(uid)
+        # Реальный баг: "заполнил утро сам, до уведомления. Но сейчас мне
+        # всё равно пришло уведомление" — та же защита, что уже есть у
+        # evening_notification (см. ниже), только у утреннего уведомления
+        # её не было вовсе. Неважно, каким путём утро уже заполнено —
+        # полным ритуалом или просто постановкой задач через 📋 Задачи —
+        # "Доброе утро! Готов начать?" больше не к месту.
+        today = datetime.now(get_user_tz(user)).date().isoformat()
+        morning = get_diary(uid, "morning", today)
+        if any(morning.values()):
+            return True
         name = md_escape(user.get("name", ""))
         gender = user.get("gender", "M")
 
