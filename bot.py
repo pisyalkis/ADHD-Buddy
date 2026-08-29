@@ -8267,6 +8267,8 @@ async def morning_notification(app, uid):
             [InlineKeyboardButton("☰ Меню", callback_data="go_menu")],
             disable_notif_row("morning"),
         ])
+        # Реальный запрос: не самоудалять по тишине — раньше пропадало через
+        # 15 минут (INACTIVE_SCREEN_TTL_SEC), даже если ещё не ответили.
         await send_tracked_notification(
             app.bot, uid, "morning",
             f"☀️ *Доброе утро, {name}!*\n\n"
@@ -8274,6 +8276,7 @@ async def morning_notification(app, uid):
             f"💡 *Навык дня:* {skill['name']}\n"
             f"_{skill['desc']}_\n\n"
             f"{g(gender, 'Готов', 'Готова')} начать? 👇",
+            ttl_seconds=0,
             parse_mode="Markdown",
             reply_markup=kb
         )
@@ -8297,11 +8300,14 @@ async def evening_notification(app, uid):
         if any(evening.values()):
             return True
         name = md_escape(user.get("name", ""))
+        # Реальный запрос: не самоудалять по тишине — раньше пропадало через
+        # 15 минут (INACTIVE_SCREEN_TTL_SEC), даже если ещё не ответили.
         await send_tracked_notification(
             app.bot, uid, "evening",
             f"🌙 *Привет, {name}!*\n\n"
             "День заканчивается. Время закрыть его и поставить планы на завтра.\n\n"
             "5 минут — и голова свободна 👇",
+            ttl_seconds=0,
             parse_mode="Markdown",
             reply_markup=_append_row(evening_cta_kb(), disable_notif_row("evening"))
         )
