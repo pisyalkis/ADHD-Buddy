@@ -5836,6 +5836,21 @@ async def handle_delete_pool_intent(message, uid, query):
     candidates = (matches or items)[:2]
     await send_pool_delete_menu(message, uid, items=candidates)
 
+async def _delete_task_answer(ctx, msg):
+    """Реальный запрос: при постановке задач (свободным текстом или по
+    шагам через ✏️ Поставить/изменить задачи) свой ответ должен исчезать,
+    как и в утреннем/вечернем ритуале (см. _delete_ritual_answer) — раньше
+    оставался в чате навсегда."""
+    bot = getattr(ctx, "bot", None)
+    chat_id = getattr(msg, "chat_id", None)
+    mid = getattr(msg, "message_id", None)
+    if bot is None or chat_id is None or mid is None:
+        return
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=mid)
+    except Exception:
+        pass
+
 async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
     """Свободный текст, явно про задачу НА СЕГОДНЯ (см. classify_free_text,
     intent "set_task") — ставит в первый пустой слот A/B1/B2/C1/C2/C3, а не
@@ -5847,6 +5862,7 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
     занят — раз назвали конкретно, значит осознанно), а не в первый
     свободный (по запросу: "можно ли писать какой задачей на день
     добавить ту, что просишь добавить?")."""
+    await _delete_task_answer(ctx, message)
     valid_keys = {k for k, _ in TASK_FIELDS}
     if slot_key and slot_key in valid_keys:
         await apply_task_edit(message, ctx, uid, slot_key, text)
@@ -6590,6 +6606,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(confirm_text, reply_markup=confirm_kb)
     elif ctx.user_data.get("awaiting_task_edit"):
         key = ctx.user_data.pop("awaiting_task_edit")
+        await _delete_task_answer(ctx, update.message)
         await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
     elif ctx.user_data.get("awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
