@@ -3218,9 +3218,31 @@ def _morning_task_offer_text_and_kb(uid):
         ])
     )
 
+async def _ask_work_start(message, ctx, uid):
+    """Спрашивает время начала работы для напоминания — отдельное новое
+    сообщение (не редактирует message — тот должен остаться финалом
+    своего экрана), отслеживается под track_key="work_start", чтобы ответ
+    текстом ниже редактировал именно его, а не плодил ещё одно сообщение."""
+    clear_awaiting_flags(ctx)
+    ctx.user_data["awaiting_work_start"] = True
+    prompt_msg = await message.reply_text(
+        "🚪 Во сколько сегодня начинаешь работать?\n\n"
+        "Пришлю напоминание с задачами в это время. Формат: *ЧЧ:ММ* (например `10:00`)",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Не сейчас", callback_data="skip_work_start")]])
+    )
+    ctx.user_data["work_start_msg_id"] = prompt_msg.message_id
+    ctx.user_data["work_start_chat_id"] = prompt_msg.chat_id
+    schedule_message_deletion(prompt_msg.chat_id, prompt_msg.message_id, INACTIVE_SCREEN_TTL_SEC)
+
 async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Открывает 📋 Задачи (уже готовый экран добавления/правки — не новый
-    сценарий) и следом спрашивает время начала работы для напоминания."""
+    сценарий). Реальный запрос: раньше следом сразу же спрашивали время
+    начала работы — рядом с ещё ПУСТЫМ списком задач, до того как что-то
+    реально поставили. Вопрос откладывается до момента, когда задача
+    реально появится (см. ask_work_start_after_tasks — снимается и
+    задаётся в apply_task_edit/_walk_to_step/walk_finish_callback,
+    смотря какой дорожкой человек в итоге поставил задачи)."""
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
@@ -3230,20 +3252,10 @@ async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
     clear_awaiting_flags(ctx, update)
-    ctx.user_data["awaiting_work_start"] = True
-    # Отдельное новое сообщение (не редактируем q.message — это финал
-    # ритуала, его текст должен остаться), но само оно отслеживается под
-    # track_key="work_start", чтобы ответ текстом ниже редактировал именно
-    # его, а не плодил ещё одно сообщение.
-    prompt_msg = await q.message.reply_text(
-        "🚪 Во сколько сегодня начинаешь работать?\n\n"
-        "Пришлю напоминание с задачами в это время. Формат: *ЧЧ:ММ* (например `10:00`)",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Не сейчас", callback_data="skip_work_start")]])
-    )
-    ctx.user_data["work_start_msg_id"] = prompt_msg.message_id
-    ctx.user_data["work_start_chat_id"] = prompt_msg.chat_id
-    schedule_message_deletion(prompt_msg.chat_id, prompt_msg.message_id, INACTIVE_SCREEN_TTL_SEC)
+    # Дата — чтобы флаг не выстрелил задним числом спустя дни, если сегодня
+    # так ничего и не поставили, а следующая задача набирается уже в другой
+    # день по совсем другому поводу (см. точки потребления флага ниже).
+    ctx.user_data["ask_work_start_after_tasks"] = today
 
 async def morning_task_offer_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -5553,12 +5565,14 @@ async def _walk_to_step(message, ctx, uid, key):
     # флагу перехватить следующий текст, который тут явно ждёт от нас
     # ввод текста задачи.
     clear_awaiting_flags(ctx)
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     if key is None:
         await _render_walk_step(message, ctx, "Прошлись по всем задачам ✅", reply_markup=menu_button_kb())
         ctx.user_data.pop("walk_step_msg_id", None)
         ctx.user_data.pop("walk_step_chat_id", None)
+        if ctx.user_data.pop("ask_work_start_after_tasks", None) == today:
+            await _ask_work_start(message, ctx, uid)
         return
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     val = morning.get(key)
     if not val:
@@ -5661,6 +5675,8 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _render_walk_step(q.message, ctx, text, parse_mode="Markdown", reply_markup=kb)
     ctx.user_data.pop("walk_step_msg_id", None)
     ctx.user_data.pop("walk_step_chat_id", None)
+    if ctx.user_data.pop("ask_work_start_after_tasks", None) == today:
+        await _ask_work_start(q.message, ctx, uid)
 
 async def ask_task_text(message, ctx, key):
     ctx.user_data["awaiting_task_edit"] = key
@@ -5941,6 +5957,9 @@ async def apply_task_edit(message, ctx, uid, key, text):
     confirm_text = prefix + out_text
     if not await _edit_tracked_msg(ctx, "task_edit", confirm_text, parse_mode="Markdown", reply_markup=kb):
         await message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
+
+    if ctx.user_data.pop("ask_work_start_after_tasks", None) == today:
+        await _ask_work_start(message, ctx, uid)
 
 async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Реальный баг (проход по задачам "зависал" на выборе из списка дел):
