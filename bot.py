@@ -1254,7 +1254,7 @@ def mark_tasks_done(uid, keys, for_date):
     done.update(keys)
     save_diary(uid, "tasks_done", {"done": list(done)}, for_date=for_date)
 
-def midday_kb(morning=None, done_set=None):
+def midday_kb(morning=None, done_set=None, expanded=False):
     """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
     и в маячке, и в повторной проверке после отдыха.
 
@@ -1262,13 +1262,27 @@ def midday_kb(morning=None, done_set=None):
     task_done_callback, что и в 📋 Задачи: можно отметить любую конкретную
     задачу прямо отсюда, не только последовательно A→B→C (фидбек Виктории —
     раньше здесь была только одна кнопка прогресса, без возможности
-    отметить, что уже сделано именно сейчас)."""
+    отметить, что уже сделано именно сейчас).
+
+    Реальный запрос: "разгрузим визуально" — по умолчанию (expanded=False)
+    чекбоксы каждой задачи свёрнуты в одну кнопку "☑️ Отметить то, что
+    сделано" (см. mid_mark_done_callback); полный список задач-чекбоксов
+    "выпадает" по тапу. Сам чекбокс любой задачи (task_done_callback)
+    держит список развёрнутым и дальше — иначе после первой же отметки
+    экран снова схлопывался бы, мешая отметить несколько задач подряд."""
     morning = morning or {}
     done_set = done_set or set()
 
-    rows = _task_checkbox_rows(morning, done_set)
     existing_keys = [key for key, _ in TASK_FIELDS if morning.get(key)]
     all_done = bool(existing_keys) and all(key in done_set for key in existing_keys)
+
+    if not existing_keys:
+        rows = []
+    elif expanded:
+        rows = _task_checkbox_rows(morning, done_set)
+        rows.append([InlineKeyboardButton("◀️ Свернуть", callback_data="mid_mark_collapse")])
+    else:
+        rows = [[InlineKeyboardButton("☑️ Отметить то, что сделано", callback_data="mid_mark_done")]]
 
     # Реальный баг (18-й чекап): при existing_keys=[] (утро вообще без задач)
     # all_done = False (из-за bool(existing_keys)) — кнопка "Все задачи
@@ -6117,7 +6131,11 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     if notif_channel:
         try:
-            await q.message.edit_reply_markup(reply_markup=midday_kb(morning, done_set))
+            # expanded=True — тап по чекбоксу возможен только из уже
+            # развёрнутого списка (см. midday_kb), схлопывать его обратно
+            # после первой же отметки было бы неудобно, если отмечаешь
+            # несколько задач подряд.
+            await q.message.edit_reply_markup(reply_markup=midday_kb(morning, done_set, expanded=True))
         except Exception:
             pass
         schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
@@ -6138,6 +6156,34 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # зачёркиванием — отражаем и там тоже, а не только на этом экране.
     await _refresh_pinned_tasks_message(ctx, uid)
 
+async def mid_mark_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«☑️ Отметить то, что сделано» на чекине/маячке — разворачивает
+    чекбоксы задач на том же сообщении. Только клавиатура (edit_reply_markup),
+    не через midday_callback — иначе его безусловный _clear_notif_tracking
+    в начале снял бы трекинг канала ДО того, как на приглашение реально
+    ответили, и следующий тап по чекбоксу (task_done_callback) перестал бы
+    узнавать в этом сообщении маячок/чекин."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    try:
+        await q.message.edit_reply_markup(reply_markup=midday_kb(morning, done_set, expanded=True))
+    except Exception:
+        pass
+
+async def mid_mark_collapse_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """«◀️ Свернуть» — обратно к одной кнопке (см. mid_mark_done_callback)."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    morning = get_diary(uid, "morning", today)
+    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
+    try:
+        await q.message.edit_reply_markup(reply_markup=midday_kb(morning, done_set, expanded=False))
+    except Exception:
+        pass
 
 # ── REMINDERS ─────────────────────────────────────────────────────────────
 def reminders_text_and_kb(reminders):
@@ -9395,6 +9441,10 @@ def main():
     app.add_handler(CallbackQueryHandler(walk_clear_callback, pattern="^walk_clear_"))
     app.add_handler(CallbackQueryHandler(walk_finish_callback, pattern="^walk_finish$"))
     app.add_handler(CallbackQueryHandler(task_done_callback, pattern="^task_done_"))
+    # До midday_callback (pattern="^mid_") — иначе тот прямым префиксом
+    # перехватил бы оба этих callback_data первым.
+    app.add_handler(CallbackQueryHandler(mid_mark_done_callback,     pattern="^mid_mark_done$"))
+    app.add_handler(CallbackQueryHandler(mid_mark_collapse_callback, pattern="^mid_mark_collapse$"))
     app.add_handler(CallbackQueryHandler(show_task_pool,       pattern="^go_task_pool$"))
     app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
     app.add_handler(CallbackQueryHandler(show_task_pool_delete, pattern="^pool_del_menu$"))
