@@ -2212,6 +2212,19 @@ PIN_CHAT_TIP = (
     "Для ежедневного инструмента это реально важно."
 )
 
+# По просьбе (Фаза 1 — привлечение незнакомых пользователей): раньше цена и
+# длина пробного периода нигде не звучали в онбординге, человек узнавал об
+# этом только когда упирался в пейволл через TRIAL_DAYS дней (см.
+# access_gate) — для первой волны внешних пользователей риск не в цене
+# самой по себе, а в том, что молчаливый пейволл после недели использования
+# читается как подстава.
+TRIAL_INFO_TIP = (
+    f"💳 *Как это устроено*\n\n"
+    f"Первые {TRIAL_DAYS} дней — бесплатно. Дальше, если понравится — "
+    f"{STARS_PRICE_MONTHLY} ⭐️ Stars в месяц (оплата прямо в Telegram, "
+    f"отменить можно в любой момент)."
+)
+
 async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
@@ -2224,6 +2237,7 @@ async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     await q.message.reply_text(PIN_CHAT_TIP, parse_mode="Markdown")
+    await q.message.reply_text(TRIAL_INFO_TIP, parse_mode="Markdown")
     await send_onboarding_final(q.message, uid)
 
 async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2235,6 +2249,7 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки."
     )
     await q.message.reply_text(PIN_CHAT_TIP, parse_mode="Markdown")
+    await q.message.reply_text(TRIAL_INFO_TIP, parse_mode="Markdown")
     await send_onboarding_final(q.message, uid)
 
 # ── RITUAL CLEANUP ─────────────────────────────────────────────────────────
