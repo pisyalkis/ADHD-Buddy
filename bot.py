@@ -9036,6 +9036,32 @@ def _watchdog_loop():
 
 async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
     print(f"⚠️ Необработанная ошибка: {ctx.error}", flush=True)
+    # Реальный баг (живой отчёт): "нажимаю на кнопку — вообще никакой
+    # реакции". Любое необработанное исключение внутри обработчика (даже
+    # УЖЕ после q.answer(), например где-то в середине evening_start) было
+    # полностью невидимо пользователю — только запись в серверный лог.
+    # Нажатие кнопки выглядело как полное игнорирование, без единого
+    # намёка на причину — тот же класс сбоя, что уже чинили точечно для
+    # grant_command и send_coach, но здесь закрывает его сразу для всех
+    # обработчиков разом.
+    if update is None:
+        return
+    target = getattr(update, "effective_message", None)
+    if target is None:
+        return
+    cq = getattr(update, "callback_query", None)
+    if cq is not None:
+        try:
+            await cq.answer()
+        except Exception:
+            pass
+    try:
+        await target.reply_text(
+            "⚠️ Что-то пошло не так. Попробуй ещё раз или открой меню.",
+            reply_markup=menu_button_kb()
+        )
+    except Exception:
+        pass
 
 
 async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
