@@ -36,7 +36,7 @@ DB_PATH = os.getenv("DB_PATH", "adhd.db")
 # Общий рубильник платного доступа. Включён явным решением (не флагом
 # окружения) — пользователи с истёкшим пробным периодом видят пейволл.
 ACCESS_GATE_ENABLED = True
-TRIAL_DAYS = 7  # бесплатный период с момента регистрации (created_at) + promo_extra_days
+TRIAL_DAYS = 14  # бесплатный период с момента регистрации (created_at) + promo_extra_days
 STARS_SUBSCRIPTION_DAYS = 30
 STARS_PRICE_MONTHLY = 150  # 150 ⭐ Stars/месяц
 # Статичные анимации-инструменты (не данные пользователя, один и тот же файл
