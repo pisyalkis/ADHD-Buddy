@@ -4463,6 +4463,11 @@ async def show_skill_detail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 _skill_animation_file_ids[skill["name"]] = sent_anim.animation.file_id
         except Exception as e:
             print(f"Ошибка отправки анимации навыка {skill['name']}: {e}")
+    else:
+        # Реальный запрос: открыли навык БЕЗ гифки после навыка С гифкой —
+        # _send_tracked_animation тут не вызывается вовсе, и старая гифка
+        # оставалась висеть в чате. Чистим её явно.
+        await _delete_tracked_channel(ctx.bot, q.from_user.id, "skill_anim")
 
     buttons = [[InlineKeyboardButton("◀️ К списку навыков", callback_data="go_skill")]]
     if "Работа по таймеру" in skill["name"]:
@@ -5340,6 +5345,12 @@ async def send_skill_beacon(app, user):
                     _skill_animation_file_ids[skill_name] = sent_anim.animation.file_id
             except Exception as e:
                 print(f"Ошибка отправки анимации маячка {skill_name}: {e}")
+        else:
+            # Реальный запрос: если ТЕКУЩАЯ техника без гифки, а предыдущая
+            # (из более раннего срабатывания маячка) была с гифкой —
+            # _send_tracked_animation тут просто не вызывается, и старая
+            # гифка оставалась висеть в чате навсегда. Чистим её явно.
+            await _delete_tracked_channel(app.bot, uid, "skill_anim")
 
         done_label = g(user["gender"], "✅ Сделал", "✅ Сделала")
         await send_tracked_notification(
