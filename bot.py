@@ -4359,10 +4359,11 @@ async def send_coach(message, text, uid, ctx=None):
         else:
             await thinking.edit_text(f"🤖 {reply_text}", reply_markup=final_kb)
     except Exception as e:
+        err_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
         if ctx is not None:
-            await _render_coach_msg(message, ctx, f"Ошибка: {e}")
+            await _render_coach_msg(message, ctx, f"Ошибка: {e}", reply_markup=err_kb)
         else:
-            await thinking.edit_text(f"Ошибка: {e}")
+            await thinking.edit_text(f"Ошибка: {e}", reply_markup=err_kb)
 
 # ── COACH MENU ─────────────────────────────────────────────────────────────
 COACH_PROMPTS = {
@@ -6593,8 +6594,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
         else:
             retry_text = "Неверный формат. Введи время в формате ЧЧ:ММ, например: `08:30`"
-            if not await _edit_settings_msg(ctx, retry_text, parse_mode="Markdown"):
-                await update.message.reply_text(retry_text, parse_mode="Markdown")
+            if not await _edit_settings_msg(ctx, retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
             ctx.user_data["awaiting_time"] = True
     elif ctx.user_data.get("awaiting_name"):
         ctx.user_data["awaiting_name"] = False
@@ -6602,13 +6603,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not new_name:
             ctx.user_data["awaiting_name"] = True
             retry_text = "Имя не может быть пустым, напиши ещё раз:"
-            if not await _edit_settings_msg(ctx, retry_text):
-                await update.message.reply_text(retry_text)
+            if not await _edit_settings_msg(ctx, retry_text, reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
         elif len(new_name) > 30:
             ctx.user_data["awaiting_name"] = True
             retry_text = "Имя слишком длинное, напиши покороче:"
-            if not await _edit_settings_msg(ctx, retry_text):
-                await update.message.reply_text(retry_text)
+            if not await _edit_settings_msg(ctx, retry_text, reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
         else:
             update_user(uid, name=new_name)
             confirm_text = f"✅ Готово, буду звать тебя *{md_escape(new_name)}*."
@@ -6739,8 +6740,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if parsed is None:
             ctx.user_data["awaiting_reminder_add"] = True
             retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
-            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown"):
-                await update.message.reply_text(retry_text, parse_mode="Markdown")
+            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
         else:
             remind_at_key, rem_text, recur = parsed
             await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text, recur, ctx=ctx)
@@ -6751,8 +6752,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if parsed is None:
             ctx.user_data["awaiting_reminder_edit"] = rem_id
             retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
-            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown"):
-                await update.message.reply_text(retry_text, parse_mode="Markdown")
+            if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
         else:
             remind_at_key, rem_text, recur = parsed
             # Если новая фраза не упоминает повтор явно ("перенеси на 20:00"
@@ -6798,8 +6799,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
         else:
             retry_text = "Неверный формат. Введи время в формате ЧЧ:ММ, например: `10:00`"
-            if not await _edit_tracked_msg(ctx, "work_start", retry_text, parse_mode="Markdown"):
-                await update.message.reply_text(retry_text, parse_mode="Markdown")
+            if not await _edit_tracked_msg(ctx, "work_start", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
             ctx.user_data["awaiting_work_start"] = True
     elif ctx.user_data.get("admin_msg_target"):
         target_id = ctx.user_data.pop("admin_msg_target")
@@ -7626,7 +7627,11 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         clear_awaiting_flags(ctx, update)
         ctx.user_data["awaiting_promo_code"] = True
-        await _render_tracked(update.message, ctx, "promo", "🎁 Введи промокод текстом:", ttl_seconds=INACTIVE_SCREEN_TTL_SEC)
+        await _render_tracked(
+            update.message, ctx, "promo", "🎁 Введи промокод текстом:",
+            ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_menu")]])
+        )
         return
     # Реальный баг (16-й чекап): ветка с аргументом (/promo CODE — именно
     # так советует вводить код /blogger) не гасила awaiting_*, в отличие
