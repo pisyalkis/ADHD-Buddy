@@ -1474,6 +1474,8 @@ async def _edit_tracked_msg(ctx, track_key, text, ttl_seconds=None, **kwargs):
     except Exception:
         return False
 
+STEP_MSG_STALE_SEC = 300  # 5 минут бездействия — дальше шаг предпочитает новое сообщение правке старого
+
 async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kwargs):
     """Общая механика для любого многошагового сценария, который должен
     держать одно актуальное сообщение вместо цепочки отдельных сообщений
@@ -1492,8 +1494,40 @@ async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kw
     сообщением). Если message — не сообщение бота (пришли текстом
     посреди сценария) или его нельзя отредактировать, Telegram это
     отклонит, и _edit_msg_or_send падает обратно на новое сообщение — как
-    и раньше в этом случае."""
-    if await _edit_tracked_msg(ctx, track_key, text, ttl_seconds=ttl_seconds, **kwargs):
+    и раньше в этом случае.
+
+    Реальный запрос: "заполняю утро позже — вопрос ритуала появляется
+    наверху, а клавиатура и то, что печатаю, внизу" — если между шагами
+    прошло много времени (отвлёкся, попользовался ботом для чего-то
+    другого — переписка успела уйти далеко вниз), правка старого
+    сообщения молча меняет его текст ТАМ, где оно есть, а Telegram не
+    прокручивает экран к месту правки — приходится листать вверх, чтобы
+    увидеть, что вообще изменилось. Если с последнего рендера этого шага
+    прошло больше STEP_MSG_STALE_SEC — вместо правки шлём новое сообщение:
+    оно окажется внизу, рядом с полем ввода, там же, где сейчас находится
+    внимание пользователя. Старое сообщение при этом удаляется, а не
+    остаётся висеть с устаревшим текстом и неактуальными кнопками."""
+    last_ts_raw = ctx.user_data.get(f"{track_key}_msg_ts")
+    is_stale = False
+    if last_ts_raw:
+        try:
+            is_stale = (datetime.now() - datetime.fromisoformat(last_ts_raw)).total_seconds() > STEP_MSG_STALE_SEC
+        except Exception:
+            is_stale = False
+    if is_stale:
+        # Старое сообщение шага больше не редактируем, а прячем — иначе
+        # рядом с новым остался бы висеть устаревший текст с неактуальными
+        # кнопками, тот же класс бардака, с которым борется весь этот файл.
+        stale_bot = getattr(ctx, "bot", None)
+        stale_chat_id = ctx.user_data.get(f"{track_key}_chat_id")
+        stale_mid = ctx.user_data.get(f"{track_key}_msg_id")
+        if stale_bot is not None and stale_chat_id is not None and stale_mid is not None:
+            try:
+                await stale_bot.delete_message(chat_id=stale_chat_id, message_id=stale_mid)
+            except Exception:
+                pass
+    elif await _edit_tracked_msg(ctx, track_key, text, ttl_seconds=ttl_seconds, **kwargs):
+        ctx.user_data[f"{track_key}_msg_ts"] = datetime.now().isoformat()
         return
     sent = await _edit_msg_or_send(message, text, **kwargs)
     chat_id = getattr(sent, "chat_id", None)
@@ -1501,6 +1535,7 @@ async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kw
     if chat_id is not None and mid is not None:
         ctx.user_data[f"{track_key}_msg_id"] = mid
         ctx.user_data[f"{track_key}_chat_id"] = chat_id
+        ctx.user_data[f"{track_key}_msg_ts"] = datetime.now().isoformat()
         if ttl_seconds:
             schedule_message_deletion(chat_id, mid, ttl_seconds)
 
