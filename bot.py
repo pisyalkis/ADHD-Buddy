@@ -2183,6 +2183,16 @@ async def onboard_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     ctx.user_data["awaiting_city"] = False
     await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    # Реальный баг: единственная ветка выбора города, которая никак не
+    # предупреждала о последствиях — ни при неудачном геокодинге (см. ниже
+    # в handle_text), ни в ⚙️ Общие такого пробела нет, только здесь.
+    # "Пропустить" молча оставляет таймзону по умолчанию (USER_TIMEZONE —
+    # часовой пояс владельца бота), и человек из другого пояса узнаёт об
+    # этом только по факту — когда утреннее уведомление придёт среди ночи.
+    _onboard_track(ctx, await q.message.reply_text(
+        f"⚠️ Без города уведомления будут по времени {USER_TIMEZONE} — "
+        "поменять можно в любой момент в ⚙️ Настройки → Город."
+    ))
     _onboard_track(ctx, await q.message.reply_text(
         "🔔 *Последний шаг — уведомления*\n\n"
         "Бот пишет три раза в день: утром, днём и вечером "
