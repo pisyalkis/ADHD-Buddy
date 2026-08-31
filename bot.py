@@ -568,6 +568,14 @@ def init_db():
         chat_id INTEGER, channel TEXT, message_id INTEGER,
         PRIMARY KEY (chat_id, channel)
     )""")
+    # Воронка подписки (открыл экран → начал оплату) — единственный шаг,
+    # который не восстановить из других таблиц: payments хранит только
+    # УСПЕШНЫЕ платежи, а сколько людей вообще дошли до экрана подписки
+    # и передумали, нигде больше не видно.
+    c.execute("""CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, event TEXT, created TEXT
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -663,6 +671,16 @@ def update_user(uid, **kwargs):
     c = conn.cursor()
     for k, v in kwargs.items():
         c.execute(f"UPDATE users SET {k}=? WHERE user_id=?", (v, uid))
+    conn.commit(); conn.close()
+
+def log_event(uid, event):
+    """Воронка подписки (см. events в init_db) — только те шаги, которых
+    больше нигде не видно (payments хранит лишь успешные оплаты)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO events(user_id, event, created) VALUES (?, ?, ?)",
+        (uid, event, datetime.now(pytz.timezone(USER_TIMEZONE)).isoformat())
+    )
     conn.commit(); conn.close()
 
 # ── ДОСТУП / ПОДПИСКА ────────────────────────────────────────────────────
@@ -7557,17 +7575,20 @@ def _subscribe_text_and_kb(user):
 async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
+    log_event(q.from_user.id, "subscribe_opened")
     text, kb = _subscribe_text_and_kb(get_user(q.from_user.id))
     await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx, update)
+    log_event(update.effective_user.id, "subscribe_opened")
     text, kb = _subscribe_text_and_kb(get_user(update.effective_user.id))
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
+    log_event(q.from_user.id, "subscribe_pay_started")
     await ctx.bot.send_invoice(
         chat_id=q.from_user.id,
         title="Подписка ADHD Buddy",
@@ -9079,6 +9100,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cur = conn.cursor()
 
         total = cur.execute("SELECT COUNT(*) FROM users WHERE name != ''").fetchone()[0]
+        onboarding_started = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         # date.today() — наивная серверная дата, а diary.date у каждого
         # пользователя пишется в его собственной таймзоне (get_user_tz).
         # Берём таймзону админа, вызвавшего /admin, а не сервера — иначе
@@ -9097,6 +9119,24 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         month_ago = (admin_today - timedelta(days=29)).isoformat()
         active7  = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (week_ago,)).fetchone()[0]
         active30 = cur.execute("SELECT COUNT(DISTINCT user_id) FROM diary WHERE date >= ?", (month_ago,)).fetchone()[0]
+
+        # Ретеншн по когорте регистрации: из тех, кто зарегистрировался
+        # РОВНО N дней назад, сколько сделали хоть один чекин ровно сегодня
+        # (их день N). В отличие от active7/active30 выше (кто угодно живой
+        # за период) — это классическая кривая удержания по дню от старта.
+        def _retention(offset):
+            cohort_date = (admin_today - timedelta(days=offset)).isoformat()
+            cohort_size = cur.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at=? AND name != ''", (cohort_date,)
+            ).fetchone()[0]
+            if not cohort_size:
+                return None
+            retained = cur.execute(
+                "SELECT COUNT(DISTINCT d.user_id) FROM diary d JOIN users u ON u.user_id = d.user_id "
+                "WHERE u.created_at=? AND d.date=?", (cohort_date, admin_today.isoformat())
+            ).fetchone()[0]
+            return cohort_size, retained
+        ret1, ret7, ret30 = _retention(1), _retention(7), _retention(30)
 
         # Пол
         males   = cur.execute("SELECT COUNT(*) FROM users WHERE gender='M' AND name!=''").fetchone()[0]
@@ -9123,6 +9163,14 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         promo_redemptions_total = cur.execute("SELECT COUNT(*) FROM promo_redemptions").fetchone()[0]
         paid_users = cur.execute("SELECT COUNT(DISTINCT user_id) FROM payments").fetchone()[0]
         stars_total = cur.execute("SELECT COALESCE(SUM(stars), 0) FROM payments").fetchone()[0]
+
+        # Воронка подписки: сколько уникальных людей дошли до каждого шага.
+        subscribe_opened = cur.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM events WHERE event='subscribe_opened'"
+        ).fetchone()[0]
+        subscribe_pay_started = cur.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM events WHERE event='subscribe_pay_started'"
+        ).fetchone()[0]
 
         # Research summary
         r3_ratings  = cur.execute("SELECT answer FROM research WHERE day=3 AND question='day3_rating'").fetchall()
@@ -9156,6 +9204,15 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pmf_pct = round(sad_count / len(r30_pmf) * 100) if r30_pmf else 0
             pmf_str = f"  PMF «очень расстроюсь» (день 30): *{pmf_pct}%* ({len(r30_pmf)} отв.)\n"
 
+        def fmt_retention(label, res):
+            if res is None:
+                return f"  {label}: — (когорта пуста)\n"
+            size, retained = res
+            pct = round(retained / size * 100)
+            return f"  {label}: *{pct}%* ({retained}/{size})\n"
+
+        onboarding_pct = round(total / onboarding_started * 100) if onboarding_started else 0
+
         # Open answers
         def fmt_answers(rows, label):
             if not rows: return ""
@@ -9172,9 +9229,13 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"  👨 Мужчин: {males} · 👩 Женщин: {females}" + (f" · 🏳️‍🌈 Другое: {nonbin}" if nonbin else "") + "\n"
             f"📅 Активны за 7 дней: *{active7}*\n"
             f"📅 Активны за 30 дней: *{active30}*\n\n"
+            f"🧲 *Онбординг:* начали {onboarding_started} → завершили {total} (*{onboarding_pct}%*)\n\n"
+            f"📈 *Ретеншн (по когорте регистрации):*\n"
+            f"{fmt_retention('День 1', ret1)}{fmt_retention('День 7', ret7)}{fmt_retention('День 30', ret30)}\n"
             f"💎 *Доступ:* 🎁 Пробный: {access_counts['trial']} · ✅ Подписка: {access_counts['subscribed']} · "
             f"⌛ Истёк: {access_counts['expired']} · 🎟 Промокодов активировано: {promo_redemptions_total}\n"
-            f"💳 *Оплатили:* {paid_users} чел. · ⭐ Всего получено: {stars_total} Stars\n\n"
+            f"💳 *Оплатили:* {paid_users} чел. · ⭐ Всего получено: {stars_total} Stars\n"
+            f"🛒 *Воронка подписки:* открыли {subscribe_opened} → начали оплату {subscribe_pay_started} → оплатили {paid_users}\n\n"
             f"🌍 *Города:*\n{cities_str}\n\n"
             f"📋 *Чекины:*\n"
             f"  ☀️ Утро: {block_map.get('morning',0)}\n"
