@@ -86,12 +86,12 @@ async def main():
     print("4. task_pool_text (non-empty) also shows the free-text hint")
 
     # ---- 📋 Задачи screen itself --------------------------------------------
-    text_empty, kb_empty = bot._tasks_text_and_kb({}, set(), "M", uid)
+    text_empty, kb_empty = bot._tasks_text_and_kb({}, set(), "M")
     assert "поставь задачу" in text_empty or "задача B1" in text_empty, text_empty
     print("5. _tasks_text_and_kb (no tasks set) shows the free-text set_task hint")
 
     morning = {"focus": "Написать отчёт"}
-    text_full, kb_full = bot._tasks_text_and_kb(morning, set(), "M", uid)
+    text_full, kb_full = bot._tasks_text_and_kb(morning, set(), "M")
     assert "поставь задачу" in text_full or "задача B1" in text_full, text_full
     print("6. _tasks_text_and_kb (tasks already set) still shows the hint")
 
