@@ -5621,11 +5621,13 @@ async def _offer_task_input(message, ctx, uid, key):
         text = f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:"
         kb = pool_suggestions_kb(key, pool)
         if ctx.user_data.get("task_walk"):
-            await _render_walk_step(message, ctx, text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
+            today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+            progress = _walk_progress_text(uid, today, exclude_key=key)
+            await _render_walk_step(message, ctx, f"{progress}{text}", ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
         else:
             await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
     else:
-        await ask_task_text(message, ctx, key)
+        await ask_task_text(message, ctx, uid, key)
 
 async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Больше не выставляется новыми экранами (см. walk_tasks_start) —
@@ -5657,6 +5659,22 @@ def _next_task_key(key):
     idx = keys.index(key)
     return keys[idx + 1] if idx + 1 < len(keys) else None
 
+def _walk_progress_text(uid, today, exclude_key=None):
+    """Реальный запрос: во время последовательной постановки задач
+    (task_walk) уже поставленные слоты нигде не были видны — каждый шаг
+    показывал только текущий, и то, что решил парой шагов раньше, было
+    не вспомнить, не прерывая проход. Короткая сводка сверху сообщения —
+    exclude_key нужен, чтобы не дублировать слот, который и так показан
+    отдельно как основной текст этого шага (уже заполненный) или явно
+    редактируется прямо сейчас."""
+    morning = get_diary(uid, "morning", today)
+    lines = [
+        f"✅ {icon}: {md_escape(morning[key])}"
+        for key, icon in TASK_FIELDS
+        if key != exclude_key and morning.get(key)
+    ]
+    return "📋 Уже поставлено:\n" + "\n".join(lines) + "\n\n" if lines else ""
+
 async def _walk_to_step(message, ctx, uid, key):
     """Один шаг последовательного прохода по задачам (A → B1 → B2 → C1 →
     C2 → C3, см. walk_tasks_start) — по просьбе Артёма: «когда ставишь/
@@ -5685,9 +5703,10 @@ async def _walk_to_step(message, ctx, uid, key):
         await _offer_task_input(message, ctx, uid, key)
         return
     label = TASK_LABELS.get(key, key)
+    progress = _walk_progress_text(uid, today, exclude_key=key)
     await _render_walk_step(
         message, ctx,
-        f"{label}\n\n{md_escape(val)}",
+        f"{progress}{label}\n\n{md_escape(val)}",
         ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
@@ -5783,13 +5802,15 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if ctx.user_data.pop("ask_work_start_after_tasks", None) == today:
         await _ask_work_start(q.message, ctx, uid)
 
-async def ask_task_text(message, ctx, key):
+async def ask_task_text(message, ctx, uid, key):
     ctx.user_data["awaiting_task_edit"] = key
     label = TASK_LABELS.get(key, key)
     text = f"{label}\n\nВведи текст задачи:"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
     if ctx.user_data.get("task_walk"):
-        await _render_walk_step(message, ctx, text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
+        today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+        progress = _walk_progress_text(uid, today, exclude_key=key)
+        await _render_walk_step(message, ctx, f"{progress}{text}", ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
     else:
         await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
 
@@ -5849,7 +5870,7 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if was_walk:
         ctx.user_data["task_walk"] = True
     key = q.data.replace("poolwrite_", "")
-    await ask_task_text(q.message, ctx, key)
+    await ask_task_text(q.message, ctx, q.from_user.id, key)
 
 async def add_pool_and_reply(message, uid, items, ctx=None):
     """Общая логика и для явного экрана «📥 Список дел» (ctx передан —
