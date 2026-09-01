@@ -144,7 +144,10 @@ async def main():
     assert "задачи ещё не заданы" in text5, text5
     print("5. show_tasks still honestly says 'задачи ещё не заданы' when there's really nothing to apply")
 
-    # ── 6. The full morning ritual's own warmup-step button is untouched ───
+    # ── 6. По просьбе: разминка (☀️ Утро / morning_start) тоже применяет
+    # план автоматически, без отдельной кнопки -- та же логика, что и на
+    # быстрых экранах. Кнопка "Взять как задачи на сегодня" убрана
+    # (use_yesterday_plan_callback удалён как недостижимый мёртвый код).
     uid6 = 6
     conn = sqlite3.connect(bot.DB_PATH)
     conn.execute("INSERT INTO users(user_id, name, gender) VALUES (6, 'Ритуал', 'M')")
@@ -152,10 +155,34 @@ async def main():
     bot.update_user(uid6, timezone="Asia/Tbilisi")
     seed_evening_plan(uid6, yesterday)
     upd6 = FakeUpdate(uid6)
-    await bot.use_yesterday_plan_callback(upd6, FakeCtx())
+    await bot.morning_start(upd6, FakeCtx())
     morning6 = bot.get_diary(uid6, "morning", today)
     assert morning6.get("focus") == "Поправить переменные на кампейне", morning6
-    print("6. use_yesterday_plan_callback (full ritual's warmup button) still works unchanged")
+    assert morning6.get("c3") == "Стирка светлое", morning6
+    rendered = upd6.callback_query.message.edited + upd6.callback_query.message.sent
+    for text, kb in rendered:
+        if kb is None:
+            continue
+        flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert "use_yesterday_plan" not in flat, \
+            f"the removed 'Взять как задачи на сегодня' button must not appear anywhere: {flat}"
+    print("6. morning_start (☀️ Утро greeting) also auto-applies yesterday's plan, no button needed")
+
+    # ── 7. morning_start leaves an already-started day untouched, same as
+    # the quick screens (sanity -- shares the same helper).
+    uid7 = 7
+    conn = sqlite3.connect(bot.DB_PATH)
+    conn.execute("INSERT INTO users(user_id, name, gender) VALUES (7, 'Свой план', 'F')")
+    conn.commit(); conn.close()
+    bot.update_user(uid7, timezone="Asia/Tbilisi")
+    seed_evening_plan(uid7, yesterday)
+    bot.save_diary(uid7, "morning", {"focus": "Уже сама решила"}, for_date=today)
+    upd7 = FakeUpdate(uid7)
+    await bot.morning_start(upd7, FakeCtx())
+    morning7 = bot.get_diary(uid7, "morning", today)
+    assert morning7.get("focus") == "Уже сама решила", morning7
+    assert not morning7.get("b1"), morning7
+    print("7. morning_start does not overwrite a day that already has a real task set")
 
     print("\nALL TASKS-AUTO-APPLY-YESTERDAY-PLAN TESTS PASSED")
 
