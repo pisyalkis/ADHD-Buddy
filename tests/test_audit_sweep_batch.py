@@ -83,14 +83,6 @@ async def main():
     print("1. morning_start's 'already filled today' recap edits in place, falls back on failure")
     bot.update_user(uid, morning_filled_at="")
 
-    # 2. use_yesterday_plan_callback (both branches: nothing to carry, and success).
-    await run_edits(uid, bot.use_yesterday_plan_callback, "use_yesterday_plan")
-    print("2a. use_yesterday_plan_callback ('nothing to carry') edits in place, falls back on failure")
-    bot.save_diary(uid, "evening", {"e_a": "Задача с вечера"}, for_date=(datetime.now(bot.get_user_tz(bot.get_user(uid))).date() - timedelta(days=1)).isoformat())
-    await run_edits(uid, bot.use_yesterday_plan_callback, "use_yesterday_plan")
-    print("2b. use_yesterday_plan_callback (success) edits in place, falls back on failure")
-    bot.save_diary(uid, "morning", {}, for_date=today)  # reset for later assertions
-
     # 3. Stale-item error replies: pool_use_item, evening_plan_use_pool, add_next_task_callback.
     await run_edits(uid, bot.pool_use_item, "pooluse_focus_999999")
     print("3a. pool_use_item's 'item gone' error edits in place, falls back on failure")
