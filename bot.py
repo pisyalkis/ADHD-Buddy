@@ -3401,12 +3401,12 @@ def _carry_unfinished_tasks_to_pool(uid, morning_today, done_set):
     """Незавершённые задачи дня — обратно в 📥 Список дел, чтобы не
     потерялись (реальный запрос: "если задача из плана на день не
     выполнена — она должна попадать в список дел"). Пропускаем те, у
-    которых ещё остался _pool_link_{key} с версий бота ДО того, как выбор
-    пункта из пула стал удалять его сразу (см. apply_task_edit) — такой
-    пункт и так всё ещё лежит в пуле нетронутым, повторное добавление
-    создало бы дубль. Сравниваем без учёта регистра — иначе "Позвонить
-    маме" и "позвонить маме" (та же задача, просто набрана иначе на
-    следующий день) считались бы разными и дублировались в пуле."""
+    которых ещё стоит связь _pool_link_{key} (см. apply_task_edit/
+    pool_use_item) — такой пункт и так всё ещё лежит в пуле нетронутым
+    (удаляется только при отметке ✅), повторное добавление создало бы
+    дубль. Сравниваем без учёта регистра — иначе "Позвонить маме" и
+    "позвонить маме" (та же задача, просто набрана иначе на следующий
+    день) считались бы разными и дублировались в пуле."""
     morning = get_diary(uid, "morning", morning_today)
     existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
     for key, _ in TASK_FIELDS:
@@ -6023,30 +6023,33 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
         return
     await apply_task_edit(message, ctx, uid, key, text)
 
-async def apply_task_edit(message, ctx, uid, key, text):
+async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
-    свободного ввода (handle_text), и для выбора готового дела из пула
-    (pool_use_item удаляет выбранный пункт из пула сам, ДО вызова этой
-    функции — здесь только сохранение текста задачи).
+    свободного ввода (handle_text), и для выбора готового дела из пула.
 
     awaiting_task_edit чистим здесь безусловно: путь через handle_text уже
     сам его снимает перед вызовом, а путь через выбор пункта из пула
     (pool_use_item) — нет, так что флаг оставался висеть и перехватывал
     следующее не связанное с задачами сообщение пользователя.
 
-    _pool_link_{key} — ключ ещё встречается в дневниках, сохранённых до
-    того, как выбор пункта из пула стал удалять его сразу (раньше связь
-    хранилась здесь и пункт пропадал из пула только при отметке ✅, см.
-    task_done_callback/walk_clear_callback/finish_evening) — гасим его тут
-    же, если слот перезаписывают, чтобы отметка "выполнено" по НОВОМУ
-    тексту задачи не удалила чужой, больше не связанный с ней пункт пула."""
+    pool_item_id — по просьбе (снова: пункт списка дел, выбранный в задачи
+    дня, должен оставаться там же, а не пропадать сразу — только когда
+    задачу реально отметят ✅, см. task_done_callback/walk_clear_callback/
+    finish_evening). Если слот потом перезаписывают — вручную набранным
+    текстом или другим пунктом пула — старая связь тут же затирается,
+    иначе отметка "выполнено" по новому тексту задачи удалила бы чужой,
+    больше не связанный с ней пункт списка дел."""
     ctx.user_data.pop("awaiting_task_edit", None)
     now_dt = datetime.now(get_user_tz(get_user(uid)))
     today = now_dt.date().isoformat()
     morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
     was_filled = bool(morning.get(key))
     morning[key] = text
-    morning.pop(f"_pool_link_{key}", None)
+    link_key = f"_pool_link_{key}"
+    if pool_item_id is not None:
+        morning[link_key] = pool_item_id
+    else:
+        morning.pop(link_key, None)
     save_diary(uid, "morning", morning, for_date=today)
     # Реальный баг (14-й чекап): morning_filled_at раньше выставлялся только
     # в finish_morning (полный утренний ритуал) — send_task_beacon использует
@@ -6104,12 +6107,11 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if item is None:
         await _edit_or_send(q, "Это дело уже не в списке — выбери другое или напиши текст.")
         return
-    # Реальный запрос: выбор дела в задачи дня раньше не убирал его из
-    # 📥 Список дел сразу — пункт висел там же до тех пор, пока задачу не
-    # отмечали ✅ выполненной. Теперь пункт пропадает из пула сразу же, в
-    # момент выбора, а не только при отметке "сделано".
-    delete_pool_task(uid, item["id"])
-    await apply_task_edit(q.message, ctx, uid, key, item["text"])
+    # По просьбе (снова, откат #191): пункт списка дел, выбранный в задачи
+    # дня, остаётся там же — пропадает только когда задачу реально отметят
+    # ✅ выполненной (см. pool_item_id в apply_task_edit), а не сразу при
+    # выборе формулировки.
+    await apply_task_edit(q.message, ctx, uid, key, item["text"], pool_item_id=item["id"])
 
 def task_pool_kb(pool):
     rows = []
