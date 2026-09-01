@@ -66,7 +66,7 @@ async def main():
     # "✏️ Поставить/изменить задачи".
     # ══════════════════════════════════════════════════════════════════════
     morning = {"focus": "Написать отчёт", "b1": "Позвонить маме"}
-    text, kb = bot._tasks_text_and_kb(morning, set(), "M", uid)
+    text, kb = bot._tasks_text_and_kb(morning, set(), "M")
     rows = buttons_of(kb)
     # Реальный фидбек (по скриншоту): чекбокс и "✏️" в одном ряду из двух
     # кнопок Telegram делит пополам независимо от длины текста -- короткая
@@ -103,7 +103,7 @@ async def main():
 
     # Sanity: an empty (never-set) slot has no row at all -- nothing to edit.
     morning_partial = {"focus": "Написать отчёт"}
-    text2, kb2 = bot._tasks_text_and_kb(morning_partial, set(), "M", uid)
+    text2, kb2 = bot._tasks_text_and_kb(morning_partial, set(), "M")
     rows2 = buttons_of(kb2)
     flat2 = [cb for row in rows2 for _, cb in row]
     assert "edit_task_b1" not in flat2, rows2
