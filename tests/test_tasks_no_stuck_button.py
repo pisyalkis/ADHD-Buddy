@@ -19,7 +19,7 @@ def main():
     # screens is unrelated and untouched.)
     # ══════════════════════════════════════════════════════════════════════
     morning = {"focus": "Написать отчёт"}
-    text, kb = bot._tasks_text_and_kb(morning, set(), "M")
+    text, kb = bot._tasks_text_and_kb(morning, set(), "M", 1)
     flat = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert "mid_coach" not in flat, flat
     labels = [b.text for row in kb.inline_keyboard for b in row]

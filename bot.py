@@ -2793,7 +2793,7 @@ async def use_yesterday_plan_callback(update: Update, ctx: ContextTypes.DEFAULT_
     save_diary(uid, "morning", morning, for_date=today)
     done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
-    out_text, kb = _tasks_text_and_kb(morning, done_set, user["gender"])
+    out_text, kb = _tasks_text_and_kb(morning, done_set, user["gender"], uid)
     await _edit_or_send(q, "✅ Взял вчерашний план как задачи на сегодня.\n\n" + out_text, parse_mode="Markdown", reply_markup=kb)
 
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3340,7 +3340,7 @@ async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
-    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"], uid)
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
     clear_awaiting_flags(ctx, update)
@@ -5524,7 +5524,7 @@ def _task_checkbox_rows(morning, done_set):
         rows.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
     return rows
 
-def _tasks_text_and_kb(morning, done_set, gender):
+def _tasks_text_and_kb(morning, done_set, gender, uid):
     """Строит текст и клавиатуру задач с отметками выполнения, добавлением
     и правкой — без прохождения полного утреннего ритуала. См. фидбек
     Виктории (хотела добавить задачу днём, а бот предлагал пройти утро
@@ -5576,6 +5576,18 @@ def _tasks_text_and_kb(morning, done_set, gender):
     buttons = checkbox_rows
     if edit_buttons:
         buttons.append(edit_buttons)
+    # Реальный фидбек (Виктория): "у меня опять не сохраняются вчерашние
+    # задачи" — вечерний план ("Планы на завтра") реально сохранялся, но
+    # был виден и переносился в реальные задачи дня ТОЛЬКО через кнопку
+    # "✅ Взять как задачи на сегодня" на разминке полного утреннего
+    # ритуала (use_yesterday_plan_callback). Кто открывал 📋 Задачи напрямую
+    # (через Меню, до или вместо полного ритуала — тот самый частый путь
+    # для тех, кто не проходит утро целиком) видел просто "задачи ещё не
+    # заданы", как будто вчерашний план пропал, хотя он всё это время лежал
+    # в БД. Тот же самый use_yesterday_plan callback работает отсюда точно
+    # так же (глобально зарегистрирован, не привязан к конкретному экрану).
+    if any(get_latest_evening_plan(uid).values()):
+        buttons.append([InlineKeyboardButton("✅ Взять вчерашний план как задачи на сегодня", callback_data="use_yesterday_plan")])
     # Проход по всем слотам (walk_tasks_start) остаётся отдельной кнопкой —
     # удобен для ПОСТАНОВКИ (в т.ч. пустых слотов подряд), а не только правки
     # уже заполненной задачи, для которой теперь есть прямые "✏️ <метка>" выше.
@@ -5603,7 +5615,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     morning = get_diary(uid, "morning", today)
     done_data = get_diary(uid, "tasks_done", today)
     done_set = set(done_data.get("done", []))
-    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"], uid)
     if not morning:
         text += "\n\n_Утро ещё не заполнялось — можно поставить задачи прямо тут, или пройти полный утренний ритуал кнопкой ☀️ в меню._"
     await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
@@ -5782,7 +5794,7 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
     done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
-    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"], uid)
     await _render_walk_step(q.message, ctx, text, parse_mode="Markdown", reply_markup=kb)
     ctx.user_data.pop("walk_step_msg_id", None)
     ctx.user_data.pop("walk_step_chat_id", None)
@@ -6051,7 +6063,7 @@ async def apply_task_edit(message, ctx, uid, key, text):
             save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
     done_data2 = get_diary(uid, "tasks_done", today)
     done_set = set(done_data2.get("done", []))
-    out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+    out_text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"], uid)
     prefix = "✅ Обновил.\n\n" if was_filled else "✅ Добавил.\n\n"
 
     if ctx.user_data.pop("task_walk", False):
@@ -6237,7 +6249,7 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
         schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
     else:
-        text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
+        text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"], uid)
 
         all_keys = {k for k, _ in TASK_FIELDS if morning.get(k)}
         if all_keys and all_keys <= done_set:

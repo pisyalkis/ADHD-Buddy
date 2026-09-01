@@ -35,7 +35,7 @@ print("3. A single word longer than the limit is hard-cut, not left unbounded")
 
 # ── Full button text via _tasks_text_and_kb includes "A: <text>" ───────────
 morning = {"focus": long_text, "b1": "Купить хлеб"}
-text, kb = bot._tasks_text_and_kb(morning, set(), "M")
+text, kb = bot._tasks_text_and_kb(morning, set(), "M", 1)
 button_labels = [row[0].text for row in kb.inline_keyboard if row[0].callback_data.startswith("task_done_")]
 assert any(label.startswith("▫️ A: ") for label in button_labels), button_labels
 assert any(label == "▫️ B1: Купить хлеб" for label in button_labels), button_labels
