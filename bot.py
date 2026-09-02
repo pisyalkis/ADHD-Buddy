@@ -5626,12 +5626,13 @@ async def _offer_task_input(message, ctx, uid, key):
     создало новое (см. apply_task_edit). Внутри прохода — свой трекинг,
     track_key="walk_step" (см. _render_walk_step), по той же причине."""
     ctx.user_data["awaiting_task_edit"] = key
-    pool = get_pool_tasks(uid)
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    linked_ids = _linked_pool_ids(uid, today, exclude_key=key)
+    pool = [item for item in get_pool_tasks(uid) if item["id"] not in linked_ids]
     if pool:
         text = f"{TASK_LABELS.get(key, key)}\n\nМожешь выбрать из списка дел или написать свою:"
         kb = pool_suggestions_kb(key, pool)
         if ctx.user_data.get("task_walk"):
-            today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
             progress = _walk_progress_text(uid, today, exclude_key=key)
             await _render_walk_step(message, ctx, f"{progress}{text}", ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
         else:
@@ -5824,6 +5825,22 @@ async def ask_task_text(message, ctx, uid, key):
     else:
         await _render_tracked(message, ctx, "task_edit", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=kb)
 
+def _linked_pool_ids(uid, today, exclude_key=None):
+    """Реальный баг (ночной скан, регрессия из #223): пункт списка дел
+    больше не удаляется сразу при выборе (только при отметке ✅) — но
+    список предложений для ДРУГОГО слота никак не учитывал, что пункт уже
+    привязан (_pool_link_{key}) к какому-то слоту сегодня. Один и тот же
+    "Купить молоко" можно было выбрать и в B1, и в C1 — оба слота получали
+    одинаковый текст и ссылались на один и тот же пункт пула. exclude_key —
+    свой собственный слот (если пункт уже привязан именно к нему, это не
+    дубль, а просто открыли этот же слот на правку заново)."""
+    morning = get_diary(uid, "morning", today)
+    return {
+        morning[f"_pool_link_{k}"]
+        for k, _ in TASK_FIELDS
+        if k != exclude_key and morning.get(f"_pool_link_{k}") is not None
+    }
+
 def pool_suggestions_kb(key, pool, offset=0, limit=8):
     """Клавиатура выбора готовой формулировки из "Списка дел" при постановке
     A/B/C. Реальный фидбек: со старым лимитом (3 и просто "Показать ещё")
@@ -5860,7 +5877,10 @@ async def pool_change_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if was_walk:
         ctx.user_data["task_walk"] = True
     key, offset_s = q.data[len("poolpage_"):].rsplit("_", 1)
-    pool = get_pool_tasks(q.from_user.id)
+    uid = q.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    linked_ids = _linked_pool_ids(uid, today, exclude_key=key)
+    pool = [item for item in get_pool_tasks(uid) if item["id"] not in linked_ids]
     await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
 
 async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -6052,7 +6072,15 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     ctx.user_data.pop("awaiting_task_edit", None)
     now_dt = datetime.now(get_user_tz(get_user(uid)))
     today = now_dt.date().isoformat()
-    morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
+    # Реальный баг (ночной скан): apply_task_edit ставит РОВНО ОДИН слот —
+    # если здесь же молча подтягивать план на пустые слоты (как это уместно
+    # на экранах "покажи весь день" — show_tasks/morning_start/
+    # morning_task_offer_yes/walk_finish_callback, они дёргают
+    # apply_yesterday_plan_if_empty сами, до вызова этой функции), то
+    # короткая фраза "поставь задачу — позвонить врачу" (handle_set_task_intent,
+    # первое обращение к задачам за день) незаметно материализует ещё пять
+    # вчерашних задач, которые никто не просил и не подтверждал.
+    morning = get_diary(uid, "morning", today)
     was_filled = bool(morning.get(key))
     morning[key] = text
     link_key = f"_pool_link_{key}"
