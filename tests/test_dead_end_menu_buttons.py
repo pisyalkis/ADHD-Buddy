@@ -47,7 +47,7 @@ class FakeMsg:
     async def edit_text(self, text, **kw):
         self.edited.append((text, kw.get("reply_markup")))
         if self.edit_should_fail:
-            raise Exception("message is not modified")
+            raise Exception("message too old to edit")
 
 
 class FakeChat:
@@ -74,7 +74,7 @@ class FakeCtxBot:
     async def delete_message(self, chat_id, message_id):
         pass
     async def edit_message_text(self, chat_id, message_id, text, **kw):
-        raise Exception("message is not modified")
+        raise Exception("message too old to edit")
 
 
 class FakeCtx:

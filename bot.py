@@ -1468,10 +1468,18 @@ async def _edit_msg_or_send(message, text, **kwargs):
     слишком старое, или это не текстовое сообщение — например, с картинкой/
     видео). Возвращает итоговое сообщение (отредактированное или заново
     отправленное) — нужно вызывающему коду, которому важно знать его
-    актуальный message_id (см. _render_tracked)."""
+    актуальный message_id (см. _render_tracked).
+
+    Реальный баг: голый except не отличал `BadRequest: Message is not
+    modified` (безобидный двойной тап по одной и той же кнопке — текст и
+    клавиатура совпадают с уже показанными) от настоящей ошибки. Двойной
+    тап — типичное поведение именно для аудитории СДВГ — вместо no-op
+    правки уходил в except и слал дублирующее новое сообщение."""
     try:
         return await message.edit_text(text, **kwargs)
-    except Exception:
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            return message
         return await message.reply_text(text, **kwargs)
 
 async def _edit_or_send(q, text, **kwargs):
@@ -1518,7 +1526,13 @@ async def _edit_tracked_msg(ctx, track_key, text, ttl_seconds=None, **kwargs):
         if ttl_seconds:
             schedule_message_deletion(chat_id, mid, ttl_seconds)
         return True
-    except Exception:
+    except Exception as e:
+        # Тот же класс бага, что и в _edit_msg_or_send: "Message is not
+        # modified" (повторный одинаковый неверный ввод, например дважды
+        # подряд время не в формате ЧЧ:ММ) не должен считаться неудачей —
+        # иначе вызывающий код шлёт тот же текст ещё и новым сообщением.
+        if "not modified" in str(e).lower():
+            return True
         return False
 
 STEP_MSG_STALE_SEC = 300  # 5 минут бездействия — дальше шаг предпочитает новое сообщение правке старого
@@ -4858,12 +4872,16 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
     update_user(uid, disabled_fields=",".join(disabled))
     reset_skip_streak(uid, key)
     label = dict(TOGGLEABLE_FIELDS).get(key, key)
-    await q.message.edit_text(f"Готово — «{label}» больше не будет спрашиваться. Включить обратно можно в ⚙️ Настройки → Редактировать отчёты.")
+    # Реальный баг: прямой edit_text в обход _edit_msg_or_send не различал
+    # "Message is not modified" (двойной тап по одноразовой кнопке) от
+    # настоящей ошибки — on_error теперь отвечает на любое необработанное
+    # исключение, и безобидный повторный тап стал видимой "ошибкой".
+    await _edit_msg_or_send(q.message, f"Готово — «{label}» больше не будет спрашиваться. Включить обратно можно в ⚙️ Настройки → Редактировать отчёты.")
 
 async def dismiss_nudge_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    await q.message.edit_text("Окей, продолжаю спрашивать как раньше.")
+    await _edit_msg_or_send(q.message, "Окей, продолжаю спрашивать как раньше.")
 
 def _beacon_types_kb(user):
     enabled = set((user.get("beacon_types") or "").split(","))
@@ -6575,7 +6593,12 @@ async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for_date = q.data.replace("daycard_", "")
     today = datetime.now(get_user_tz(get_user(uid))).date()
     text = build_day_card_text(uid, for_date)
-    await q.message.edit_text(text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
+    # Реальный баг: прямой edit_text в обход _edit_msg_or_send — быстрый
+    # двойной тап по одной и той же стрелке навигации (клиент не успевает
+    # обновить клавиатуру между тапами) шлёт два одинаковых callback'а,
+    # второй edit_text падает как "Message is not modified" и теперь
+    # всплывает видимой ошибкой через on_error.
+    await _edit_msg_or_send(q.message, text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
 def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     """Сбрасывает все "awaiting_*"-флаги, которые направляют следующее
