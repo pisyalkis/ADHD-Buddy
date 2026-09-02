@@ -6534,10 +6534,18 @@ async def send_due_reminders(app, user, now_dt):
             # сработать почти одновременно, и срабатывание одного не
             # должно удалять ещё не прочитанное сообщение другого.
             schedule_message_deletion(uid, msg.message_id, INACTIVE_SCREEN_TTL_SEC)
-            if rem.get("recur"):
-                reschedule_reminder(uid, rem["id"], next_recur_time(rem["remind_at"], rem["recur"], now_dt))
+            # Реальный баг: rem бралось один раз ДО await send_message —
+            # если пользователь успевал отредактировать это же напоминание
+            # (текст/время/повтор) во время отправки, reschedule/cancel ниже
+            # всё равно использовали устаревшие recur/remind_at, затирая
+            # только что сделанную правку. Перечитываем свежим после await.
+            fresh_rem = get_reminder(uid, rem["id"])
+            if fresh_rem is None:
+                continue
+            if fresh_rem.get("recur"):
+                reschedule_reminder(uid, fresh_rem["id"], next_recur_time(fresh_rem["remind_at"], fresh_rem["recur"], now_dt))
             else:
-                cancel_reminder(uid, rem["id"])
+                cancel_reminder(uid, fresh_rem["id"])
         except Exception as e:
             print(f"Ошибка reminder uid={uid}: {e}")
 
@@ -8933,14 +8941,7 @@ async def check_notifications(app):
 
         for user in users:
             uid = user["user_id"]
-            # Каждый пользователь — своя таймзона
-            tz = get_user_tz(user)
-            now_dt = datetime.now(tz)
-            now = now_dt.strftime("%H:%M")
-            is_monday = now_dt.weekday() == 0
             try:
-                day_key = now_dt.strftime("%Y-%m-%d")
-
                 # Реальный баг (16-й чекап, шире, чем фикс 15-го раунда):
                 # user тут раньше был снимком из ЕДИНОГО запроса get_all_notif_users()
                 # в начале ВСЕГО тика, взятым до единого await — а весь тик
@@ -8953,6 +8954,16 @@ async def check_notifications(app):
                 # выключил уведомления, пока сидел в очереди этого тика,
                 # уведомление всё равно уходило. Перечитываем свежим здесь же.
                 user = get_user(uid)
+                # Реальный баг: tz/now_dt/now/is_monday раньше вычислялись из
+                # того же устаревшего снимка user ДО перечитывания выше — если
+                # пользователь как раз в этот момент меняет город/таймзону,
+                # весь остаток тика для него всё равно считался по старому
+                # часовому поясу. Вычисляем только после свежего get_user.
+                tz = get_user_tz(user)
+                now_dt = datetime.now(tz)
+                now = now_dt.strftime("%H:%M")
+                is_monday = now_dt.weekday() == 0
+                day_key = now_dt.strftime("%Y-%m-%d")
 
                 # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
                 # в БД, и триггер — "время уже наступило и сегодня ещё не
