@@ -4078,9 +4078,14 @@ async def finish_evening(message, uid, ctx):
         else:
             task_text = (morning_for_summary.get(key) or "").strip().lower()
             if task_text:
+                # Реальный баг: без break удалялись ВСЕ пункты пула с
+                # совпадающим текстом, а не только один — у пользователя
+                # вполне может быть два независимых пункта с одинаковым
+                # текстом (add_pool_task не проверяет на дубликаты).
                 for item in get_pool_tasks(uid):
                     if item["text"].strip().lower() == task_text:
                         delete_pool_task(uid, item["id"])
+                        break
     if morning_link_changed:
         save_diary(uid, "morning", morning_for_summary, for_date=morning_today)
 
@@ -6099,7 +6104,14 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     # первое обращение к задачам за день) незаметно материализует ещё пять
     # вчерашних задач, которые никто не просил и не подтверждал.
     morning = get_diary(uid, "morning", today)
-    was_filled = bool(morning.get(key))
+    old_text = morning.get(key) or ""
+    was_filled = bool(old_text)
+    # Реальный баг: was_filled проверял только факт непустоты слота, а не
+    # смену текста — повторное сохранение того же текста (например через
+    # "✏️ Поменять" без реальной правки) откатывало уже выполненную задачу
+    # обратно в невыполненную, хотя комментарий ниже прямо описывает
+    # намерение снимать отметку только при смене текста.
+    text_changed = old_text != text
     morning[key] = text
     link_key = f"_pool_link_{key}"
     if pool_item_id is not None:
@@ -6116,7 +6128,7 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     # "что делаешь?" сразу после того, как человек только что явно ответил
     # на этот же вопрос, поставив задачу.
     update_user(uid, morning_filled_at=now_dt.isoformat())
-    if was_filled:
+    if was_filled and text_changed:
         # Текст задачи поменялся — старая отметка "выполнено" больше не
         # про эту задачу (иначе новая задача выглядела бы уже сделанной).
         done_data = get_diary(uid, "tasks_done", today)
@@ -6281,9 +6293,14 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # существующая дедупликация при добавлении дел в пул.
             task_text = (morning.get(key) or "").strip().lower()
             if task_text:
+                # Реальный баг: без break удалялись ВСЕ пункты пула с
+                # совпадающим текстом, а не только один — у пользователя
+                # вполне может быть два независимых пункта с одинаковым
+                # текстом (add_pool_task не проверяет на дубликаты).
                 for item in get_pool_tasks(uid):
                     if item["text"].strip().lower() == task_text:
                         delete_pool_task(uid, item["id"])
+                        break
     done_set = set(done_list)
 
     # Реальный баг: этот же чекбокс "▫️/✅" тапают и с маячка задач/дневного
