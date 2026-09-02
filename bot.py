@@ -4972,7 +4972,7 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
     clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("toggle_beacontype_", "")
@@ -4985,6 +4985,15 @@ async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_
     update_user(uid, beacon_types=",".join(enabled))
     await q.message.edit_reply_markup(reply_markup=_beacon_types_kb(get_user(uid)))
     _bump_settings_ttl(ctx)
+    # Реальный баг: снять галочки со ВСЕХ типов техник, оставив сам маячок
+    # включённым, ничем не защищено (в отличие от перехода 0→1 самого
+    # тумблера в quick_toggle_skill/toggle_skill_beacon) — next_beacon_slot
+    # после этого стабильно возвращает (None, None), и маячок навсегда
+    # немеет без единого сигнала пользователю. Предупреждаем прямо тут.
+    if not enabled:
+        await q.answer("⚠️ Ни одной техники не выбрано — маячок навыков молчит, пока не включишь хотя бы одну", show_alert=True)
+    else:
+        await q.answer()
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -7831,7 +7840,6 @@ async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
-    log_event(q.from_user.id, "subscribe_pay_started")
     await ctx.bot.send_invoice(
         chat_id=q.from_user.id,
         title="Подписка ADHD Buddy",
@@ -7841,6 +7849,12 @@ async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         prices=[LabeledPrice(f"Подписка на {STARS_SUBSCRIPTION_DAYS} дней", STARS_PRICE_MONTHLY)],
         provider_token="",  # Stars не требует provider_token
     )
+    # Реальный баг: log_event писался ДО send_invoice — тот же класс, что уже
+    # чинили для privacy_hint_shown (см. send_with_privacy_hint, "16-й
+    # чекап"). Если send_invoice упадёт (лимиты Stars, временный сбой),
+    # "воронка подписки" в /admin всё равно показывала бы, что оплата
+    # началась, скрывая ровно тот сбой, для отлова которого она заводилась.
+    log_event(q.from_user.id, "subscribe_pay_started")
 
 async def precheckout_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.pre_checkout_query.answer(ok=True)
@@ -8042,9 +8056,16 @@ async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # не так.
     clear_awaiting_flags(ctx, update)
     target_uid = int(q.data.replace("grant30_", ""))
-    await _grant_and_notify(ctx, target_uid, 30)
-    target = get_user(target_uid)
-    await q.message.reply_text(f"✅ {target.get('name') or target_uid}: +30 дн. к доступу.")
+    # Реальный баг: в отличие от grant_command (обзавёлся try/except с явным
+    # комментарием — on_error только пишет в логи, ничего не отвечает в
+    # чат), здесь исключение (например при отправке уведомления целевому
+    # пользователю) выглядело как полное отсутствие реакции на нажатие.
+    try:
+        await _grant_and_notify(ctx, target_uid, 30)
+        target = get_user(target_uid)
+        await q.message.reply_text(f"✅ {target.get('name') or target_uid}: +30 дн. к доступу.")
+    except Exception as e:
+        await q.message.reply_text(f"❌ Ошибка: `{e}`", parse_mode="Markdown")
 
 async def _grant_and_notify(ctx, target_uid, days):
     grant_access_days(target_uid, days)
@@ -9300,6 +9321,28 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def _reply_chunked_markdown(message, parts, sep="\n\n─────\n\n", limit=4000):
+    """Шлёт parts одним или несколькими сообщениями, разбивая ТОЛЬКО между
+    целыми, уже готовыми частями — никогда не разрезая part пополам.
+
+    Реальный баг: admin_feedback/admin_research резали собранное
+    Markdown-сообщение по сырому числу символов (`msg[i:i+4000]`). Записи
+    оформлены как `*{name}* (...):\n{text}` с непарными `*` — если граница
+    среза попадала внутрь такой пары звёздочек, конкретный reply_text падал
+    с `BadRequest: Can't parse entities`, необработанным исключением внутри
+    команды (on_error только логирует) — админ получал часть списка без
+    предупреждения, а "хвост" молча терялся."""
+    chunk = ""
+    for part in parts:
+        candidate = (chunk + sep + part) if chunk else part
+        if chunk and len(candidate) > limit:
+            await message.reply_text(chunk, parse_mode="Markdown")
+            chunk = part
+        else:
+            chunk = candidate
+    if chunk:
+        await message.reply_text(chunk, parse_mode="Markdown")
+
 async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != NOTIFY_USER_ID:
@@ -9317,10 +9360,7 @@ async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         name = md_escape(user["name"]) if user and user["name"] else str(user_id)
         date_str = created[:10] if created else "?"
         lines.append(f"*{name}* ({date_str}):\n{md_escape(text)}")
-    msg = "\n\n─────\n\n".join(lines)
-    # Telegram limit 4096 chars per message
-    for i in range(0, len(msg), 4000):
-        await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+    await _reply_chunked_markdown(update.message, lines)
 
 
 RESEARCH_MILESTONES = [3, 7, 14, 30]
@@ -9367,11 +9407,10 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ответов на исследования пока нет.")
         return
 
-    msg = "\n\n─────\n\n".join(lines) if lines else "_Ответов пока нет._"
+    parts = lines if lines else ["_Ответов пока нет._"]
     if skipped_lines:
-        msg += "\n\n─────\n\n⏳ *Спросили, но не ответили:*\n" + "\n".join(skipped_lines)
-    for i in range(0, len(msg), 4000):
-        await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+        parts = parts + ["⏳ *Спросили, но не ответили:*\n" + "\n".join(skipped_lines)]
+    await _reply_chunked_markdown(update.message, parts)
 
 
 async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -9411,8 +9450,20 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # РОВНО N дней назад, сколько сделали хоть один чекин ровно сегодня
         # (их день N). В отличие от active7/active30 выше (кто угодно живой
         # за период) — это классическая кривая удержания по дню от старта.
+        # Реальный баг: cohort_date ниже сравнивается с users.created_at,
+        # который пишется НЕ в личной таймзоне пользователя и НЕ в
+        # таймзоне админа, а всегда в дефолтном поясе бота USER_TIMEZONE
+        # (см. комментарий в get_user — на момент первого /start таймзона
+        # пользователя ещё не известна). Если считать cohort_date от
+        # admin_today (таймзона АДМИНА, осознанный выбор для сравнения с
+        # diary.date выше), а сравнивать с created_at — тот же класс
+        # рассинхрона, который этот же комментарий и описывает, только для
+        # другого поля: граница когорты систематически съезжает на день,
+        # если личная таймзона админа отличается от USER_TIMEZONE.
+        bot_today = datetime.now(pytz.timezone(USER_TIMEZONE)).date()
+
         def _retention(offset):
-            cohort_date = (admin_today - timedelta(days=offset)).isoformat()
+            cohort_date = (bot_today - timedelta(days=offset)).isoformat()
             cohort_size = cur.execute(
                 "SELECT COUNT(*) FROM users WHERE created_at=? AND name != ''", (cohort_date,)
             ).fetchone()[0]
