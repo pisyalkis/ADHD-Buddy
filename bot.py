@@ -4194,6 +4194,14 @@ async def finish_evening(message, uid, ctx):
     await _finish_ritual_cleanup(ctx, message, uid)
 
 # ── AI FUNCTIONS ───────────────────────────────────────────────────────────
+# Реальный баг: все обращения к Anthropic в этом разделе делали синхронный
+# client.messages.create(...) без await/asyncio.to_thread внутри async def
+# хендлеров. Пока идёт сетевой запрос к Claude, единственный event loop
+# бота полностью блокируется — не обрабатываются апдейты других
+# пользователей и не тикает раз-в-минутный check_notifications, от которого
+# зависят все напоминания и маячки. Оборачиваем блокирующий вызов в
+# asyncio.to_thread (тот же принцип, что уже применён к синхронному
+# geocoding в get_timezone_from_city, только через run_in_executor).
 async def parse_reminder_request(text, now_dt):
     """Разбирает свободную фразу («напомни через 20 минут проверить почту»,
     «завтра в 10 позвонить Джону», «каждый день в 9 пить воду», «каждый
@@ -4212,7 +4220,8 @@ async def parse_reminder_request(text, now_dt):
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
         weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now_dt.weekday()]
-        resp = client.messages.create(
+        resp = await asyncio.to_thread(
+            client.messages.create,
             model="claude-sonnet-4-5",
             max_tokens=200,
             system=(
@@ -4264,7 +4273,8 @@ async def classify_free_text(text, now_dt):
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
         weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now_dt.weekday()]
-        resp = client.messages.create(
+        resp = await asyncio.to_thread(
+            client.messages.create,
             model="claude-sonnet-4-5",
             max_tokens=200,
             system=(
@@ -4359,7 +4369,8 @@ async def ai_morning_boost(name, gender, focus):
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
         gender_hint = "женского рода" if gender == 'F' else "мужского рода"
-        resp = client.messages.create(
+        resp = await asyncio.to_thread(
+            client.messages.create,
             model="claude-sonnet-4-5",
             max_tokens=150,
             system=f"Ты поддерживающий коуч. Пользователь: {name}, {gender_hint}, СДВГ. Пиши по-русски, 1-2 предложения, конкретно и тепло.",
@@ -4384,7 +4395,8 @@ async def ai_day_analysis(name, gender, morning_data, evening_data):
             done_lines = [morning_data[k] for k, _ in TASK_FIELDS if morning_data.get(k) and k in done]
             context += f"Запланированные задачи: {'; '.join(task_lines)}\n"
             context += f"Выполнено из них: {'; '.join(done_lines) if done_lines else 'ничего не отмечено выполненным'}\n"
-        resp = client.messages.create(
+        resp = await asyncio.to_thread(
+            client.messages.create,
             model="claude-sonnet-4-5",
             max_tokens=400,
             system=(
@@ -4442,7 +4454,8 @@ async def send_coach(message, text, uid, ctx=None):
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=ANTHROPIC_KEY)
-        resp = client.messages.create(
+        resp = await asyncio.to_thread(
+            client.messages.create,
             model="claude-sonnet-4-5",
             max_tokens=300,
             system=(
