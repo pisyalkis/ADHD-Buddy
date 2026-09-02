@@ -24,6 +24,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 BOT_TOKEN     = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_KEY", "")
 # Укажи свой Telegram ID для уведомлений (узнай через @userinfobot)
+# Реальный баг: минимум десяток админ-команд авторизуют доступ проверкой
+# "if NOTIFY_USER_ID and uid != NOTIFY_USER_ID: ...⛔ Нет доступа" — при
+# невыставленной переменной окружения (частый случай при деплое) первая
+# часть условия ложна для ВСЕХ, что превращает "уведомления молча не
+# уходят" в полный обход авторизации: любой пользователь бота получает
+# доступ к выдаче подписок, созданию промокодов и рассылкам. Настоящий id
+# пользователя Telegram никогда не равен 0, так что все такие проверки
+# ниже сравнивают безусловно (без "NOTIFY_USER_ID and" в начале) — при
+# невыставленной переменной доступ теперь по умолчанию закрыт для всех,
+# а не открыт.
 NOTIFY_USER_ID = int(os.getenv("NOTIFY_USER_ID", "0"))
 # Таймзона пользователя — время уведомлений в настройках бота задаётся в этой зоне
 # Примеры: "Asia/Tbilisi", "Europe/Moscow", "Europe/Berlin", "UTC"
@@ -7790,6 +7800,9 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
         f"⭐ Спасибо! Подписка продлена до *{new_until.isoformat()}*.",
         parse_mode="Markdown", reply_markup=menu_button_kb()
     )
+    # Не авторизация, а "уведомить админа о чужой оплате" — если
+    # NOTIFY_USER_ID не настроен, уведомлять некого (не auth-гейт из
+    # соседних /admin-команд, которые правит эта же серия правок).
     if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
         try:
             await ctx.bot.send_message(
@@ -7834,7 +7847,7 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Админ-команда: /newpromo CODE [дней=30] [активаций=1, 0=без лимита] [метка]"""
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     if len(ctx.args) < 1:
@@ -7865,7 +7878,7 @@ async def blogger_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     для блогера: код генерируется из имени, активаций без ограничения (код
     один на всю аудиторию), метка = имя. Статистика по всем кодам — /promocodes."""
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     if not ctx.args:
@@ -7900,7 +7913,7 @@ async def promocodes_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Админ-команда: /promocodes — список всех промокодов и сколько раз
     каждый активирован (в т.ч. блогерские — видно, сколько пришло людей)."""
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     rows = list_promo_codes()
@@ -7918,7 +7931,7 @@ async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Админ-команда: /grant USER_ID [дней=30] — выдать доступ конкретному
     аккаунту напрямую, без промокода."""
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     if not ctx.args:
@@ -7953,7 +7966,7 @@ async def grant_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Кнопка «🎁 +30» в /users."""
     q = update.callback_query; await q.answer()
-    if NOTIFY_USER_ID and q.from_user.id != NOTIFY_USER_ID:
+    if q.from_user.id != NOTIFY_USER_ID:
         return
     # Реальный баг (15-й чекап): в том же сообщении /users, у той же строки
     # пользователя, соседняя кнопка (имя → admin_msg_start) выставляет
@@ -9215,7 +9228,7 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text(f"⛔ Нет доступа.\n\nТвой ID: `{uid}`", parse_mode="Markdown")
         return
     conn = sqlite3.connect(DB_PATH)
@@ -9241,7 +9254,7 @@ RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14}  # у дня 30 нет открытог
 
 async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text(f"⛔ Нет доступа.\n\nТвой ID: `{uid}`", parse_mode="Markdown")
         return
     conn = sqlite3.connect(DB_PATH)
@@ -9289,7 +9302,7 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text(
             f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
             parse_mode="Markdown"
@@ -9454,7 +9467,7 @@ async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text(
             f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
             parse_mode="Markdown"
@@ -9495,7 +9508,7 @@ async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Нажата кнопка с именем пользователя — спрашиваем текст сообщения."""
     q = update.callback_query; await q.answer()
     admin_uid = q.from_user.id
-    if NOTIFY_USER_ID and admin_uid != NOTIFY_USER_ID:
+    if admin_uid != NOTIFY_USER_ID:
         return
     clear_awaiting_flags(ctx, update)
     target_id = int(q.data.split("_")[2])
@@ -9514,7 +9527,7 @@ async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_send(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.", parse_mode="Markdown")
         return
     args = ctx.args
@@ -9546,7 +9559,7 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     показывает "🆕 Что нового" по запросу), не переписывая объяснение
     нового функционала заново специально для рассылки."""
     uid = update.effective_user.id
-    if NOTIFY_USER_ID and uid != NOTIFY_USER_ID:
+    if uid != NOTIFY_USER_ID:
         await update.message.reply_text("⛔ Нет доступа.")
         return
     reply = update.message.reply_to_message
