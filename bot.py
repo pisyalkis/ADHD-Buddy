@@ -1289,12 +1289,20 @@ def build_tasks_summary(morning_data, done_set=None):
     даже для уже выполненных задач — галочка ✅ здесь не используется: в
     списке "что нужно сделать" она читается как "уже сделано" и сбивает с
     толку, даже если формально верна (жалоба тестировщицы Виктории).
-    """
+
+    Реальный запрос: выполненные задачи в этом списке (маячки, дневной
+    чекин, коуч) никак не отличались от невыполненных — приходилось
+    сверяться с чекбоксами клавиатуры ниже. Зачёркиваем так же, как уже
+    сделано в закреплённом сообщении дня (см. _build_pinned_tasks_text/
+    _strike) — это не то же самое, что отклонённая галочка ✅ выше: текст
+    задачи остаётся читаемым, просто с явной пометкой "уже сделано"."""
+    done_set = done_set or set()
     lines = []
     for key, icon in TASK_FIELDS:
         val = morning_data.get(key)
         if val:
-            lines.append(f"{icon}: {md_escape(val)}")
+            display = _strike(val) if key in done_set else val
+            lines.append(f"{icon}: {md_escape(display)}")
     return "\n".join(lines) if lines else "_задачи не заданы_"
 
 def next_undone_task(morning_data, done_set=None):
