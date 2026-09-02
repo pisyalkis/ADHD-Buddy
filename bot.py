@@ -1407,6 +1407,16 @@ async def why_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         mid = getattr(sent, "message_id", None)
         if mid is not None:
             ctx.user_data[f"why_msg_{key}"] = mid
+            # Реальный баг: если человек открыл объяснение, но проигнорировал
+            # сам вопрос/маячок (обычный сценарий для периодической фоновой
+            # нотификации), а сообщение вопроса потом самоудалилось по
+            # тишине — объяснение оставалось висеть в чате навсегда, ничем
+            # не ограниченное по времени. Тот же TTL, что и у большинства
+            # самоудаляющихся экранов, как страховка на случай, если
+            # _cleanup_why_msg так и не вызовется.
+            chat_id = getattr(q.message, "chat_id", None)
+            if chat_id is not None:
+                schedule_message_deletion(chat_id, mid, INACTIVE_SCREEN_TTL_SEC)
 
 async def _cleanup_why_msg(ctx, uid, key):
     """Удаляет объяснение "❓ Зачем это?" для конкретного поля (см.
@@ -3139,7 +3149,14 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # которое висит перед глазами весь день независимо от того, в каком
     # awaiting_*-сценарии сейчас пользователь — тап по ней вместо ответа
     # на уже открытый запрос (например смену города) оставлял флаг висеть.
-    clear_awaiting_flags(ctx, update)
+    #
+    # Реальный баг: полная форма clear_awaiting_flags(ctx, update) заодно
+    # отменяет активный morning/evening ConversationHandler (см. её
+    # докстринг) — а эта кнопка лежит на закреплённом сообщении дня, видном
+    # ВЕСЬ день, включая всё время прохождения утреннего/вечернего ритуала.
+    # Тап по маячку вместо ответа на текущий шаг ритуала молча обрывал
+    # диалог. "Мягкая" форма без update сбрасывает только user_data-флаги.
+    clear_awaiting_flags(ctx)
     uid = q.from_user.id
     cur = int(get_user(uid).get("beacon_enabled") or 0)
     update_user(uid, beacon_enabled=0 if cur else 1)
@@ -3151,7 +3168,11 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    clear_awaiting_flags(ctx, update)
+    # Реальный баг: та же ловушка, что у quick_toggle_beacon выше — эта
+    # кнопка тоже на закреплённом сообщении дня, видном весь день. Полная
+    # форма clear_awaiting_flags(ctx, update) обрывала активный
+    # morning/evening ConversationHandler при тапе поверх ритуала.
+    clear_awaiting_flags(ctx)
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("skill_beacon_enabled") or 0)
@@ -6057,8 +6078,17 @@ async def handle_delete_pool_intent(message, uid, query):
             parse_mode="Markdown", reply_markup=task_pool_kb(pool)
         )
         return
-    candidates = (matches or items)[:2]
-    await send_pool_delete_menu(message, uid, items=candidates)
+    # Реальный баг (тот же класс, что уже чинили для handle_delete_reminder_intent,
+    # "19-й чекап"): при НУЛЕВЫХ совпадениях candidates молча откатывался на
+    # первые два дела из всего пула, никак не связанные с запросом, но
+    # send_pool_delete_menu показывала тот же "Что удалить?" в обоих случаях.
+    if matches:
+        candidates = matches[:2]
+        prompt = "Не понял, какое именно — вот похожие, выбери 🗑:"
+    else:
+        candidates = items[:2]
+        prompt = "Не нашёл похожих — вот что есть, выбери 🗑:"
+    await send_pool_delete_menu(message, uid, items=candidates, prompt=prompt)
 
 async def _delete_task_answer(ctx, msg):
     """Реальный запрос: при постановке задач (свободным текстом или по
@@ -6250,10 +6280,13 @@ async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
     )
 
-async def send_pool_delete_menu(message, uid, items=None):
+async def send_pool_delete_menu(message, uid, items=None, prompt="Что удалить?"):
     """items (опционально) — конкретный список кандидатов для показа вместо
     всего пула (см. handle_delete_pool_intent: при неоднозначном совпадении
-    переспрашиваем максимум парой похожих, а не всем списком дел).
+    переспрашиваем максимум парой похожих, а не всем списком дел). prompt —
+    текст вопроса; handle_delete_pool_intent передаёт разный текст для
+    "нашёл похожие" и "не нашёл похожих, вот весь список" — иначе оба
+    случая неотличимы для пользователя (реальный баг).
 
     Реальный запрос: удаление дела слало НОВОЕ сообщение со всем списком
     каждый раз — и открытие "Что удалить?", и повторный показ после
@@ -6269,7 +6302,7 @@ async def send_pool_delete_menu(message, uid, items=None):
     shown = items if items is not None else pool
     rows = [[InlineKeyboardButton(f"🗑 {t['text'][:35]}", callback_data=f"pooldel_{t['id']}")] for t in shown]
     rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_task_pool")])
-    await _edit_msg_or_send(message, "Что удалить?", reply_markup=InlineKeyboardMarkup(rows))
+    await _edit_msg_or_send(message, prompt, reply_markup=InlineKeyboardMarkup(rows))
 
 async def show_task_pool_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -6508,9 +6541,18 @@ async def handle_edit_reminder_intent(message, ctx, uid, query):
     if len(matches) == 1:
         await ask_reminder_edit(message, ctx, matches[0])
         return
-    candidates = (matches or items)[:2]
+    # Реальный баг (тот же класс, что уже чинили для handle_delete_reminder_intent,
+    # "19-й чекап"): при НУЛЕВЫХ совпадениях candidates молча откатывался на
+    # первые два напоминания из всего списка, никак не связанные с запросом,
+    # но текст всё равно уверял "вот похожие" вместо честного "не нашёл".
+    if matches:
+        candidates = matches[:2]
+        prompt = "Не понял, какое именно — выбери, что изменить:"
+    else:
+        candidates = items[:2]
+        prompt = "Не нашёл похожих — вот что есть, выбери, что изменить:"
     await message.reply_text(
-        "Не понял, какое именно — выбери, что изменить:",
+        prompt,
         reply_markup=reminder_edit_candidates_kb(candidates)
     )
 
@@ -7100,6 +7142,11 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"🍅 *Таймер уже идёт!*\n\n"
                     f"Осталось примерно *{remaining} мин* (до {end_dt_tz.strftime('%H:%M')}).\n\n"
                     f"Не отвлекайся — я напишу когда время выйдет 🔕",
+                    # Реальный баг: раунды длятся 25-90 минут — намеренное
+                    # молчание в фокус-режиме, а не бездействие. Без явного
+                    # ttl_seconds=0 сообщение самоудалялось по дефолтному
+                    # INACTIVE_SCREEN_TTL_SEC (15 мин), хотя таймер ещё идёт.
+                    ttl_seconds=0,
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⏹ Остановить", callback_data="focus_stop")],
@@ -7189,6 +7236,11 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Конец в *{end_str}*.{task_hint}\n\n"
         f"Удачи — не отвлекайся 🔕\n"
         f"_Я напишу когда время выйдет._",
+        # Реальный баг: раунды длятся 25-90 минут — намеренное молчание в
+        # фокус-режиме, а не бездействие. Без явного ttl_seconds=0
+        # сообщение со статусом таймера и кнопкой "⏹ Остановить" исчезало
+        # из чата за 10-75 минут ДО конца раунда, хотя таймер ещё идёт.
+        ttl_seconds=0,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⏹ Остановить", callback_data="focus_stop")],
@@ -7431,7 +7483,20 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # дня 3 (нижние 2 из 5) и применялась как есть к 0-10 NPS-шкале дня 14 —
     # "0", самая худшая возможная оценка, в этот набор не попадала, а "1"/"2"
     # попадали. Самый неблагополучный ответ молча не доходил до админа.
-    low_rating = value in ("0", "1", "2") if day == 14 else value in ("1", "2")
+    #
+    # Реальный баг (тот же класс, дни 7 и 30): дни 7 и 30 используют
+    # нестроковые-числовые callback-значения ("yes"/"maybe"/"no" и
+    # "sad"/"meh"/"nope"/"glad" — см. send_research_question) — общая
+    # проверка ниже никогда для них не срабатывала, самый плохой ответ
+    # молча не долетал до алерта.
+    if day == 14:
+        low_rating = value in ("0", "1", "2")
+    elif day == 7:
+        low_rating = value == "no"
+    elif day == 30:
+        low_rating = value in ("nope", "glad")
+    else:
+        low_rating = value in ("1", "2")
     if NOTIFY_USER_ID:
         try:
             alert = "⚠️ *НИЗКАЯ ОЦЕНКА — нужна связь!*\n\n" if low_rating else ""
@@ -8542,6 +8607,15 @@ async def evening_notification(app, uid):
         evening = get_diary(uid, "evening", today)
         if any(evening.values()):
             return True
+        # Реальный баг: в отличие от morning_reminder (проверяет
+        # morning_conv_active), это плановое уведомление не проверяло,
+        # не идёт ли у пользователя прямо сейчас вечерний ритуал — ответы
+        # ритуала копятся в ctx.user_data и попадают в БД только в
+        # finish_evening, так что get_diary выше ещё пуст для того, кто
+        # начал ритуал прямо перед 21:00 и не успел его закончить.
+        # Плановое уведомление прилетало поверх уже открытого диалога.
+        if _evening_conv is not None and (uid, uid) in _evening_conv._conversations:
+            return False
         name = md_escape(user.get("name", ""))
         # Реальный запрос: не самоудалять по тишине — раньше пропадало через
         # 15 минут (INACTIVE_SCREEN_TTL_SEC), даже если ещё не ответили.
