@@ -2709,13 +2709,19 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # редкий крайний случай (finish_morning реально не успел
         # отработать) — начинаем заново, ниже.
 
-    # Недописанное утро за ПРЕДЫДУЩИЙ день (например, оборвалась связь и
-    # человек вернулся уже на следующие сутки) — раньше молча стиралось
-    # прямо здесь при сбросе на новый день. Теперь сохраняем то, что успели
-    # заполнить, в дневник того дня, а не теряем безвозвратно.
+    # Недописанное утро — раньше молча стиралось прямо здесь при сбросе на
+    # новый день. Теперь сохраняем то, что успели заполнить, в дневник, а
+    # не теряем безвозвратно.
+    #
+    # Реальный баг: условие ниже раньше требовало ещё и stale_date !=
+    # today_iso — тот самый редкий крайний случай из комментария выше
+    # (все RESUME_FIELDS пройдены, но morning_filled_at не сегодня)
+    # оставляет stale_date РАВНЫМ today_iso, так что checkpoint не
+    # вызывался вообще, а ctx.user_data.pop ниже безусловно стирал уже
+    # написанные свободное письмо/благодарность/слова себе — именно в
+    # том случае, для защиты от которого checkpoint и был добавлен.
     stale_date = ctx.user_data.get("m_progress_date")
-    if (stale_date and stale_date != today_iso
-            and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS)):
+    if stale_date and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS):
         checkpoint_morning_progress(ctx, uid, stale_date)
 
     ctx.user_data["m_progress_date"] = today_iso
@@ -3265,15 +3271,6 @@ async def finish_morning(message, uid, ctx):
         **task_fields,
         **_merged_soft_fields(ctx, existing),
     }, for_date=today)
-    # Отметки "выполнено" сбрасываем только для полей, текст которых
-    # реально поменялся — иначе стираем честные отметки, поставленные
-    # через 📋 Задачи ещё до прохождения ритуала.
-    changed_keys = {k for k in TASK_KEYS if task_fields[k] != existing.get(k, "")}
-    if changed_keys:
-        done_data = get_diary(uid, "tasks_done", today)
-        done_list = [k for k in done_data.get("done", []) if k not in changed_keys]
-        if len(done_list) != len(done_data.get("done", [])):
-            save_diary(uid, "tasks_done", {"done": done_list}, for_date=today)
     # Стрик читается calc_streak() по evening_day(tz), а не по обычной
     # календарной дате (см. add_streak/calc_streak) — здесь НЕ передаём
     # for_date=today явно, чтобы использовать собственный evening_day-
@@ -3564,13 +3561,17 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # Все шаги уже пройдены (крайний случай — finish_evening не успел
         # отработать) — начинаем заново, ниже.
 
-    # Недописанный вечер за ПРЕДЫДУЩИЙ день (например, оборвалась связь и
-    # человек вернулся уже на следующие сутки) — раньше молча стирался
-    # прямо здесь при сбросе на новый день. Теперь сохраняем то, что успели
-    # заполнить, в дневник того дня, а не теряем безвозвратно.
+    # Недописанный вечер — раньше молча стирался прямо здесь при сбросе на
+    # новый день. Теперь сохраняем то, что успели заполнить, в дневник, а
+    # не теряем безвозвратно.
+    #
+    # Реальный баг (тот же класс, что и в morning_start): условие ниже
+    # раньше требовало ещё и stale_date != today — редкий крайний случай
+    # выше (все RESUME_FIELDS_EVENING пройдены, но e_progress_date не
+    # успел смениться) оставляет stale_date равным today, checkpoint не
+    # вызывался, а pop ниже безусловно стирал уже написанные ответы.
     stale_date = ctx.user_data.get("e_progress_date")
-    if (stale_date and stale_date != today
-            and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS_EVENING)):
+    if stale_date and any(key in ctx.user_data for key, _, _ in RESUME_FIELDS_EVENING):
         checkpoint_evening_progress(ctx, uid, stale_date)
 
     ctx.user_data["e_progress_date"] = today
