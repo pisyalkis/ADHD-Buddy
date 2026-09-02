@@ -33,7 +33,7 @@ class FakeMsg:
         return new
     async def edit_text(self, text, **kw):
         if self.edit_should_fail:
-            raise Exception("message is not modified")
+            raise Exception("message too old to edit")
         self.edited.append((text, kw.get("reply_markup")))
         return self
 
