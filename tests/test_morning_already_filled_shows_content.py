@@ -93,7 +93,12 @@ async def main():
     conn.execute("INSERT INTO users(user_id, name, gender) VALUES (2, 'Ника', 'F')")
     conn.commit(); conn.close()
     bot.update_user(uid2, timezone="Asia/Tbilisi")
-    bot.save_diary(uid2, "morning", {"focus": "Задача"}, for_date=today)
+    # Настоящий "ритуал пройден, но все мягкие практики пропущены" пишет
+    # все три ключа пустыми (см. _merged_soft_fields/finish_morning) --
+    # не просто задачу + отметку morning_filled_at (та ставится и одной
+    # только постановкой задачи через 📋 Задачи, без всякого отношения
+    # к самому ритуалу, см. test_morning_start_not_blocked_by_task_only.py).
+    bot.save_diary(uid2, "morning", {"focus": "Задача", "writing": "", "gratitude": "", "child": ""}, for_date=today)
     bot.update_user(uid2, morning_filled_at=datetime.now(bot.get_user_tz(bot.get_user(uid2))).isoformat())
     ctx2 = FakeCtx()
     msg2 = FakeMsg(chat_id=uid2)
