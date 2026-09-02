@@ -1154,8 +1154,15 @@ def personalize(text, gender):
     if gender not in ('F', 'M'):
         return text
     male = gender == 'M'
+    # Реальный баг: словарь хранит плейсхолдеры в нижнем регистре, а
+    # str.replace регистрозависим — плейсхолдер в начале предложения/кнопки
+    # (с заглавной буквы, например "Отвлёкся(ась)") не заменялся вообще.
     for placeholder, (m, f) in _PERSONALIZE_IRREGULAR.items():
-        text = text.replace(placeholder, m if male else f)
+        replacement = m if male else f
+        text = text.replace(placeholder, replacement)
+        cap_placeholder = placeholder[0].upper() + placeholder[1:]
+        if cap_placeholder != placeholder:
+            text = text.replace(cap_placeholder, replacement[0].upper() + replacement[1:])
     if male:
         text = re.sub(r'(\w+)\(ла\)', r'\1', text)
         text = re.sub(r'(\w+)\(а\)', r'\1', text)
@@ -1890,6 +1897,14 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
+    # Реальный баг: в отличие от аналогичного экрана смены имени в
+    # Настройках, здесь не было проверки на пустую строку — сообщение из
+    # одних пробелов сохранялось как name="", и такой пользователь потом
+    # не попадал ни в уведомления (WHERE name!=''), ни считался
+    # зарегистрированным (start() проверяет if user["name"]).
+    if not name:
+        _onboard_track(ctx, await update.message.reply_text("Имя не может быть пустым, напиши ещё раз:"))
+        return ONBOARD_NAME
     if len(name) > 30:
         _onboard_track(ctx, await update.message.reply_text("Имя слишком длинное, напиши покороче:"))
         return ONBOARD_NAME
@@ -3010,8 +3025,12 @@ def _build_pinned_tasks_text(user, pinned_keys, ai_msg_raw):
     # строкой в этом же сообщении вместо отдельного.
     day_card_note = "\n\n📔 _Полные ответы — в 🗂 Карточке дня._"
     pin_note = "\n\n📌 _Закрепил это сообщение — будет перед глазами весь день._"
+    # Реальный баг: g(user['gender'], ...) согласовывало причастие с полом
+    # ПОЛЬЗОВАТЕЛЯ, а не с родом существительного "Утро" (средний род,
+    # всегда "записано") — пользовательницы видели грамматическую ошибку
+    # "Утро записана".
     return (
-        f"✅ *Утро {g(user['gender'], 'записано', 'записана')}!* — _{today_str(tz)}_\n"
+        f"✅ *Утро записано!* — _{today_str(tz)}_\n"
         f"{tasks_text}"
         f"{ai_part}"
         f"{day_card_note}"
@@ -3258,8 +3277,11 @@ async def finish_morning(message, uid, ctx):
             reply_markup = daily_prefs_kb(user)
         else:
             ai_part = f"\n\n🤖 _{ai_msg_raw}_" if ai_msg_raw else ""
+            # Реальный баг: g(user['gender'], ...) согласовывало причастие с
+            # полом пользователя, а не с родом "Утро" (средний род, всегда
+            # "записано") — см. тот же фикс в _build_pinned_tasks_text выше.
             greeting_text = (
-                f"✅ *Утро {g(user['gender'], 'записано', 'записана')} в 🗂 Карточку дня!* — _{today_str(tz)}_"
+                f"✅ *Утро записано в 🗂 Карточку дня!* — _{today_str(tz)}_"
                 f"{ai_part}\n\n"
                 # Реальный баг (17-й чекап): "Вперёд" не склоняется по роду —
                 # g() с одинаковыми male/female всё равно приклеивала "(а)" для
@@ -6738,8 +6760,19 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
                 await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=menu_button_kb())
     elif ctx.user_data.get("awaiting_buddy"):
-        ctx.user_data["awaiting_buddy"] = False
         bname = update.message.text.strip()
+        # Реальный баг: в отличие от соседней ветки awaiting_name, здесь не
+        # проверялась пустая строка после strip() — сообщение из одних
+        # пробелов сохранялось как buddy_name="", бот тут же подтверждал
+        # "Бадди добавлен: " с пустым именем, а buddy_menu снова показывал
+        # "Бадди не задан" (пустая строка falsy).
+        if not bname:
+            ctx.user_data["awaiting_buddy"] = True
+            retry_text = "Имя бадди не может быть пустым, напиши ещё раз:"
+            if not await _edit_tracked_msg(ctx, "buddy", retry_text, reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
+            return
+        ctx.user_data["awaiting_buddy"] = False
         update_user(uid, buddy_name=bname)
         confirm_text = f"👥 *Бадди добавлен: {md_escape(bname)}*\n\nВ 13:00 бот предложит обратиться к нему при трудностях."
         confirm_kb = menu_button_kb()
