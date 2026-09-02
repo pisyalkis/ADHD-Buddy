@@ -3815,14 +3815,31 @@ EVENING_PLAN_STEPS = {
     "e_c3": ("🅲 *C3:*", "skip_e_c_all", "Пропустить задачи C →"),
 }
 
-def evening_plan_kb(key, uid, offset=0, limit=8):
+def evening_plan_kb(key, uid, ctx=None, offset=0, limit=8):
     """Тот же экран выбора готового дела, что и pool_suggestions_kb (📋
     Задачи), только для постановки плана на завтра — реализован отдельно,
     поэтому фикс постраничной навигации (лимит побольше + счётчик ◀️ N/M ▶️
     вместо бесконечного "Показать ещё" без возврата назад) сюда не попал
-    вместе с pool_suggestions_kb. Тот же принцип здесь."""
+    вместе с pool_suggestions_kb. Тот же принцип здесь.
+
+    Реальный запрос: "почему перенесённая задача не пропадает из списка
+    предлагаемых?" — пункт пула, уже выбранный для одного из шагов
+    A/B1/B2/C1/C2/C3 в ЭТОМ ЖЕ прохождении вечернего ритуала, всё равно
+    предлагался снова на следующих шагах (evening_plan_use_pool
+    намеренно не удаляет пункт из пула при выборе — тот же принцип, что
+    и в 📋 Задачи, удаляется только по факту ✅). ctx (опционально, для
+    обратной совместимости) даёт доступ к уже введённым на этом
+    прохождении значениям — исключаем их из списка тем же способом, что
+    и _linked_pool_ids для pool_suggestions_kb."""
     _, skip_cb, skip_label = EVENING_PLAN_STEPS[key]
     pool = get_pool_tasks(uid)
+    if ctx is not None:
+        used_texts = {
+            (ctx.user_data.get(k) or "").strip().lower()
+            for k in EVENING_PLAN_STEPS if k != key
+        }
+        used_texts.discard("")
+        pool = [item for item in pool if item["text"].strip().lower() not in used_texts]
     total = len(pool)
     chunk = pool[offset:offset + limit]
     rows = [[InlineKeyboardButton(item["text"][:40], callback_data=f"eplanuse_{key}_{item['id']}")] for item in chunk]
@@ -3850,7 +3867,7 @@ def evening_plan_kb(key, uid, offset=0, limit=8):
 
 async def ask_evening_plan_step(message, ctx, uid, key):
     text, _, _ = EVENING_PLAN_STEPS[key]
-    await _render_ritual_step(message, ctx, text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid))
+    await _render_ritual_step(message, ctx, text, parse_mode="Markdown", reply_markup=evening_plan_kb(key, uid, ctx))
 
 async def ask_plan_a(message, ctx, uid):
     await ask_evening_plan_step(message, ctx, uid, "e_a")
@@ -4017,7 +4034,7 @@ async def evening_plan_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     q = update.callback_query; await q.answer()
     key, offset_s = q.data[len("eplanmore_"):].rsplit("_", 1)
     uid = q.from_user.id
-    await q.message.edit_reply_markup(reply_markup=evening_plan_kb(key, uid, offset=int(offset_s)))
+    await q.message.edit_reply_markup(reply_markup=evening_plan_kb(key, uid, ctx, offset=int(offset_s)))
     return EVENING_STEP_STATE[key]
 
 def checkpoint_evening_progress(ctx, uid, for_date):
