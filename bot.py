@@ -722,8 +722,15 @@ def create_promo_code(code, days, max_uses, label=""):
     блогеров, которые видит вся их аудитория, а не один человек."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Реальный баг: INSERT OR REPLACE безусловно обнуляло uses при
+    # пересоздании уже существующего кода (например, чтобы поправить
+    # лейбл) — история использований в promo_redemptions при этом не
+    # чистилась, и лимит редемпшенов эффективно снимался и открывался
+    # заново. ON CONFLICT обновляет только days/max_uses/label, uses и
+    # created у существующей строки не трогаются.
     c.execute(
-        "INSERT OR REPLACE INTO promo_codes(code, days, max_uses, uses, created, label) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO promo_codes(code, days, max_uses, uses, created, label) VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(code) DO UPDATE SET days=excluded.days, max_uses=excluded.max_uses, label=excluded.label",
         (code, days, max_uses, 0, datetime.now().isoformat(), label)
     )
     conn.commit(); conn.close()
@@ -7822,7 +7829,10 @@ async def newpromo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     label = " ".join(ctx.args[3:]).strip()
     create_promo_code(code, days, max_uses, label)
     limit_str = "без ограничения" if max_uses <= 0 else f"{max_uses} активаций"
-    who = f", метка «{label}»" if label else ""
+    # Реальный баг: label подставлялась без md_escape, в отличие от
+    # соседней blogger_command — символ `*`/`_`/`` ` `` в аргументе команды
+    # ломал разметку или ронял reply_text с BadRequest.
+    who = f", метка «{md_escape(label)}»" if label else ""
     await update.message.reply_text(f"✅ Промокод `{code}` создан: +{days} дн., {limit_str}{who}.", parse_mode="Markdown")
 
 async def blogger_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
