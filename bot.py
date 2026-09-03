@@ -2491,7 +2491,7 @@ async def send_tracked_notification(bot, chat_id, channel, text, ttl_seconds=Non
             schedule_message_deletion(chat_id, mid, ttl_seconds)
     return sent
 
-async def _send_tracked_animation(bot, chat_id, channel, animation, **kwargs):
+async def _send_tracked_animation(bot, chat_id, channel, animation, ttl_seconds=None, **kwargs):
     """Как send_tracked_notification, но для гифки техники/навыка (см.
     SKILL_ANIMATIONS) — animation нельзя отредактировать текстом, поэтому
     тот же приём "удалить предыдущее сообщение этого канала перед отправкой
@@ -2501,7 +2501,20 @@ async def _send_tracked_animation(bot, chat_id, channel, animation, **kwargs):
     же канал "skill_anim" для всех трёх источников — в любой момент в
     чате нужна максимум одна гифка техники, независимо от того, откуда
     она пришла. Использует тот же notif_msg_ids, что и текстовые каналы —
-    отдельной таблицы не нужно."""
+    отдельной таблицы не нужно.
+
+    Реальный баг: гифка, в отличие от своего текстового спутника
+    (send_tracked_notification, который самоудаляется по тишине через
+    INACTIVE_SCREEN_TTL_SEC по умолчанию), никогда не планировала
+    собственное самоудаление — только следующая отправка того же канала
+    или явный _delete_tracked_channel (например, по кнопке "✅ Сделал(а)"
+    у маячка) её убирали. Если пользователь никак не отвечает на маячок,
+    текстовое приглашение через 15 минут исчезает, а гифка остаётся
+    висеть в чате уже без единой кнопки — бессрочно. ttl_seconds
+    (по умолчанию выключен, как и раньше — карточки навыка в 🧠 Навыки
+    не должны терять гифку раньше своего постоянного текстового описания,
+    у которого вообще нет TTL) даёт вызывающему коду синхронизировать
+    жизнь гифки с её текстовым компаньоном там, где он есть."""
     prev_mid = _get_notif_msg_id(chat_id, channel)
     if prev_mid is not None:
         try:
@@ -2512,6 +2525,8 @@ async def _send_tracked_animation(bot, chat_id, channel, animation, **kwargs):
     mid = getattr(sent, "message_id", None)
     if mid is not None:
         _set_notif_msg_id(chat_id, channel, mid)
+        if ttl_seconds:
+            schedule_message_deletion(chat_id, mid, ttl_seconds)
     return sent
 
 async def _delete_tracked_channel(bot, chat_id, channel):
@@ -5544,8 +5559,13 @@ async def send_skill_beacon(app, user):
         if animation_path:
             try:
                 cached_id = _skill_animation_file_ids.get(skill_name)
+                # Реальный баг: без ttl_seconds гифка не самоудалялась, даже
+                # когда её текстовый спутник ниже (канал "skill_beacon")
+                # исчезал по тишине через тот же INACTIVE_SCREEN_TTL_SEC —
+                # оставшись без единой кнопки, гифка висела в чате навсегда.
                 sent_anim = await _send_tracked_animation(
-                    app.bot, uid, "skill_anim", cached_id or open(animation_path, "rb")
+                    app.bot, uid, "skill_anim", cached_id or open(animation_path, "rb"),
+                    ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
                 )
                 if not cached_id and sent_anim.animation:
                     _skill_animation_file_ids[skill_name] = sent_anim.animation.file_id
