@@ -12,7 +12,7 @@ ADHD Focus Bot v5
 import os, json, sqlite3, asyncio, random, threading, time, hashlib, re
 from datetime import datetime, date, timedelta
 import pytz
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, BotCommand
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, filters, ContextTypes,
@@ -5436,6 +5436,16 @@ async def send_task_beacon(app, user):
     try:
         uid = user["user_id"]
         if not int(user.get("beacon_enabled") or 0): return
+        # Реальный фидбек (Виктория): последовательный проход по задачам
+        # (task_walk, см. walk_tasks_start) редактирует одно и то же
+        # сообщение на месте — если маячок в это время присылает своё
+        # отдельное сообщение, оно ложится НИЖЕ, и экран прохода визуально
+        # "уползает" на несколько сообщений вверх, хотя проход ещё не
+        # завершён (тот же класс, что уже учтён для evening_notification
+        # через _evening_conv). app.user_data — тот же словарь, что и
+        # ctx.user_data (см. Application.user_data в PTB) — доступен и из
+        # фонового тика планировщика, без апдейта.
+        if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return
 
         tz = get_user_tz(user)
         now = datetime.now(tz)
@@ -5588,6 +5598,8 @@ async def send_skill_beacon(app, user):
     try:
         uid = user["user_id"]
         if not int(user.get("skill_beacon_enabled") or 0): return
+        # Реальный фидбек (Виктория) — см. тот же комментарий в send_task_beacon.
+        if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return
         tz = get_user_tz(user)
         now = datetime.now(tz)
         if not _in_beacon_hours(user, now): return
@@ -8438,6 +8450,10 @@ def schedule_resume_check(uid, tz):
 async def midday_notification(app, uid):
     """13:00 — дневной чекин с реальными ситуациями из тренинга."""
     try:
+        # Реальный фидбек (Виктория) — см. тот же комментарий в send_task_beacon.
+        # False (не True): чекин должен просто повториться на следующем
+        # тике, а не считаться отправленным сегодня и пропасть насовсем.
+        if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return False
         user = get_user(uid)
         name = md_escape(user["name"])
         today, morning, done_set = get_today_context(user)
@@ -9966,6 +9982,20 @@ async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _post_init(application):
+    """Реальный фидбек (Виктория): в диалоге не хватало нативной кнопки
+    Telegram рядом с полем ввода — приходилось помнить, что бот вообще
+    понимает команды. set_my_commands не просто документирует команды —
+    Telegram сам показывает кнопку "Menu" с этим списком, как только он
+    задан хотя бы раз. Только реально публичные, непривязанные к правам
+    владельца команды (/admin, /grant, /blogger и т.п. — group=-1,
+    доступны только NOTIFY_USER_ID) сюда не идут."""
+    await application.bot.set_my_commands([
+        BotCommand("start", "Запустить бота / открыть меню"),
+        BotCommand("subscribe", "💎 Подписка"),
+        BotCommand("promo", "🎁 Ввести промокод"),
+    ])
+
 def main():
     init_db()
     persistence = PicklePersistence(filepath=PERSISTENCE_PATH)
@@ -9981,6 +10011,7 @@ def main():
         .get_updates_read_timeout(40)
         .get_updates_write_timeout(30)
         .get_updates_pool_timeout(30)
+        .post_init(_post_init)
         .build()
     )
     app.add_error_handler(on_error)
