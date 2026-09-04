@@ -5386,9 +5386,18 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Реальный баг (16-й чекап, тот же класс, что чинили в 14-м/15-м):
     маячок приходит своим сообщением от фонового планировщика, не через
     постоянное меню — тап по "✅ Сделал(а)" вместо ответа на уже открытый
-    awaiting_* оставлял флаг висеть."""
+    awaiting_* оставлял флаг висеть.
+
+    Реальный баг №2: clear_awaiting_flags(ctx, update) — с update — заодно
+    безусловно отменяет активный morning/evening ConversationHandler
+    (см. её же докстринг). Маячок приходит независимо от того, что сейчас
+    делает пользователь — тап "✅ Сделал(а)" посреди, например, вечернего
+    ритуала (E_ACH и т.п.) молча прерывал сам ритуал, хотя пользователь
+    вовсе не пытался из него выйти, просто ответил на параллельно
+    пришедшее напоминание. Передаём ctx без update — сбрасываем только
+    ctx.user_data awaiting_*, не трогая активную беседу."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_flags(ctx)
     uid = q.from_user.id
     await _cleanup_why_msg(ctx, uid, "beacon_technique")
     await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "skill_beacon")
@@ -6434,9 +6443,17 @@ async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Чекбокс "▫️/✅" на задаче — тапается в обе стороны (можно снять
     отметку, если поставил(а) по ошибке), в отличие от прежней кнопки
-    "Отметить", которая просто исчезала после первого тапа."""
+    "Отметить", которая просто исчезала после первого тапа.
+
+    Реальный баг: clear_awaiting_flags(ctx, update) — с update — заодно
+    безусловно отменяет активный morning/evening ConversationHandler.
+    Этот же чекбокс тапают и с маячка задач/дневного чекина/resume-check
+    (см. комментарий про notif_channel ниже) — независимого от того, в
+    каком ритуале сейчас находится пользователь. Отметка задачи с маячка
+    посреди вечернего ритуала молча его прерывала. Передаём ctx без
+    update — сбрасываем только ctx.user_data awaiting_*."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_flags(ctx)
     uid = q.from_user.id
     key = q.data.replace("task_done_", "")  # focus, b1, b2, c1, c2, c3
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
