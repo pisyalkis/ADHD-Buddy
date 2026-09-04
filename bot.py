@@ -9851,7 +9851,15 @@ def main():
         entry_points=[CallbackQueryHandler(morning_start, pattern="^go_morning$")],
         states={
             M_EXERCISE: [
-                CallbackQueryHandler(warmup_go,      pattern="^warmup_go$"),
+                # block=False: warmup_go спит ~2 минуты (6×20с) внутри себя.
+                # Без этого флага PTB (concurrent_updates выключен) обрабатывает
+                # апдейты строго по одному — весь бот стоял бы эти 2 минуты для
+                # ВСЕХ пользователей. PTB оборачивает такой хендлер в фоновую
+                # asyncio.Task и ставит conversation в PendingState — API,
+                # предназначенный именно для этого случая (см. ConversationHandler
+                # в python-telegram-bot 20.x), персистентность и восстановление
+                # состояния при падении бота уже учтены самой библиотекой.
+                CallbackQueryHandler(warmup_go,      pattern="^warmup_go$", block=False),
                 CallbackQueryHandler(warmup_done,    pattern="^warmup_done$"),
                 CallbackQueryHandler(skip_warmup,    pattern="^skip_warmup$"),
                 CallbackQueryHandler(morning_quick,  pattern="^morning_quick$"),
