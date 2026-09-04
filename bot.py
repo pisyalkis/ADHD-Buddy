@@ -8291,6 +8291,7 @@ async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
+    clear_awaiting_flags(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     buddy = md_escape(user.get("buddy_name","бадди"))
