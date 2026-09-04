@@ -5823,6 +5823,7 @@ async def _offer_task_input(message, ctx, uid, key):
     создало новое (см. apply_task_edit). Внутри прохода — свой трекинг,
     track_key="walk_step" (см. _render_walk_step), по той же причине."""
     ctx.user_data["awaiting_task_edit"] = key
+    ctx.user_data["awaiting_task_edit_set_at"] = datetime.now().isoformat()
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     linked_ids = _linked_pool_ids(uid, today, exclude_key=key)
     pool = [item for item in get_pool_tasks(uid) if item["id"] not in linked_ids]
@@ -6012,6 +6013,7 @@ async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def ask_task_text(message, ctx, uid, key):
     ctx.user_data["awaiting_task_edit"] = key
+    ctx.user_data["awaiting_task_edit_set_at"] = datetime.now().isoformat()
     label = TASK_LABELS.get(key, key)
     text = f"{label}\n\nВведи текст задачи:"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_tasks")]])
@@ -6396,6 +6398,7 @@ async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_pool_add"] = True
+    ctx.user_data["awaiting_pool_add_set_at"] = datetime.now().isoformat()
     await _render_tracked(
         q.message, ctx, "task_pool",
         "Что добавить в список дел?\n\n_Если несколько дел — каждое с новой строки._",
@@ -6609,6 +6612,7 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     ctx.user_data["awaiting_reminder_add"] = True
+    ctx.user_data["awaiting_reminder_add_set_at"] = datetime.now().isoformat()
     await _render_tracked(
         q.message, ctx, "reminders",
         "Когда и о чём напомнить? Напиши свободно, например:\n"
@@ -6632,6 +6636,7 @@ async def ask_reminder_edit(message, ctx, rem):
     """Общий вход в правку напоминания — и с явной кнопки ✏️ на экране
     ⏰ Напоминания, и из роутера свободного текста (handle_edit_reminder_intent)."""
     ctx.user_data["awaiting_reminder_edit"] = rem["id"]
+    ctx.user_data["awaiting_reminder_edit_set_at"] = datetime.now().isoformat()
     try:
         when_str = datetime.fromisoformat(rem["remind_at"]).strftime("%d.%m %H:%M")
     except Exception:
@@ -6851,10 +6856,14 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_feedback"] = False
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
+    ctx.user_data.pop("awaiting_task_edit_set_at", None)
     ctx.user_data.pop("task_walk", None)
     ctx.user_data["awaiting_pool_add"] = False
+    ctx.user_data.pop("awaiting_pool_add_set_at", None)
     ctx.user_data["awaiting_reminder_add"] = False
+    ctx.user_data.pop("awaiting_reminder_add_set_at", None)
     ctx.user_data.pop("awaiting_reminder_edit", None)
+    ctx.user_data.pop("awaiting_reminder_edit_set_at", None)
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
@@ -6873,6 +6882,36 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
                 _morning_conv._conversations.pop(conv_key, None)
             if _evening_conv is not None:
                 _evening_conv._conversations.pop(conv_key, None)
+
+def _awaiting_flag_expired(ctx, flag):
+    """True, если awaiting_*-флаг был выставлен больше INACTIVE_SCREEN_TTL_SEC
+    назад — тем самым временем, через которое самоудаляется его же
+    приглашение (schedule_message_deletion/sweep_scheduled_deletions).
+    Тот самоудаляющийся sweep трогает только само сообщение в чате — он
+    работает по (chat_id, message_id) из БД, без доступа к ctx.user_data
+    конкретного пользователя, и никак не гасит сам флаг. Без этой
+    проверки на стороне handle_text приглашение бесследно исчезает из
+    чата, а флаг остаётся висеть бессрочно: awaiting_task_edit,
+    awaiting_pool_add, awaiting_reminder_add, awaiting_reminder_edit —
+    ставятся один раз, вместе с меткой времени в f"{flag}_set_at", и
+    больше никогда не обновляются при последующих неудачных попытках
+    (то же самое, что и настоящий TTL самого сообщения — он тоже не
+    продлевается на retry), так что троганье этой метки времени не нужно
+    нигде, кроме как здесь и при первой установке. Если протух — сразу
+    же и гасит сам флаг вместе с меткой (а не только сообщает об этом),
+    иначе без f"{flag}_set_at" следующая проверка не смогла бы отличить
+    "протух" от "никогда не ставился" и заново считала бы флаг живым."""
+    set_at = ctx.user_data.get(f"{flag}_set_at")
+    if not set_at:
+        return False
+    try:
+        expired = (datetime.now() - datetime.fromisoformat(set_at)).total_seconds() > INACTIVE_SCREEN_TTL_SEC
+    except Exception:
+        return False
+    if expired:
+        ctx.user_data.pop(flag, None)
+        ctx.user_data.pop(f"{flag}_set_at", None)
+    return expired
 
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -7083,17 +7122,19 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         confirm_kb = menu_button_kb()
         if not await _edit_tracked_msg(ctx, "promo", confirm_text, reply_markup=confirm_kb):
             await update.message.reply_text(confirm_text, reply_markup=confirm_kb)
-    elif ctx.user_data.get("awaiting_task_edit"):
+    elif ctx.user_data.get("awaiting_task_edit") and not _awaiting_flag_expired(ctx, "awaiting_task_edit"):
         key = ctx.user_data.pop("awaiting_task_edit")
+        ctx.user_data.pop("awaiting_task_edit_set_at", None)
         await _delete_task_answer(ctx, update.message)
         await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
-    elif ctx.user_data.get("awaiting_pool_add"):
+    elif ctx.user_data.get("awaiting_pool_add") and not _awaiting_flag_expired(ctx, "awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
+        ctx.user_data.pop("awaiting_pool_add_set_at", None)
         # Каждая непустая строка — отдельное дело, а не один пункт со всем
         # вставленным текстом целиком (удобно, если вставляешь список).
         items = update.message.text.strip().split("\n")
         await add_pool_and_reply(update.message, uid, items, ctx=ctx)
-    elif ctx.user_data.get("awaiting_reminder_add"):
+    elif ctx.user_data.get("awaiting_reminder_add") and not _awaiting_flag_expired(ctx, "awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
         now_dt = datetime.now(get_user_tz(get_user(uid)))
         parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
@@ -7105,8 +7146,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             remind_at_key, rem_text, recur = parsed
             await create_reminder_and_reply(update.message, uid, remind_at_key, rem_text, recur, ctx=ctx)
-    elif ctx.user_data.get("awaiting_reminder_edit"):
+    elif ctx.user_data.get("awaiting_reminder_edit") and not _awaiting_flag_expired(ctx, "awaiting_reminder_edit"):
         rem_id = ctx.user_data.pop("awaiting_reminder_edit")
+        ctx.user_data.pop("awaiting_reminder_edit_set_at", None)
         now_dt = datetime.now(get_user_tz(get_user(uid)))
         parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
         if parsed is None:
