@@ -7872,7 +7872,16 @@ def _subscribe_text_and_kb(user):
     доступа" — владелец/выданный без даты) пользователя экран всё равно
     показывал цену подписки и предложение промокода "продлить пробный
     период" — бессмысленно и сбивает с толку, когда триал давно позади
-    и платить/продлевать пробный период уже нечего."""
+    и платить/продлевать пробный период уже нечего.
+
+    Реальный баг №2: go_promo (ввод промокода) зарегистрирован как хендлер
+    и даже в ACCESS_GATE_EXEMPT_CALLBACKS (иначе пейволл не пускает его
+    саму) — но ни одна кнопка нигде его не эмитила. Промокод (в том числе
+    личные коды блогеров из /blogger) можно было ввести только слепой
+    командой /promo, о которой обычная аудитория блогера не знает.
+    Кнопка добавлена и сюда (для trial/expired — где промокод осмыслен),
+    и в paywall_kb (см. access_gate) — единственный экран, который
+    реально видит пользователь с истёкшим доступом."""
     status = get_access_status(user)
     if status == "subscribed":
         sub_until = (user.get("subscription_until") or "")[:10]
@@ -7898,6 +7907,7 @@ def _subscribe_text_and_kb(user):
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+        [InlineKeyboardButton("🎁 Промокод", callback_data="go_promo")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     return text, kb
@@ -8245,6 +8255,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     paywall_kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+        [InlineKeyboardButton("🎁 Промокод", callback_data="go_promo")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
     target = update.effective_message
