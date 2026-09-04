@@ -6931,6 +6931,16 @@ async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _render_tracked(q.message, ctx, "menu", "Главное меню",
                            ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=main_menu(get_user(q.from_user.id)))
 
+async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Текстовый /menu — та же механика, что и go_menu (кнопка "☰ Меню"),
+    но с точкой входа update.message вместо callback_query. По просьбе
+    (Виктория): нативная кнопка "Menu" Telegram у поля ввода умеет только
+    подставлять слэш-команду в поле ввода — сама открыть наш инлайн-экран
+    не может, поэтому нужна именно команда, а не ещё один callback."""
+    clear_awaiting_flags(ctx, update)
+    await _render_tracked(update.message, ctx, "menu", "Главное меню",
+                           ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=main_menu(get_user(update.effective_user.id)))
+
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
@@ -9989,9 +9999,15 @@ async def _post_init(application):
     Telegram сам показывает кнопку "Menu" с этим списком, как только он
     задан хотя бы раз. Только реально публичные, непривязанные к правам
     владельца команды (/admin, /grant, /blogger и т.п. — group=-1,
-    доступны только NOTIFY_USER_ID) сюда не идут."""
+    доступны только NOTIFY_USER_ID) сюда не идут.
+
+    /menu добавлена по прямому следующему вопросу того же фидбека: сама
+    нативная кнопка "Menu" умеет только подставить слэш-команду в поле
+    ввода, а не открыть наш инлайн-экран напрямую — /menu (menu_command)
+    и есть тот самый прямой путь к главному меню в один тап+отправку."""
     await application.bot.set_my_commands([
         BotCommand("start", "Запустить бота / открыть меню"),
+        BotCommand("menu", "☰ Главное меню"),
         BotCommand("subscribe", "💎 Подписка"),
         BotCommand("promo", "🎁 Ввести промокод"),
     ])
@@ -10200,6 +10216,7 @@ def main():
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
     app.add_handler(CommandHandler("subscribe", subscribe_command))
     app.add_handler(CommandHandler("promo", promo_command))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CallbackQueryHandler(go_subscribe,     pattern="^go_subscribe$"))
     app.add_handler(CallbackQueryHandler(go_subscribe_pay, pattern="^go_subscribe_pay$"))
     app.add_handler(CallbackQueryHandler(go_promo,         pattern="^go_promo$"))

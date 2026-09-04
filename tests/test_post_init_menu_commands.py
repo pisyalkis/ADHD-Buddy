@@ -42,8 +42,8 @@ async def main():
     commands = app.bot.calls[0]
     cmd_names = {c.command for c in commands}
 
-    assert cmd_names == {"start", "subscribe", "promo"}, \
-        f"the bot's public command menu must be exactly start/subscribe/promo, got: {cmd_names}"
+    assert cmd_names == {"start", "menu", "subscribe", "promo"}, \
+        f"the bot's public command menu must be exactly start/menu/subscribe/promo, got: {cmd_names}"
     print(f"1. set_my_commands is called with exactly the public commands: {sorted(cmd_names)}")
 
     admin_only = {"admin", "feedback", "research", "users", "send", "broadcast",
