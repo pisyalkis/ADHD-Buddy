@@ -9415,8 +9415,9 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _reply_chunked_markdown(message, parts, sep="\n\n─────\n\n", limit=4000):
-    """Шлёт parts одним или несколькими сообщениями, разбивая ТОЛЬКО между
-    целыми, уже готовыми частями — никогда не разрезая part пополам.
+    """Шлёт parts одним или несколькими сообщениями, разбивая, где только
+    можно, ТОЛЬКО между целыми, уже готовыми частями — никогда не разрезая
+    part пополам.
 
     Реальный баг: admin_feedback/admin_research резали собранное
     Markdown-сообщение по сырому числу символов (`msg[i:i+4000]`). Записи
@@ -9424,17 +9425,53 @@ async def _reply_chunked_markdown(message, parts, sep="\n\n─────\n\n",
     среза попадала внутрь такой пары звёздочек, конкретный reply_text падал
     с `BadRequest: Can't parse entities`, необработанным исключением внутри
     команды (on_error только логирует) — админ получал часть списка без
-    предупреждения, а "хвост" молча терялся."""
+    предупреждения, а "хвост" молча терялся.
+
+    Реальный баг №2: сам собранный part (например, один длинный фидбек
+    пользователя без ограничения длины на вводе) мог оказаться длиннее
+    limit ещё ДО сравнения с другими частями — тогда chunk = part просто
+    отправлялся как есть, и тот же самый `BadRequest` из-за превышения
+    предела Telegram возвращался снова, теперь уже необрабатываемым
+    иначе способом. Для такого part — как единственный запасной вариант —
+    спускаемся на уровень строк (внутри одной записи маловероятно, что
+    строка сама по себе рвёт пару Markdown-символов надвое), а если и
+    отдельная строка не помещается — режем уже совсем сырым числом
+    символов: это заведомо хуже, чем чистое разбиение, но лучше, чем
+    молчаливая потеря хвоста или падение с необработанным исключением."""
+    async def flush(buf):
+        if buf:
+            await message.reply_text(buf, parse_mode="Markdown")
+
+    async def pack(units, joiner):
+        buf = ""
+        for u in units:
+            if len(u) > limit:
+                await flush(buf)
+                buf = ""
+                for i in range(0, len(u), limit):
+                    await message.reply_text(u[i:i + limit], parse_mode="Markdown")
+                continue
+            candidate = (buf + joiner + u) if buf else u
+            if buf and len(candidate) > limit:
+                await flush(buf)
+                buf = u
+            else:
+                buf = candidate
+        return buf
+
     chunk = ""
     for part in parts:
+        if len(part) > limit:
+            await flush(chunk)
+            chunk = await pack(part.split("\n"), "\n")
+            continue
         candidate = (chunk + sep + part) if chunk else part
         if chunk and len(candidate) > limit:
-            await message.reply_text(chunk, parse_mode="Markdown")
+            await flush(chunk)
             chunk = part
         else:
             chunk = candidate
-    if chunk:
-        await message.reply_text(chunk, parse_mode="Markdown")
+    await flush(chunk)
 
 async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
