@@ -696,6 +696,17 @@ def log_event(uid, event):
     conn.commit(); conn.close()
 
 # ── ДОСТУП / ПОДПИСКА ────────────────────────────────────────────────────
+def _trial_today(user):
+    """"Сегодня" для расчёта пробного периода — НЕ в таймзоне пользователя.
+    created_at (см. get_user) всегда ставится в дефолтном поясе бота
+    (USER_TIMEZONE), потому что в момент первого /start реальная таймзона
+    ещё не известна (задаётся позже в онбординге). Если считать trial_end
+    от created_date в одном поясе, а "сегодня" — в другом (реальном поясе
+    пользователя), разница поясов сдвигает дату истечения пробного
+    периода на день туда-обратно. Считаем обе стороны сравнения в одном и
+    том же поясе."""
+    return datetime.now(pytz.timezone(USER_TIMEZONE)).date()
+
 def get_access_status(user):
     """trial / subscribed / expired. Владелец бота (NOTIFY_USER_ID) всегда
     subscribed — иначе легко случайно выпилить себе доступ во время теста."""
@@ -709,25 +720,26 @@ def get_access_status(user):
                 return "subscribed"
         except Exception:
             pass
-    created = (user.get("created_at") or today.isoformat())[:10]
+    trial_today = _trial_today(user)
+    created = (user.get("created_at") or trial_today.isoformat())[:10]
     try:
         created_date = date.fromisoformat(created)
     except Exception:
-        created_date = today
+        created_date = trial_today
     extra_days = int(user.get("promo_extra_days") or 0)
     trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
-    return "trial" if today <= trial_end else "expired"
+    return "trial" if trial_today <= trial_end else "expired"
 
 def get_trial_days_left(user):
-    today = datetime.now(get_user_tz(user)).date()
-    created = (user.get("created_at") or today.isoformat())[:10]
+    trial_today = _trial_today(user)
+    created = (user.get("created_at") or trial_today.isoformat())[:10]
     try:
         created_date = date.fromisoformat(created)
     except Exception:
-        created_date = today
+        created_date = trial_today
     extra_days = int(user.get("promo_extra_days") or 0)
     trial_end = created_date + timedelta(days=TRIAL_DAYS + extra_days)
-    return max(0, (trial_end - today).days)
+    return max(0, (trial_end - trial_today).days)
 
 def create_promo_code(code, days, max_uses, label=""):
     """max_uses=0 значит без ограничения — так делаются личные коды
