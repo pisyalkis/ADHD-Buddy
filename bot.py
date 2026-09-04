@@ -8335,9 +8335,19 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎁 Промокод", callback_data="go_promo")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
+    # Реальный баг: раньше просто слали новое сообщение (target.reply_text)
+    # на КАЖДОЕ заблокированное действие — без единого отслеживаемого
+    # сообщения, в отличие от практически всех остальных экранов бота.
+    # Пользователь с истёкшим доступом, повторно тыкающий кнопки или
+    # что-то печатающий (обычное поведение — не понял с первого раза, что
+    # доступ закрыт), заваливал себе чат дублирующимися "Пробный период
+    # закончился". _edit_tracked_msg правит уже показанный пейволл на
+    # месте, даже если новый триггер — обычный текст (его самого
+    # отредактировать нельзя, но старое сообщение бота — можно).
     target = update.effective_message
-    if target:
-        await target.reply_text(paywall_text, parse_mode="Markdown", reply_markup=paywall_kb)
+    if not await _edit_tracked_msg(ctx, "paywall", paywall_text, parse_mode="Markdown", reply_markup=paywall_kb):
+        if target:
+            await _render_tracked(target, ctx, "paywall", paywall_text, parse_mode="Markdown", reply_markup=paywall_kb)
     raise ApplicationHandlerStop
 
 
