@@ -1320,10 +1320,14 @@ def get_today_context(user):
     """(today_iso, morning_data, done_set) для user — эта тройка нужна почти
     везде, где бот показывает "задачи на сегодня": маячок, коуч, фокус-таймер,
     дневной чекин, меню задач. Централизует таймзону пользователя вместо
-    повторения naive date.today() в каждом месте."""
+    повторения naive date.today() в каждом месте, и — как и все прямые
+    вызовы apply_yesterday_plan_if_empty рядом (☀️ Утро, 📋 Задачи) —
+    молча подтягивает вчерашний вечерний план, если сегодня ещё пусто,
+    чтобы одни и те же экраны не показывали то "задачи не заданы", то
+    подтянутый план в зависимости от того, как пользователь сюда попал."""
     uid = user["user_id"]
     today = datetime.now(get_user_tz(user)).date().isoformat()
-    morning = get_diary(uid, "morning", today)
+    morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
     done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
     return today, morning, done_set
 
