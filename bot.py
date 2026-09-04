@@ -1548,6 +1548,24 @@ async def _edit_or_send(q, text, **kwargs):
     не заспамил чат новыми сообщениями."""
     return await _edit_msg_or_send(q.message, text, **kwargs)
 
+async def _edit_markup_or_ignore(message, reply_markup):
+    """Та же защита от `BadRequest: Message is not modified`, что и в
+    _edit_msg_or_send, но для edit_reply_markup (листалки вроде пула
+    задач/дел на вечер, где меняется только клавиатура, без текста).
+
+    Реальный баг: pool_change_page/evening_plan_show_more кодируют
+    callback_data абсолютной целевой страницей (poolpage_{key}_{offset}),
+    а не относительным шагом. Двойной тап по одной и той же стрелке
+    "дальше" (частое поведение при СДВГ, тот же класс, что уже чинили для
+    day_card_nav) шлёт одинаковый callback дважды — второй edit_reply_markup
+    целится в ту же самую, уже показанную клавиатуру и падает необработанным
+    исключением, всплывающим через on_error."""
+    try:
+        await message.edit_reply_markup(reply_markup=reply_markup)
+    except Exception as e:
+        if "not modified" not in str(e).lower():
+            raise
+
 async def _render_tracked(message, ctx, track_key, text, ttl_seconds=None, **kwargs):
     """Общая точка входа для любого экрана в боте, который должен вести
     себя как единственное, самообновляющееся сообщение (⚙️ Общие, ◀️ Меню,
@@ -4067,7 +4085,7 @@ async def evening_plan_show_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     q = update.callback_query; await q.answer()
     key, offset_s = q.data[len("eplanmore_"):].rsplit("_", 1)
     uid = q.from_user.id
-    await q.message.edit_reply_markup(reply_markup=evening_plan_kb(key, uid, ctx, offset=int(offset_s)))
+    await _edit_markup_or_ignore(q.message, evening_plan_kb(key, uid, ctx, offset=int(offset_s)))
     return EVENING_STEP_STATE[key]
 
 def checkpoint_evening_progress(ctx, uid, for_date):
@@ -6051,7 +6069,7 @@ async def pool_change_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     linked_ids = _linked_pool_ids(uid, today, exclude_key=key)
     pool = [item for item in get_pool_tasks(uid) if item["id"] not in linked_ids]
-    await q.message.edit_reply_markup(reply_markup=pool_suggestions_kb(key, pool, offset=int(offset_s)))
+    await _edit_markup_or_ignore(q.message, pool_suggestions_kb(key, pool, offset=int(offset_s)))
 
 async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
