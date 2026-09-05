@@ -600,6 +600,11 @@ def init_db():
         ("notif_morning_on", "1"),
         ("notif_midday_on",  "1"),
         ("notif_evening_on", "1"),
+        ("notif_snooze_morning", "''"),
+        ("notif_snooze_midday", "''"),
+        ("notif_snooze_evening", "''"),
+        ("notif_snooze_beacon", "''"),
+        ("notif_snooze_skillbeacon", "''"),
         ("beacon_enabled", "0"),
         ("beacon_interval", "2"),
         ("beacon_last_sent", "''"),
@@ -5284,7 +5289,30 @@ def _append_row(kb, row):
     return InlineKeyboardMarkup(list(kb.inline_keyboard) + [row])
 
 def disable_notif_row(kind):
-    return [InlineKeyboardButton("🔕 Выключить такие уведомления", callback_data=f"disable_notif_{kind}")]
+    """Реальный запрос: единственная кнопка выключала уведомление НАВСЕГДА
+    — а раздражение чаще ситуативное ("сегодня жутко устал(а), не сегодня"),
+    не решение отключить фичу насовсем. "😴 Не сегодня" ставит per-kind
+    отметку notif_snooze_{kind} на сегодняшнюю дату (в поясе пользователя) —
+    сама фича остаётся включённой, просто молчит до завтра; "🔕 Насовсем"
+    — прежнее поведение, тумблер выключается насовсем."""
+    return [
+        InlineKeyboardButton("😴 Не сегодня", callback_data=f"snooze_notif_{kind}"),
+        InlineKeyboardButton("🔕 Насовсем", callback_data=f"disable_notif_{kind}"),
+    ]
+
+async def snooze_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    clear_awaiting_flags(ctx, update)
+    uid = q.from_user.id
+    kind = q.data.replace("snooze_notif_", "")
+    target = DISABLE_NOTIF_TARGETS.get(kind)
+    if not target:
+        await q.answer()
+        return
+    _column, label = target
+    today_iso = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
+    update_user(uid, **{f"notif_snooze_{kind}": today_iso})
+    await q.answer(f"😴 {label}: пропущено на сегодня, завтра вернутся как обычно.", show_alert=True)
 
 async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -5436,6 +5464,9 @@ async def send_task_beacon(app, user):
     try:
         uid = user["user_id"]
         if not int(user.get("beacon_enabled") or 0): return
+        # Реальный запрос: "😴 Не сегодня" (см. disable_notif_row) — снуз
+        # на остаток сегодняшнего дня без выключения самой фичи навсегда.
+        if user.get("notif_snooze_beacon") == datetime.now(get_user_tz(user)).date().isoformat(): return
         # Реальный фидбек (Виктория): последовательный проход по задачам
         # (task_walk, см. walk_tasks_start) редактирует одно и то же
         # сообщение на месте — если маячок в это время присылает своё
@@ -5598,6 +5629,8 @@ async def send_skill_beacon(app, user):
     try:
         uid = user["user_id"]
         if not int(user.get("skill_beacon_enabled") or 0): return
+        # Реальный запрос: "😴 Не сегодня" — см. тот же комментарий в send_task_beacon.
+        if user.get("notif_snooze_skillbeacon") == datetime.now(get_user_tz(user)).date().isoformat(): return
         # Реальный фидбек (Виктория) — см. тот же комментарий в send_task_beacon.
         if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return
         tz = get_user_tz(user)
@@ -9302,7 +9335,8 @@ async def check_notifications(app):
                 # не зависят — у них своё собственное включение.
                 notif_master_on = int(user.get("notif_enabled") or 0)
                 if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
-                        and user.get("morning_sent_date") != day_key):
+                        and user.get("morning_sent_date") != day_key
+                        and user.get("notif_snooze_morning") != day_key):
                     # Помечаем "отправлено" только после реального успеха — иначе
                     # временный сбой (таймаут телеграма, юзер заблокировал бота)
                     # навсегда съедает уведомление на весь день без единой попытки.
@@ -9333,12 +9367,14 @@ async def check_notifications(app):
                         update_user(uid, weekly_report_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
-                        and user.get("midday_sent_date") != day_key):
+                        and user.get("midday_sent_date") != day_key
+                        and user.get("notif_snooze_midday") != day_key):
                     if await midday_notification(app, uid):
                         update_user(uid, midday_sent_date=day_key)
 
                 if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
-                        and user.get("evening_sent_date") != day_key):
+                        and user.get("evening_sent_date") != day_key
+                        and user.get("notif_snooze_evening") != day_key):
                     if await evening_notification(app, uid):
                         update_user(uid, evening_sent_date=day_key)
 
@@ -10181,6 +10217,7 @@ def main():
     app.add_handler(CallbackQueryHandler(set_skill_beacon_count, pattern="^skill_count_\\d+$"))
     app.add_handler(CallbackQueryHandler(noop_callback,      pattern="^noop$"))
     app.add_handler(CallbackQueryHandler(disable_notification_type, pattern="^disable_notif_"))
+    app.add_handler(CallbackQueryHandler(snooze_notification_type, pattern="^snooze_notif_"))
     app.add_handler(CallbackQueryHandler(quick_toggle_beacon, pattern="^quick_toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(quick_toggle_skill,  pattern="^quick_toggle_skill$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
