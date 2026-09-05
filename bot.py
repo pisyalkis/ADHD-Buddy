@@ -6900,6 +6900,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_city"] = False
     ctx.user_data["awaiting_feedback"] = False
+    ctx.user_data.pop("awaiting_feedback_set_at", None)
     ctx.user_data["awaiting_promo_code"] = False
     ctx.user_data.pop("awaiting_task_edit", None)
     ctx.user_data.pop("awaiting_task_edit_set_at", None)
@@ -7154,6 +7155,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     elif ctx.user_data.get("awaiting_feedback"):
         ctx.user_data["awaiting_feedback"] = False
+        ctx.user_data.pop("awaiting_feedback_set_at", None)
         text = update.message.text.strip()
         save_feedback(uid, text)
         user = get_user(uid)
@@ -7989,6 +7991,10 @@ async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
+    # access_gate (см. ниже) читает эту метку, чтобы отличить "только что
+    # открыл экран отзыва" от давно висящего, никогда не отвеченного флага —
+    # только первое должно пропускать сквозь пейволл.
+    ctx.user_data["awaiting_feedback_set_at"] = datetime.now().isoformat()
     await _render_tracked(
         q.message, ctx, "feedback",
         "💬 *Обратная связь*\n\n"
@@ -8325,9 +8331,13 @@ async def dedupe_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # Экраны/действия, доступные даже пользователю с истёкшим доступом — иначе
 # он физически не сможет ни оплатить, ни ввести промокод, чтобы выйти из
-# пейволла (см. access_gate).
+# пейволла (см. access_gate). go_feedback — по отдельной просьбе (IDEAS.md
+# 2026-08-30): пейволл блокировал буквально всё, кроме пары экранов
+# подписки/промо/меню — у пользователя, который хочет объяснить, почему
+# не готов платить, или просто задать вопрос, не было вообще никакого
+# канала для этого.
 ACCESS_GATE_EXEMPT_CALLBACKS = {
-    "go_subscribe", "go_subscribe_pay", "go_promo", "go_menu",
+    "go_subscribe", "go_subscribe_pay", "go_promo", "go_menu", "go_feedback",
 }
 ACCESS_GATE_EXEMPT_COMMANDS = {"start", "subscribe", "promo", "admin", "newpromo"}
 
@@ -8360,6 +8370,22 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if ctx.user_data.get("awaiting_promo_code"):
         return
+    # Экран go_feedback уже открыт (см. выше) — сам ответ текстом идёт
+    # обычным сообщением, а не callback_query, и без этой проверки
+    # разбивался бы о пейволл сразу после того, как экран для него открыли.
+    # Проверяем именно СВЕЖЕСТЬ метки, а не просто сам флаг: давно висящий
+    # awaiting_feedback (выставленный ещё до истечения доступа, ни разу не
+    # отвеченный) не должен пропускать сквозь пейволл любое случайное
+    # сообщение — он всё ещё должен блокироваться и гаситься ниже, как и
+    # раньше. Пропускаем только если экран открыли только что.
+    feedback_set_at = ctx.user_data.get("awaiting_feedback_set_at")
+    if feedback_set_at:
+        try:
+            fresh = (datetime.now() - datetime.fromisoformat(feedback_set_at)).total_seconds() <= INACTIVE_SCREEN_TTL_SEC
+        except Exception:
+            fresh = False
+        if ctx.user_data.get("awaiting_feedback") and fresh:
+            return
     user = get_user(uid)
     if get_access_status(user) != "expired":
         return
