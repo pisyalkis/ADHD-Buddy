@@ -1,5 +1,5 @@
 import os, sys, sqlite3
-from datetime import date, timedelta
+from datetime import timedelta
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tmp")
 os.makedirs(SCRATCH, exist_ok=True)
@@ -11,6 +11,16 @@ os.environ["NOTIFY_USER_ID"] = "999"
 os.environ["ANTHROPIC_KEY"] = ""
 import bot
 bot.init_db()
+
+# Реальный баг (обнаружен при доработке фичи снуза уведомлений): created_at
+# ниже строился через наивную date.today() -- дату в ТЕКУЩЕМ системном
+# часовом поясе контейнера (не обязательно Asia/Tbilisi). Но
+# get_access_status/get_trial_days_left (после фикса #243) считают
+# "сегодня" именно в Asia/Tbilisi (USER_TIMEZONE) -- см. _trial_today().
+# Примерно 4 часа в сутки (когда UTC ещё "вчера", а Тбилиси, UTC+4, уже
+# "сегодня") эти две даты расходятся, и тест ловил ложный fail ровно в это
+# окно. Используем ту же таймзону, что и сам расчёт триала.
+today = bot.datetime.now(bot.pytz.timezone("Asia/Tbilisi")).date()
 
 # ══════════════════════════════════════════════════════════════════════════
 # По просьбе: пробный период увеличен с 7 до 14 дней (короче 7 не хватало
@@ -26,9 +36,9 @@ conn.execute("INSERT INTO users(user_id, name, gender) VALUES (2, 'День14', 
 conn.execute("INSERT INTO users(user_id, name, gender) VALUES (3, 'День15', 'M')")
 conn.commit(); conn.close()
 
-bot.update_user(1, timezone="Asia/Tbilisi", created_at=(date.today() - timedelta(days=7)).isoformat())
-bot.update_user(2, timezone="Asia/Tbilisi", created_at=(date.today() - timedelta(days=14)).isoformat())
-bot.update_user(3, timezone="Asia/Tbilisi", created_at=(date.today() - timedelta(days=15)).isoformat())
+bot.update_user(1, timezone="Asia/Tbilisi", created_at=(today - timedelta(days=7)).isoformat())
+bot.update_user(2, timezone="Asia/Tbilisi", created_at=(today - timedelta(days=14)).isoformat())
+bot.update_user(3, timezone="Asia/Tbilisi", created_at=(today - timedelta(days=15)).isoformat())
 
 assert bot.get_access_status(bot.get_user(1)) == "trial", \
     "a user registered 7 days ago must still be in trial now that TRIAL_DAYS=14"
