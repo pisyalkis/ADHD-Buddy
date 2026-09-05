@@ -605,6 +605,7 @@ def init_db():
         ("notif_snooze_evening", "''"),
         ("notif_snooze_beacon", "''"),
         ("notif_snooze_skillbeacon", "''"),
+        ("trial_warning_sent", "0"),
         ("beacon_enabled", "0"),
         ("beacon_interval", "2"),
         ("beacon_last_sent", "''"),
@@ -8918,6 +8919,48 @@ async def evening_notification(app, uid):
         print(f"Ошибка вечернего уведомления: {e}")
         return False
 
+async def send_trial_ending_warning(app, uid):
+    """По просьбе (IDEAS.md 2026-08-30): ни одна из плановых рассылок не
+    предупреждает заранее об окончании пробного периода — первое, что
+    видит пользователь, это жёсткий пейволл (access_gate) ровно в момент,
+    когда доступ истёк. Шлём один раз за всё время триала, когда остаётся
+    2 дня или меньше, но триал ещё не истёк — сразу с кнопками оплаты и
+    промокода, не дожидаясь пейволла.
+
+    trial_warning_sent взводится ЗДЕСЬ ЖЕ, внутри функции, сразу после
+    успешной отправки — а не снаружи по признаку "функция не упала". В
+    отличие от остальных _sent_date-флагов выше (сбрасываются каждый
+    день сам собой), это флаг "насовсем": если бы вызывающий код помечал
+    его при любом раннем return (триал ещё не подошёл к 2 дням), реальное
+    предупреждение впоследствии, когда условие наконец наступит, уже
+    никогда бы не отправилось — окно "осталось ≤2 дня" бывает только раз."""
+    try:
+        user = get_user(uid)
+        if int(user.get("trial_warning_sent") or 0):
+            return
+        if get_access_status(user) != "trial":
+            return
+        left = get_trial_days_left(user)
+        if left <= 0 or left > 2:
+            return
+        name = md_escape(user.get("name", ""))
+        await send_tracked_notification(
+            app.bot, uid, "trial_warning",
+            f"⏳ *{name}, пробный период почти закончился*\n\n"
+            f"Осталось *{left} {ru_days(left)}*. Дальше — {STARS_PRICE_MONTHLY} ⭐️ Stars в месяц "
+            "(оплата прямо в Telegram), или можно ввести промокод, если он у тебя есть.",
+            ttl_seconds=0,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"⭐ Оформить подписку ({STARS_PRICE_MONTHLY} Stars)", callback_data="go_subscribe_pay")],
+                [InlineKeyboardButton("🎁 Промокод", callback_data="go_promo")],
+                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+            ])
+        )
+        update_user(uid, trial_warning_sent=1)
+    except Exception as e:
+        print(f"Ошибка предупреждения об окончании пробного периода uid={uid}: {e}")
+
 async def weekly_report(app, uid):
     """Отчёт по итогам недели — шлётся утром в понедельник, про уже
     закончившуюся неделю."""
@@ -9377,6 +9420,13 @@ async def check_notifications(app):
                         and user.get("notif_snooze_evening") != day_key):
                     if await evening_notification(app, uid):
                         update_user(uid, evening_sent_date=day_key)
+
+                # Предупреждение об окончании пробного периода — не завязано
+                # на notif_master_on (это разовое коммерческое уведомление,
+                # не ежедневный ритуал), не ограничено конкретным временем
+                # суток; сама функция взводит trial_warning_sent один раз
+                # за весь триал.
+                await send_trial_ending_warning(app, uid)
 
                 # Напоминание если пропустил утро (+2 часа) — та же логика
                 # "время прошло и сегодня ещё не отправлено", что и для
