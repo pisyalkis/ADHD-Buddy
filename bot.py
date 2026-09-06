@@ -4096,6 +4096,19 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # selfcare_kb показывал его уже отмеченным на новый вечер.
     ctx.user_data.pop("e_selfcare", None)
 
+    # Реальный риск (см. handle_set_task_tomorrow_intent): "поставь на
+    # завтра задачу — X" вне ритуала пишет e_a/e_b1/.../e_c3 напрямую в
+    # дневник ДО того, как сам вечерний ритуал вообще начался. Без
+    # подтягивания сюда — тот же класс бага, что уже чинили для утра
+    # (apply_yesterday_plan_if_empty): finish_evening/checkpoint_evening_progress
+    # берут значения ТОЛЬКО из ctx.user_data, и любой такой заранее
+    # поставленный план молча стёрся бы пустой строкой при первом же
+    # реальном проходе вечернего ритуала.
+    existing_evening_today = get_diary(uid, "evening", today)
+    for plan_key in EVENING_PLAN_SLOT_LABELS:
+        if existing_evening_today.get(plan_key):
+            ctx.user_data[plan_key] = existing_evening_today[plan_key]
+
     # Под какой датой реально лежит утро — не всегда однозначно. Обычный
     # случай: утро прошло днём, а вечер открывают уже за полночь (частый
     # паттерн при СДВГ) — тогда утро лежит под evening_day-датой "today"
@@ -4846,7 +4859,11 @@ async def classify_free_text(text, now_dt):
                 '(2) — здесь явно про СЕГОДНЯШНИЙ день/прямо сейчас как реальное дело дня, а не просто "куда-то '
                 'занести на потом". Если неочевидно, что это именно на сегодня — выбирай (2) add_pool, это '
                 'безопаснее.\n'
-                '6) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
+                '6) То же самое, что (5), но явно про ЗАВТРА как задачу дня A/B/C («поставь на завтра задачу — '
+                'созвониться с врачом», «завтра нужно доделать отчёт», «на завтра задача B1: купить билеты»): '
+                '{"intent": "set_task_tomorrow", "text": "суть задачи", "slot": "A"|"B1"|"B2"|"C1"|"C2"|"C3"|""}. '
+                'Те же правила для slot, что и в (5). Если "завтра" не сказано явно — это (5), не это.\n'
+                '7) Всё остальное — вопрос о боте, просьба помочь, растерянность («что делать», «как '
                 'поставить цели», «запутался(ась)»), жалоба, обратная связь, разговор или что угодно ещё: '
                 '{"intent": "other"}\n'
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
@@ -4890,6 +4907,11 @@ async def classify_free_text(text, now_dt):
             data["text"] = str(data["text"]).strip()
             slot = str(data.get("slot") or "").strip().upper()
             data["slot_key"] = {"A": "focus", "B1": "b1", "B2": "b2", "C1": "c1", "C2": "c2", "C3": "c3"}.get(slot, "")
+            return data
+        if intent == "set_task_tomorrow" and str(data.get("text") or "").strip():
+            data["text"] = str(data["text"]).strip()
+            slot = str(data.get("slot") or "").strip().upper()
+            data["slot_key"] = {"A": "e_a", "B1": "e_b1", "B2": "e_b2", "C1": "e_c1", "C2": "e_c2", "C3": "e_c3"}.get(slot, "")
             return data
         return {"intent": "other"}
     except Exception:
@@ -6847,6 +6869,44 @@ async def handle_set_task_intent(message, ctx, uid, text, slot_key=""):
         return
     await apply_task_edit(message, ctx, uid, key, text)
 
+EVENING_PLAN_SLOT_LABELS = {"e_a": "A", "e_b1": "B1", "e_b2": "B2", "e_c1": "C1", "e_c2": "C2", "e_c3": "C3"}
+
+async def handle_set_task_tomorrow_intent(message, ctx, uid, text, slot_key=""):
+    """Свободный текст, явно про задачу НА ЗАВТРА (см. classify_free_text,
+    intent "set_task_tomorrow") — тот же принцип, что у handle_set_task_intent
+    для сегодня, но пишет прямо в "вечерний" план (e_a/e_b1/.../e_c3), а не
+    заставляет пройти весь evening_plan_kb ради одной короткой фразы.
+
+    Пишем НАПРЯМУЮ в дневник "evening" под текущей evening_day-датой — тем же
+    путём, что читает get_latest_evening_plan для завтрашнего утра, поэтому
+    план долетает до утра даже если сам вечерний ритуал сегодня так и не
+    запустят. Обратная сторона (см. фикс в evening_start): finish_evening/
+    checkpoint_evening_progress берут значения ТОЛЬКО из ctx.user_data — без
+    подтягивания уже записанного сюда значения при свежем старте ритуала эта
+    же запись молча стёрлась бы пустой строкой."""
+    await _delete_task_answer(ctx, message)
+    today = evening_day(get_user_tz(get_user(uid))).isoformat()
+    evening = get_diary(uid, "evening", today)
+    if slot_key and slot_key in EVENING_PLAN_SLOT_LABELS:
+        key = slot_key
+    else:
+        key = next((k for k in EVENING_PLAN_SLOT_LABELS if not evening.get(k)), None)
+    if key is None:
+        confirm_text = (
+            "Все шесть слотов плана на завтра уже заняты — открой вечерний план, чтобы что-то поменять.\n\n"
+            "Можно и текстом: назови слот прямо в сообщении, например «на завтра задача B1 — "
+            "новое дело» — перезапишет именно его."
+        )
+        await message.reply_text(confirm_text, reply_markup=menu_button_kb())
+        return
+    evening[key] = text
+    save_diary(uid, "evening", evening, for_date=today)
+    label = EVENING_PLAN_SLOT_LABELS[key]
+    await message.reply_text(
+        f"✅ Записал(а) на завтра как задачу {label}: _{md_escape(text)}_",
+        parse_mode="Markdown", reply_markup=menu_button_kb()
+    )
+
 async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     """Сохраняет текст задачи в утренний дневник — общая логика и для
     свободного ввода (handle_text), и для выбора готового дела из пула.
@@ -8208,6 +8268,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await handle_edit_reminder_intent(update.message, ctx, uid, routed.get("query") or text)
         elif intent == "set_task":
             await handle_set_task_intent(update.message, ctx, uid, routed.get("text") or text, routed.get("slot_key") or "")
+        elif intent == "set_task_tomorrow":
+            await handle_set_task_tomorrow_intent(update.message, ctx, uid, routed.get("text") or text, routed.get("slot_key") or "")
         else:
             # Реальный баг (12-й чекап, тот же класс, что и coach_mode выше):
             # research_awaiting — флаг в БД, а не сиюминутный ctx.user_data,
