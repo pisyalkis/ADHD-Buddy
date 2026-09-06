@@ -2982,16 +2982,49 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _render_ritual_step(q.message, ctx, warmup_text, parse_mode="Markdown", reply_markup=warmup_kb)
     return M_EXERCISE
 
+WARMUP_STEP_KB = InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Дальше", callback_data="warmup_next")]])
+
 async def warmup_go(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Реальный запрос (IDEAS.md 2026-09-02): 6 упражнений по фиксированные
+    20 секунд каждое — единственное место в ритуале без кнопки "Дальше →",
+    хотя зависание всего бота на эти 2 минуты уже починено (block=False +
+    PendingState). Каждый шаг ждёт either 20 секунд, либо тап "➡️ Дальше" —
+    что наступит раньше (asyncio.wait_for на событии, а не голый sleep).
+
+    warmup_next зарегистрирован ОТДЕЛЬНЫМ хендлером вне states этого же
+    ConversationHandler (не в M_EXERCISE) — пока эта функция висит фоновой
+    PendingState-задачей, ConversationHandler.check_update для неё
+    возвращает None (нет состояния WAITING), и апдейт со стандартным
+    диспетчером доходит до отдельно зарегистрированного хендлера как
+    обычно, а не теряется/откладывается до конца этой функции."""
     q = update.callback_query
     await q.answer()
     await _render_ritual_step(q.message, ctx, "Начинаем! 🏃")
     for i, (name, hint) in enumerate(WARMUP):
         dots = "🟡"*(i+1) + "⚪"*(len(WARMUP)-i-1)
-        await _edit_tracked_msg(ctx, "ritual_step", f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...", parse_mode="Markdown")
-        await asyncio.sleep(20)
+        event = asyncio.Event()
+        ctx.user_data["warmup_skip_event"] = event
+        await _edit_tracked_msg(
+            ctx, "ritual_step", f"{dots}\n\n*{name}*\n_{hint}_\n\n⏱ 20 секунд...",
+            parse_mode="Markdown", reply_markup=WARMUP_STEP_KB
+        )
+        try:
+            await asyncio.wait_for(event.wait(), timeout=20)
+        except asyncio.TimeoutError:
+            pass
+    ctx.user_data.pop("warmup_skip_event", None)
     await _edit_tracked_msg(ctx, "ritual_step", "✅ *Тело проснулось!* Теперь — настроимся.", parse_mode="Markdown")
     return await advance_morning(ctx, q.message, get_user(q.from_user.id)["gender"], q.from_user.id)
+
+async def warmup_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"➡️ Дальше" на шаге разминки — см. warmup_go. Просто отпускает
+    событие, на котором ждёт текущий шаг; если разминка уже закончилась
+    (события нет или это старое событие прошлого шага) — тап безвреден."""
+    q = update.callback_query
+    await q.answer()
+    event = ctx.user_data.get("warmup_skip_event")
+    if event is not None:
+        event.set()
 
 async def warmup_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -10721,6 +10754,10 @@ def main():
     global _morning_conv, _evening_conv
     _morning_conv = morning_conv
     _evening_conv = evening_conv
+    # Отдельно от morning_conv.states (не внутри M_EXERCISE) — см. докстринг
+    # warmup_go про то, почему это обязательно ДОЛЖНО быть отдельным
+    # хендлером, а не веткой состояния ConversationHandler.
+    app.add_handler(CallbackQueryHandler(warmup_next, pattern="^warmup_next$"))
     app.add_handler(morning_conv)
     app.add_handler(evening_conv)
     app.add_handler(CallbackQueryHandler(onboard_done,       pattern="^onboard_done$"))
