@@ -175,7 +175,7 @@ async def main():
     assert "pending_buddy_invite" not in ctx7.user_data
     assert int(bot.get_user(new_uid)["buddy_uid"]) == uid4
     assert int(bot.get_user(uid4)["buddy_uid"]) == new_uid
-    assert len(fbot7.sent) == 4, fbot7.sent  # celebratory + guide, per side
+    assert len(fbot7.sent) == 6, fbot7.sent  # celebratory + guide + share-ask, per side
     assert sum(1 for _, t, _ in fbot7.sent if t == bot.BUDDY_GUIDE_TEXT) == 2, \
         "both sides must receive the 'how to work with a buddy' guide"
     print("7. _finalize_pending_buddy_invite finalizes the pairing, notifies both sides and sends the guide to both")
@@ -237,7 +237,7 @@ async def main():
     assert int(bot.get_user(uid11)["buddy_uid"]) == uid10
     assert int(bot.get_user(uid10)["buddy_uid"]) == uid11
     assert not bot.get_user(uid10).get("buddy_seeking_since"), "seeking flag must clear once matched"
-    assert len(fbot11.sent) == 4, "_notify_buddy_paired must message both sides (celebratory + guide each)"
+    assert len(fbot11.sent) == 6, "_notify_buddy_paired must message both sides (celebratory + guide + share-ask each)"
     print("11. buddy_find_match immediately matches the second seeker with the first (FIFO), clears seeking flags, notifies both")
 
     # 12. buddy_cancel_seeking clears the flag without pairing anyone.

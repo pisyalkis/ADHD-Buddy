@@ -638,6 +638,12 @@ def init_db():
         ("buddy_uid", "''"),
         ("buddy_paired_at", "''"),
         ("buddy_seeking_since", "''"),
+        # Шеринг прогресса с бадди — спрашиваем один раз при образовании
+        # пары (см. _notify_buddy_paired/buddy_share_on/buddy_share_off).
+        # Гейтит только СВОИ события: включил(а) — бадди будет узнавать о
+        # твоих утре/целях/вечере, независимо от того, что выбрал(а) сам(а)
+        # бадди про свои. '' (не спрошен) ведёт себя как выключено.
+        ("buddy_share_progress", "0"),
         ("notif_morning", "'09:00'"),
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
@@ -3788,6 +3794,13 @@ async def finish_morning(message, uid, ctx):
     if sent is not None and will_pin:
         await pin_today_tasks(ctx, uid, sent, pinned_keys=pinned_keys, ai_msg=ai_msg_raw)
 
+    # "Цели поставлены" — отдельное событие, живёт только в apply_task_edit
+    # (📋 Задачи): task_fields здесь читается из уже существующей записи
+    # (см. _merged_task_fields — "задачи ставятся отдельно"), значит focus
+    # тут никогда не бывает свежее existing.get("focus"), и делиться было бы
+    # нечем.
+    await _share_buddy_progress(getattr(ctx, "bot", None), uid, "morning")
+
     await _finish_ritual_cleanup(ctx, message, uid)
 
 def _morning_task_offer_text_and_kb(uid):
@@ -4649,6 +4662,8 @@ async def finish_evening(message, uid, ctx):
             f"✅ День закрыт!{streak_suffix} До завтра, {user['name']} 👋",
             reply_markup=menu_button_kb()
         )
+
+    await _share_buddy_progress(getattr(ctx, "bot", None), uid, "evening")
 
     await _finish_ritual_cleanup(ctx, message, uid)
 
@@ -6798,6 +6813,8 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     # "что делаешь?" сразу после того, как человек только что явно ответил
     # на этот же вопрос, поставив задачу.
     update_user(uid, morning_filled_at=now_dt.isoformat())
+    if key == "focus" and not was_filled:
+        await _share_buddy_progress(getattr(ctx, "bot", None), uid, "goals")
     if was_filled and text_changed:
         # Текст задачи поменялся — старая отметка "выполнено" больше не
         # про эту задачу (иначе новая задача выглядела бы уже сделанной).
@@ -9341,6 +9358,85 @@ BUDDY_GUIDE_TEXT = (
     "_Часовые пояса не обязаны совпадать — просто держите разницу в голове при планировании._"
 )
 
+BUDDY_SHARE_ASK_TEXT = (
+    "🔔 Делиться с бадди фактом, что закрыл(а) утро, поставил(а) цели на день или закрыл(а) день? "
+    "Без подробностей дневника — только сам факт, и только твой (бадди про свои события решает "
+    "отдельно). Можно передумать позже в 👥 Бадди."
+)
+BUDDY_SHARE_ASK_KB = InlineKeyboardMarkup([
+    [InlineKeyboardButton("✅ Да, делиться", callback_data="buddy_share_on")],
+    [InlineKeyboardButton("🙈 Нет, не делиться", callback_data="buddy_share_off")],
+])
+
+# Событие → (нейтральный ярлык для "тоже сегодня", кооперативное
+# приглашение). Ярлык прогоняется через personalize() под пол ОТПРАВИТЕЛЯ
+# (это его действие), приглашение — фиксированный текст без гендерных
+# плейсхолдеров. "Давай тоже..." — осознанный product-выбор вместо "а ты
+# уже?": сравнение подталкивает, кооперативная формулировка приглашает.
+BUDDY_PROGRESS_DONE_LABEL = {
+    "morning": "закрыл(а) утро",
+    "goals": "поставил(а) цели на день",
+    "evening": "закрыл(а) день",
+}
+BUDDY_PROGRESS_INVITE_LINE = {
+    "morning": "Давай тоже заполним утро?",
+    "goals": "Давай тоже поставим цели на день?",
+    "evening": "Давай тоже закроем день?",
+}
+
+def _buddy_progress_done_today(uid, event):
+    """Уже отметился ли получатель по ЭТОМУ ЖЕ событию сегодня — определяет,
+    какая из двух формулировок в _share_buddy_progress пойдёт в ход."""
+    user = get_user(uid)
+    tz = get_user_tz(user)
+    if event == "evening":
+        today = evening_day(tz).isoformat()
+        return bool(get_diary(uid, "evening", today))
+    today = datetime.now(tz).date().isoformat()
+    if event == "goals":
+        return bool(get_diary(uid, "morning", today).get("focus"))
+    # "morning" — morning_filled_at ставится и полным ритуалом (finish_morning),
+    # и отдельной постановкой задач (apply_task_edit), но для получателя нам
+    # важен сам факт "сегодня уже что-то сделал(а) по утру", не источник.
+    filled_at = user.get("morning_filled_at") or ""
+    return filled_at[:10] == today
+
+async def _share_buddy_progress(bot, uid, event):
+    """Делится с бадди фактом о событии (утро/цели/вечер) — только если пара
+    оформлена (buddy_uid) и САМ пользователь включил шеринг своих событий
+    (buddy_share_progress). Не требует, чтобы бадди тоже включил(а) шеринг —
+    это гейт на "делюсь ли Я своими фактами", а не на "хочу ли Я получать
+    чужие"."""
+    if bot is None:
+        return
+    user = get_user(uid)
+    if not int(user.get("buddy_share_progress") or 0):
+        return
+    partner_uid = user.get("buddy_uid") or ""
+    if not partner_uid:
+        return
+    partner_uid = int(partner_uid)
+    sender_name = md_escape(user.get("name") or "Бадди")
+    label = personalize(BUDDY_PROGRESS_DONE_LABEL[event], user.get("gender") or "N")
+    if _buddy_progress_done_today(partner_uid, event):
+        text = f"🎉 {sender_name} тоже {label} сегодня!"
+    else:
+        text = f"🔔 {sender_name} {label}. {BUDDY_PROGRESS_INVITE_LINE[event]}"
+    try:
+        await bot.send_message(chat_id=partner_uid, text=text, reply_markup=menu_button_kb())
+    except Exception as e:
+        print(f"Ошибка шеринга прогресса бадди uid={partner_uid} event={event}: {e}")
+
+async def buddy_share_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    update_user(q.from_user.id, buddy_share_progress=1)
+    await _edit_or_send(q, "✅ Включил(а) — бадди будет узнавать о твоих утре/целях/вечере.", reply_markup=menu_button_kb())
+
+async def buddy_share_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    update_user(q.from_user.id, buddy_share_progress=0)
+    await _edit_or_send(q, "Окей, не делимся — это никак не влияет на саму пару.", reply_markup=menu_button_kb())
+
 async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0):
     """Уведомляет ОБЕИХ сторон об образовавшейся паре — с явной разницей
     часовых поясов, если она есть (product-решение: не скрывать, а
@@ -9362,6 +9458,7 @@ async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0):
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         await bot.send_message(chat_id=uid_a, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
+        await bot.send_message(chat_id=uid_a, text=BUDDY_SHARE_ASK_TEXT, reply_markup=BUDDY_SHARE_ASK_KB)
     except Exception as e:
         print(f"Ошибка уведомления о паре бадди uid={uid_a}: {e}")
     try:
@@ -9371,6 +9468,7 @@ async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0):
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         await bot.send_message(chat_id=uid_b, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
+        await bot.send_message(chat_id=uid_b, text=BUDDY_SHARE_ASK_TEXT, reply_markup=BUDDY_SHARE_ASK_KB)
     except Exception as e:
         print(f"Ошибка уведомления о паре бадди uid={uid_b}: {e}")
 
@@ -11715,6 +11813,8 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_guide,           pattern="^buddy_guide$"))
     app.add_handler(CallbackQueryHandler(buddy_unlink_menu,     pattern="^buddy_unlink_menu$"))
     app.add_handler(CallbackQueryHandler(buddy_unlink_confirm,  pattern="^buddy_unlink_confirm$"))
+    app.add_handler(CallbackQueryHandler(buddy_share_on,        pattern="^buddy_share_on$"))
+    app.add_handler(CallbackQueryHandler(buddy_share_off,       pattern="^buddy_share_off$"))
     app.add_handler(CallbackQueryHandler(buddy_invite_link,    pattern="^buddy_invite_link$"))
     app.add_handler(CallbackQueryHandler(buddy_find_match,     pattern="^buddy_find_match$"))
     app.add_handler(CallbackQueryHandler(buddy_cancel_seeking, pattern="^buddy_cancel_seeking$"))
