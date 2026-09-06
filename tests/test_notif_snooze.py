@@ -109,10 +109,15 @@ async def main():
     #    snoozed user, WITHOUT marking it as sent (must resume tomorrow).
     # notif_morning is set a few minutes in the past (not 00:00) so the
     # unrelated "missed morning by +2h" reminder doesn't also fire and
-    # pollute this assertion.
+    # pollute this assertion. midday/evening explicitly disabled too --
+    # this test's real run time can land past their own default trigger
+    # times (13:00/21:00), which would otherwise also fire and pollute
+    # app.bot.sent with an unrelated message (real flakiness, not this
+    # test's concern -- it only cares about morning + its snooze).
     soon_past = (datetime.now(bot.get_user_tz(user)) - timedelta(minutes=5)).strftime("%H:%M")
     bot.update_user(
         uid, notif_enabled=1, notif_morning_on=1, notif_morning=soon_past,
+        notif_midday_on=0, notif_evening_on=0,
         morning_sent_date="", notif_snooze_morning=today_iso,
     )
     app = FakeApp()

@@ -625,6 +625,15 @@ def init_db():
         ("notif_snooze_evening", "''"),
         ("notif_snooze_beacon", "''"),
         ("notif_snooze_skillbeacon", "''"),
+        # Реактивация после настоящей тишины — не просто пропущенного ритуала
+        # (см. streak/_days_since_last_activity, которая знает только про
+        # завершённые ритуалы), а вообще ни одного реального взаимодействия
+        # с ботом. last_seen_at обновляется на каждый апдейт (см.
+        # track_last_seen); reengage_max_milestone_sent — старший уже
+        # отправленный порог (0/3/7/14), сбрасывается при любом взаимодействии.
+        ("last_seen_at", "''"),
+        ("reengage_max_milestone_sent", "0"),
+        ("reengage_opt_out", "0"),
         # Напоминание принять лекарство (IDEAS.md 2026-08-26): просветительский
         # текст про медикаменты уже был, самого напоминания — нет. По умолчанию
         # ВЫКЛЮЧЕНО (в отличие от notif_morning_on/midday/evening) — это
@@ -8739,10 +8748,33 @@ async def _grant_and_notify(ctx, target_uid, days):
 _seen_update_ids = {}
 _SEEN_UPDATE_TTL = 600  # секунд — с запасом дольше любого правдоподобного ретрая
 
+def track_last_seen(update: Update):
+    """Вызывается из dedupe_updates (см. ниже) — не отдельным хендлером:
+    PTB запускает максимум ОДИН хендлер на group на апдейт, а group=-3 уже
+    занята dedupe_updates (тоже TypeHandler(Update, ...), матчащий вообще
+    всё) — второй такой же в той же группе просто никогда не вызвался бы.
+
+    Обновляет last_seen_at на КАЖДЫЙ реальный входящий апдейт (сообщение или
+    кнопка), в отличие от streak (заполняется только при завершении
+    утреннего/вечернего ритуала, см. _days_since_last_activity/welcome-back).
+    Это сигнал именно "открывал ли бота вообще", нужный для реактивации
+    после настоящей тишины (см. _days_since_seen/send_reengagement_message)
+    — более широкое и честное понятие оттока, чем "пропустил ритуал".
+
+    reengage_max_milestone_sent сбрасывается тут же при ЛЮБОМ взаимодействии
+    — как только человек снова здесь, текущий разрыв обнулился, и старый
+    "старший отправленный порог" от прошлой тишины больше не имеет смысла."""
+    uid = getattr(update.effective_user, "id", None)
+    if uid is None:
+        return
+    update_user(uid, last_seen_at=datetime.now(pytz.utc).isoformat(), reengage_max_milestone_sent=0)
+
 async def dedupe_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Group=-3 — раньше вообще всех остальных обработчиков, включая
     access_gate. Останавливает повторно доставленный апдейт до того, как он
-    успеет вызвать побочные эффекты (сообщения, запись в БД)."""
+    успеет вызвать побочные эффекты (сообщения, запись в БД) — в т.ч. до
+    track_last_seen ниже, чтобы повторная доставка не считалась вторым
+    "реальным" визитом."""
     now = time.monotonic()
     for old_id, ts in list(_seen_update_ids.items()):
         if now - ts > _SEEN_UPDATE_TTL:
@@ -8750,6 +8782,7 @@ async def dedupe_updates(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.update_id in _seen_update_ids:
         raise ApplicationHandlerStop
     _seen_update_ids[update.update_id] = now
+    track_last_seen(update)
 
 # Экраны/действия, доступные даже пользователю с истёкшим доступом — иначе
 # он физически не сможет ни оплатить, ни ввести промокод, чтобы выйти из
@@ -9278,6 +9311,27 @@ def _days_since_last_activity(uid):
     today = evening_day(get_user_tz(user))
     return (today - last).days
 
+def _days_since_seen(uid):
+    """Дней с последнего РЕАЛЬНОГО апдейта от пользователя (see track_last_seen)
+    — шире, чем _days_since_last_activity: та знает только про завершённые
+    ритуалы, эта — про любое открытие бота вообще. Считаем в UTC-сутках
+    (last_seen_at пишется в UTC) — для грубых недельных вех точность в
+    пределах часового пояса не важна, а единая система отсчёта с обеих
+    сторон избавляет от класса багов "две даты в разных поясах", уже не раз
+    чинившихся в этом файле. None, если апдейтов ещё не было вообще."""
+    user = get_user(uid)
+    last_raw = user.get("last_seen_at") or ""
+    if not last_raw:
+        return None
+    try:
+        last_dt = datetime.fromisoformat(last_raw)
+    except Exception:
+        return None
+    if last_dt.tzinfo is None:
+        last_dt = pytz.utc.localize(last_dt)
+    today = datetime.now(pytz.utc).date()
+    return (today - last_dt.astimezone(pytz.utc).date()).days
+
 # По просьбе (IDEAS.md 2026-08-26): единственная "дни с X" логика в файле —
 # вехи 3/7/14/30 дней от created_at для research-опросов, а не от последней
 # активности; check_notifications шлёт одинаковые ☀️-уведомления независимо
@@ -9469,6 +9523,60 @@ async def send_trial_ending_warning(app, uid):
         update_user(uid, trial_warning_sent=1)
     except Exception as e:
         print(f"Ошибка предупреждения об окончании пробного периода uid={uid}: {e}")
+
+REENGAGE_MILESTONES = (3, 7, 14)
+
+async def send_reengagement_message(app, uid):
+    """Реактивация после настоящей тишины (см. _days_since_seen) — не
+    повтор обычного ☀️/☕/🌙, а отдельное, редкое сообщение без разбора
+    прошлого и без цифр/статистики (по итогам обсуждения с пользователем):
+    нормализация через "не только у тебя" вместо стыда, и явный выбор из
+    трёх вариантов вместо одной кнопки "продолжить" — включая честное
+    "оставь в покое", которое не пытается переубедить."""
+    try:
+        await app.bot.send_message(
+            chat_id=uid,
+            text=(
+                "Пропадать и возвращаться — обычное дело, не только у тебя. "
+                "Ты не сделал(а) ничего плохого.\n\n"
+                "Начнём с одной маленькой вещи?"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Начать с одной задачи", callback_data="reengage_start")],
+                [InlineKeyboardButton("⚙️ Хочу по-другому", callback_data="reengage_adjust")],
+                [InlineKeyboardButton("🤫 Оставь в покое", callback_data="reengage_leave")],
+            ])
+        )
+        return True
+    except Exception as e:
+        print(f"Ошибка реактивации uid={uid}: {e}")
+        return False
+
+async def reengage_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"🔄 Начать с одной задачи" — сразу в постановку задач, минуя весь
+    утренний ритуал (тот же экран, что и 📋 Задачи/show_tasks)."""
+    await show_tasks(update, ctx)
+
+async def reengage_adjust_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"⚙️ Хочу по-другому" — в настройки уведомлений: если то, что было,
+    не подошло по времени/частоте, дать поправить самому, а не продолжать
+    присылать то же самое, что уже игнорируют."""
+    await go_settings_notifications(update, ctx)
+
+async def reengage_leave_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"🤫 Оставь в покое" — не трогает остальные уведомления (это НЕ общий
+    notif_enabled) — только насовсем гасит будущие попытки реактивации.
+    Явный уважительный отказ важнее ещё одной попытки переубедить — по
+    исследованиям reactance/автономии (Self-Determination Theory), именно
+    такой честный выход из диалога повышает, а не понижает доверие."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, reengage_opt_out=1)
+    await _edit_or_send(
+        q,
+        "Хорошо, не буду писать первым(ой). Обращайся сам(а), когда захочешь 🙂",
+        reply_markup=menu_button_kb()
+    )
 
 async def weekly_report(app, uid):
     """Отчёт по итогам недели — шлётся утром в понедельник, про уже
@@ -9952,6 +10060,30 @@ async def _process_user_notifications(app, user):
         # суток; сама функция взводит trial_warning_sent один раз
         # за весь триал.
         await send_trial_ending_warning(app, uid)
+
+        # Реактивация после настоящей тишины (см. _days_since_seen — шире,
+        # чем пропущенный ритуал) — на вехах 3/7/14 дней без единого
+        # реального апдейта. Не завязано на notif_master_on (тот же принцип,
+        # что у маячков/предупреждения о триале выше) — редкое веховое
+        # сообщение, а не рутинная рассылка. Узкое окно часа — чтобы не
+        # слать посреди ночи из-за грубой UTC-границы суток в _days_since_seen,
+        # и чтобы поймать "утро — естественная веха для свежего начала"
+        # (Fresh Start Effect).
+        if not int(user.get("reengage_opt_out") or 0) and 9 <= now_dt.hour < 10:
+            gap_seen = _days_since_seen(uid)
+            if gap_seen is not None:
+                already_sent = int(user.get("reengage_max_milestone_sent") or 0)
+                # Наибольший порог, который уже пора отправить — так и для
+                # обычного постепенного роста разрыва (3 → 7 → 14 день за
+                # днём), и для "давно молчавшего" пользователя при первой же
+                # проверке после раскатки фичи (разрыв уже под 20+ дней) —
+                # в обоих случаях уходит РОВНО одно сообщение за тик, не
+                # накопленная очередь из трёх.
+                due = [m for m in REENGAGE_MILESTONES if m > already_sent and gap_seen >= m]
+                if due:
+                    target = due[-1]
+                    if await send_reengagement_message(app, uid):
+                        update_user(uid, reengage_max_milestone_sent=target)
 
         # Напоминание если пропустил утро (+2 часа) — та же логика
         # "время прошло и сегодня ещё не отправлено", что и для
@@ -10919,6 +11051,9 @@ def main():
     app.add_handler(CallbackQueryHandler(daily_prefs_cancel_snooze,  pattern="^daily_cancel_(beacon|skillbeacon)$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
+    app.add_handler(CallbackQueryHandler(reengage_start_callback,  pattern="^reengage_start$"))
+    app.add_handler(CallbackQueryHandler(reengage_adjust_callback, pattern="^reengage_adjust$"))
+    app.add_handler(CallbackQueryHandler(reengage_leave_callback,  pattern="^reengage_leave$"))
     app.add_handler(CallbackQueryHandler(morning_task_offer_yes, pattern="^morning_tasks_yes$"))
     app.add_handler(CallbackQueryHandler(morning_task_offer_no,  pattern="^morning_tasks_no$"))
     app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
