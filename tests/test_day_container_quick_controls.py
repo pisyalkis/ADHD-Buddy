@@ -127,9 +127,14 @@ async def main():
     bot.update_user(uid, beacon_enabled=1, skill_beacon_enabled=0)
     upd = FakeUpdate(uid, data="quick_toggle_beacon")
     await bot.quick_toggle_beacon(upd, ctx)
-    assert int(bot.get_user(uid).get("beacon_enabled") or 0) == 0
-    assert "выключен" in upd.callback_query.answers[0]
-    print("3. quick_toggle_beacon flips beacon_enabled and confirms via toast")
+    # Real request (IDEAS.md 2026-08-29): turning an ENABLED beacon off via
+    # this pinned quick-toggle no longer disables it instantly -- it now
+    # shows a "😴 Не сегодня"/"🔕 Насовсем" submenu first (same choice
+    # disable_notif_row already offers elsewhere, see PR #253). See
+    # test_daily_prefs_snooze.py for the submenu's own behavior.
+    assert int(bot.get_user(uid).get("beacon_enabled") or 0) == 1, \
+        "tapping an enabled beacon toggle must not disable it instantly anymore"
+    print("3. quick_toggle_beacon no longer disables instantly -- it shows the snooze/forever submenu (see test_daily_prefs_snooze.py)")
 
     upd2 = FakeUpdate(uid, data="quick_toggle_skill")
     await bot.quick_toggle_skill(upd2, ctx)
