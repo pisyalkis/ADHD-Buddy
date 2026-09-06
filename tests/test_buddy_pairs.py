@@ -30,11 +30,17 @@ class FakeMessage:
         self.message_id = _next_id[0]
         _next_id[0] += 1
         self.text = ""
+        self.texts = []
 
     async def reply_text(self, text, **kw):
         m = FakeMessage(self.chat_id)
         m.text = text
         return m
+
+    async def edit_text(self, text, **kw):
+        self.text = text
+        self.texts.append((text, kw.get("reply_markup")))
+        return self
 
 
 class FakeQuery:
@@ -122,12 +128,15 @@ async def main():
     assert bot.finalize_buddy_pairing(uid4, uid4) is False
     print("3. finalize_buddy_pairing refuses pairing a user with themself")
 
-    # 4. buddy_menu shows the linked partner's real name when buddy_uid is set.
+    # 4. buddy_menu shows the linked partner's real name when buddy_uid is
+    #    set, plus a "how to work with a buddy" guide button to revisit it.
     menu_msg = FakeMessage(uid1)
     upd_menu = FakeUpdate(uid1, data="go_buddy", message=menu_msg)
     await bot.buddy_menu(upd_menu, FakeCtx(FakeBot()))
-    linked_text, linked_kb = menu_msg.texts[-1] if hasattr(menu_msg, "texts") else (None, None)
-    print("4. (buddy_menu render smoke-tested via _render_tracked -- see step 4b)")
+    linked_text, linked_kb = menu_msg.texts[-1]
+    assert "Вика" in linked_text, linked_text
+    assert kb_callbacks(linked_kb) == ["buddy_ping", "buddy_guide", "go_menu"], kb_callbacks(linked_kb)
+    print("4. buddy_menu shows the linked partner's real name and a button to revisit the buddy guide")
 
     # 4b. _parse_buddy_invite_arg: valid deep link for a brand-new user.
     inviter = bot.get_user(uid4)
@@ -166,8 +175,10 @@ async def main():
     assert "pending_buddy_invite" not in ctx7.user_data
     assert int(bot.get_user(new_uid)["buddy_uid"]) == uid4
     assert int(bot.get_user(uid4)["buddy_uid"]) == new_uid
-    assert len(fbot7.sent) == 2, fbot7.sent
-    print("7. _finalize_pending_buddy_invite finalizes the pairing and notifies both sides")
+    assert len(fbot7.sent) == 4, fbot7.sent  # celebratory + guide, per side
+    assert sum(1 for _, t, _ in fbot7.sent if t == bot.BUDDY_GUIDE_TEXT) == 2, \
+        "both sides must receive the 'how to work with a buddy' guide"
+    print("7. _finalize_pending_buddy_invite finalizes the pairing, notifies both sides and sends the guide to both")
 
     # 8. A race: the inviter got paired elsewhere while the invitee was still
     #    onboarding -- _finalize_pending_buddy_invite must no-op silently,
@@ -226,7 +237,7 @@ async def main():
     assert int(bot.get_user(uid11)["buddy_uid"]) == uid10
     assert int(bot.get_user(uid10)["buddy_uid"]) == uid11
     assert not bot.get_user(uid10).get("buddy_seeking_since"), "seeking flag must clear once matched"
-    assert len(fbot11.sent) == 2, "_notify_buddy_paired must message both sides"
+    assert len(fbot11.sent) == 4, "_notify_buddy_paired must message both sides (celebratory + guide each)"
     print("11. buddy_find_match immediately matches the second seeker with the first (FIFO), clears seeking flags, notifies both")
 
     # 12. buddy_cancel_seeking clears the flag without pairing anyone.
@@ -253,6 +264,16 @@ async def main():
     await bot.buddy_menu(upd13, ctx13)
     assert bot.get_user(uid13)["buddy_name"] == "Друг детства", "old manual buddy_name must remain untouched"
     print("13. The old manual buddy_name coexists untouched for users who haven't linked via buddy_uid")
+
+    # 14. "📖 Как работать с бадди" re-shows the guide on demand, with a way
+    #     back to the buddy menu.
+    guide_msg = FakeMessage(uid1)
+    upd_guide = FakeUpdate(uid1, data="buddy_guide", message=guide_msg)
+    await bot.buddy_guide(upd_guide, FakeCtx(FakeBot()))
+    guide_text, guide_kb = guide_msg.texts[-1]
+    assert guide_text == bot.BUDDY_GUIDE_TEXT
+    assert kb_callbacks(guide_kb) == ["go_buddy"], kb_callbacks(guide_kb)
+    print("14. buddy_guide re-shows the 'how to work with a buddy' guide on demand")
 
     print("\nALL BUDDY PAIRING TESTS PASSED")
 
