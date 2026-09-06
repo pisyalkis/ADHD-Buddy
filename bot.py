@@ -3286,6 +3286,30 @@ def daily_prefs_kb(user):
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ])
 
+# Реальный запрос (IDEAS.md 2026-08-29): quick_toggle_beacon/quick_toggle_skill
+# выключали маячок НАВСЕГДА одним тапом — то же самое расхождение, которое
+# уже чинили для disable_notif_row (PR #253): раздражение маячком чаще
+# ситуативное ("сегодня жутко устал(а), не сегодня"), а не решение выключить
+# фичу насовсем. Переиспользуем те же самые колонки notif_snooze_beacon/
+# notif_snooze_skillbeacon (уже читаются send_task_beacon/send_skill_beacon
+# с PR #253) — только отсюда их прежде некому было ЗАПИСАТЬ.
+DAILY_PREFS_TOGGLES = {
+    "beacon":      ("beacon_enabled",       "notif_snooze_beacon",      "Маячки внимания: задачи"),
+    "skillbeacon": ("skill_beacon_enabled", "notif_snooze_skillbeacon", "Маячки внимания: навыки"),
+}
+
+def daily_prefs_snooze_kb(kind):
+    """Подменяет клавиатуру закреплённого сообщения на выбор "на сегодня
+    или насовсем" — вместо мгновенного постоянного выключения одним тапом
+    (см. quick_toggle_beacon/quick_toggle_skill). Показывается только в
+    момент ВЫКЛЮЧЕНИЯ — включение обратно остаётся мгновенным, это не та
+    сторона переключателя, которая раздражает."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("😴 Не сегодня", callback_data=f"daily_snooze_{kind}"),
+         InlineKeyboardButton("🔕 Насовсем", callback_data=f"daily_disable_{kind}")],
+        [InlineKeyboardButton("◀️ Отмена", callback_data=f"daily_cancel_{kind}")],
+    ])
+
 async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     # Реальный баг (16-й чекап, тот же класс, что чинили в 14-м/15-м):
@@ -3303,8 +3327,15 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_flags(ctx)
     uid = q.from_user.id
     cur = int(get_user(uid).get("beacon_enabled") or 0)
-    update_user(uid, beacon_enabled=0 if cur else 1)
-    await q.answer("🔕 Маячки внимания: задачи выключены" if cur else "🔔 Маячки внимания: задачи включены")
+    if cur:
+        await q.answer()
+        try:
+            await q.message.edit_reply_markup(reply_markup=daily_prefs_snooze_kb("beacon"))
+        except Exception:
+            pass
+        return
+    update_user(uid, beacon_enabled=1)
+    await q.answer("🔔 Маячки внимания: задачи включены")
     try:
         await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
     except Exception:
@@ -3320,15 +3351,58 @@ async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("skill_beacon_enabled") or 0)
-    kwargs = {"skill_beacon_enabled": 0 if cur else 1}
+    if cur:
+        await q.answer()
+        try:
+            await q.message.edit_reply_markup(reply_markup=daily_prefs_snooze_kb("skillbeacon"))
+        except Exception:
+            pass
+        return
+    kwargs = {"skill_beacon_enabled": 1}
     # Реальный баг (19-й чекап): beacon_types пуст по умолчанию и никогда не
     # заполняется автоматически — включение без явного похода в "🎯 Типы
     # маячка" давало ложное "включено", а next_beacon_slot/_beacon_rotation_pool
     # молча возвращали None навсегда, и напоминания не приходили вообще.
-    if not cur and not (user.get("beacon_types") or "").strip():
+    if not (user.get("beacon_types") or "").strip():
         kwargs["beacon_types"] = ",".join(k for k, _ in BEACON_TECHNIQUE_TYPES)
     update_user(uid, **kwargs)
-    await q.answer("🔕 Напоминания с навыками выключены" if cur else "🧠 Напоминания с навыками включены")
+    await q.answer("🧠 Напоминания с навыками включены")
+    try:
+        await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
+    except Exception:
+        pass
+
+async def daily_prefs_snooze_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    clear_awaiting_flags(ctx)
+    uid = q.from_user.id
+    kind = q.data.replace("daily_snooze_", "")  # beacon / skillbeacon
+    _, snooze_col, label = DAILY_PREFS_TOGGLES[kind]
+    update_user(uid, **{snooze_col: datetime.now(get_user_tz(get_user(uid))).date().isoformat()})
+    await q.answer(f"😴 {label} — отложено до завтра")
+    try:
+        await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
+    except Exception:
+        pass
+
+async def daily_prefs_disable_forever(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    clear_awaiting_flags(ctx)
+    uid = q.from_user.id
+    kind = q.data.replace("daily_disable_", "")  # beacon / skillbeacon
+    enabled_col, _, label = DAILY_PREFS_TOGGLES[kind]
+    update_user(uid, **{enabled_col: 0})
+    await q.answer(f"🔕 {label} — выключено насовсем")
+    try:
+        await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
+    except Exception:
+        pass
+
+async def daily_prefs_cancel_snooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    clear_awaiting_flags(ctx)
+    uid = q.from_user.id
+    await q.answer()
     try:
         await q.message.edit_reply_markup(reply_markup=daily_prefs_kb(get_user(uid)))
     except Exception:
@@ -10708,6 +10782,9 @@ def main():
     app.add_handler(CallbackQueryHandler(snooze_notification_type, pattern="^snooze_notif_"))
     app.add_handler(CallbackQueryHandler(quick_toggle_beacon, pattern="^quick_toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(quick_toggle_skill,  pattern="^quick_toggle_skill$"))
+    app.add_handler(CallbackQueryHandler(daily_prefs_snooze_today,   pattern="^daily_snooze_(beacon|skillbeacon)$"))
+    app.add_handler(CallbackQueryHandler(daily_prefs_disable_forever, pattern="^daily_disable_(beacon|skillbeacon)$"))
+    app.add_handler(CallbackQueryHandler(daily_prefs_cancel_snooze,  pattern="^daily_cancel_(beacon|skillbeacon)$"))
     app.add_handler(CallbackQueryHandler(research_callback,  pattern="^research_"))
     app.add_handler(CallbackQueryHandler(show_tasks,        pattern="^go_tasks$"))
     app.add_handler(CallbackQueryHandler(morning_task_offer_yes, pattern="^morning_tasks_yes$"))
