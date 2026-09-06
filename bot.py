@@ -629,6 +629,15 @@ def init_db():
     for col, default in [
         ("timezone", f"'{USER_TIMEZONE}'"),
         ("buddy_name", "''"),
+        # Бадди-пара с реальным пользователем бота (в отличие от buddy_name —
+        # просто имя для текстового шаблона, работает и без этого) — product-
+        # обсуждение с пользователем: диплинк-приглашение своего друга или
+        # случайный матчинг. buddy_seeking_since — непустая ISO-метка времени,
+        # когда встал в очередь случайного матчинга (тот же паттерн "пусто
+        # или таймстемп", что и у resume_check_due) — заодно FIFO-порядок.
+        ("buddy_uid", "''"),
+        ("buddy_paired_at", "''"),
+        ("buddy_seeking_since", "''"),
         ("notif_morning", "'09:00'"),
         ("notif_midday", "'13:00'"),
         ("notif_evening", "'21:00'"),
@@ -2116,14 +2125,63 @@ def _onboard_track(ctx, msg):
         ctx.user_data.setdefault("onboard_step_msg_ids", []).append(mid)
     return msg
 
+BUDDY_INVITE_PAYLOAD_RE = re.compile(r"^buddy_(\d+)$")
+
+def _parse_buddy_invite_arg(ctx, uid):
+    """Диплинк t.me/<bot>?start=buddy_<uid> приходит в /start как ctx.args[0]
+    "buddy_<uid>" — PTB сам разбирает текст после команды. Возвращает
+    ID пригласившего, только если приглашение реально что-то значит:
+    ссылка не на самого себя, пригласивший существует и у него ещё нет
+    своего бадди (иначе тихо игнорируем — не мешаем обычному онбордингу
+    ошибкой ради устаревшей/битой ссылки)."""
+    args = getattr(ctx, "args", None)
+    if not args:
+        return None
+    m = BUDDY_INVITE_PAYLOAD_RE.match(args[0])
+    if not m:
+        return None
+    inviter_uid = int(m.group(1))
+    if inviter_uid == uid:
+        return None
+    inviter = get_user(inviter_uid)
+    if not inviter.get("name") or inviter.get("buddy_uid"):
+        return None
+    return inviter_uid
+
+async def _handle_existing_user_buddy_invite(update, ctx, uid, inviter_uid):
+    """/start buddy_<uid> от уже зарегистрированного пользователя — вместо
+    привычного "с возвращением" показываем явный вопрос принять/нет, а не
+    молча теряем диплинк (единственный способ что-то сделать с ним раньше
+    был бы вообще не дойти до этой ветки)."""
+    inviter = get_user(inviter_uid)
+    user = get_user(uid)
+    if user.get("buddy_uid"):
+        await update.message.reply_text(
+            "У тебя уже есть бадди — чтобы принять новое приглашение, сначала смени текущего в 👥 Бадди.",
+            reply_markup=menu_button_kb()
+        )
+        return
+    await update.message.reply_text(
+        f"👥 *{md_escape(inviter['name'])}* приглашает тебя стать бадди в ADHD Buddy!\n\nПринять?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Принять", callback_data=f"buddy_invite_accept_{inviter_uid}")],
+            [InlineKeyboardButton("Не сейчас", callback_data="go_menu")],
+        ])
+    )
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     init_db()
     clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(uid)
+    inviter_uid = _parse_buddy_invite_arg(ctx, uid)
 
     # Если уже зарегистрирован — сразу предложить нужный блок по времени суток
     if user["name"]:
+        if inviter_uid is not None:
+            await _handle_existing_user_buddy_invite(update, ctx, uid, inviter_uid)
+            return ConversationHandler.END
         hour = datetime.now(get_user_tz(user)).hour
         if hour < 12:
             await update.message.reply_text(
@@ -2142,9 +2200,20 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
         return ConversationHandler.END
 
+    # Реальный запрос (product-обсуждение): реферальный онбординг с явным
+    # упоминанием пригласившего в первом же сообщении — не просто вежливость,
+    # а ощутимо более тёплый вход, чем безличный холодный старт. Само
+    # оформление пары — только в самом конце онбординга (см.
+    # _finalize_pending_buddy_invite), когда есть хотя бы имя.
+    intro = "👋 Привет! Я *ADHD Buddy*"
+    if inviter_uid is not None:
+        ctx.user_data["pending_buddy_invite"] = inviter_uid
+        inviter_name = md_escape(get_user(inviter_uid).get("name") or "")
+        intro = f"👋 Тебя пригласил(а) *{inviter_name}* — привет! Я *ADHD Buddy*"
+
     await _onboard_clear_prev(ctx, ctx.bot, update.effective_chat.id)
     _onboard_track(ctx, await update.message.reply_text(
-        "👋 Привет! Я *ADHD Buddy* — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
+        f"{intro} — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
         "🧠 *Чем помогу:*\n"
         "• Преодолевать фрустрацию и прокрастинацию\n"
         "• Строить структуру дня без лишнего давления\n"
@@ -2542,11 +2611,28 @@ TRIAL_INFO_TIP = (
     f"отменить можно в любой момент)."
 )
 
+async def _finalize_pending_buddy_invite(ctx, message, uid):
+    """Вызывается в самом конце онбординга (см. onboard_notif_on/_skip) —
+    именно тут, а не раньше: к этому моменту у нового пользователя уже
+    точно есть имя, чтобы пригласившему было что показать. pending_buddy_invite
+    выставляется в start() (см.) только для СОВСЕМ нового пользователя."""
+    inviter_uid = ctx.user_data.pop("pending_buddy_invite", None)
+    if inviter_uid is None:
+        return
+    if finalize_buddy_pairing(uid, inviter_uid):
+        await message.reply_text("🎉 Готово — теперь вы с другом бадди!", reply_markup=menu_button_kb())
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid)
+    # Если finalize_buddy_pairing вернула False (пригласивший уже успел
+    # обзавестись бадди, пока новый пользователь проходил онбординг) —
+    # молча не оформляем пару, не срывая под конец онбординг лишней
+    # ошибкой из-за редкого гоночного случая.
+
 async def onboard_notif_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     update_user(uid, notif_enabled=1)
     await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    await _finalize_pending_buddy_invite(ctx, q.message, uid)
     await q.message.reply_text(
         "✅ *Уведомления включены!*\n\n"
         "По умолчанию: ☀️ 09:00 · ☕ 13:00 · 🌙 21:00\n"
@@ -2562,6 +2648,7 @@ async def onboard_notif_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     update_user(uid, notif_enabled=0)
     await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    await _finalize_pending_buddy_invite(ctx, q.message, uid)
     await q.message.reply_text(
         "Окей, отключил. Включить уведомления можно в любой момент через ⚙️ Настройки."
     )
@@ -9167,12 +9254,83 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ── BUDDY ──────────────────────────────────────────────────────────────────
+# Реальный запрос (product-обсуждение с пользователем): buddy_name — просто
+# имя для текстового шаблона (buddy_ping), работает и без того, чтобы бадди
+# вообще пользовался ботом — оставляем как есть, не заменяем. buddy_uid —
+# НОВАЯ, отдельная связка с реальным пользователем бота (через диплинк или
+# случайный матчинг), даёт настоящие уведомления между парой в будущих
+# фичах (шеринг прогресса и т.п.). Оба могут существовать одновременно —
+# buddy_uid просто приоритетнее в отображении, когда есть.
+def finalize_buddy_pairing(uid_a, uid_b):
+    """True, если пара реально образовалась. Отказывает, если кто-то из
+    двоих уже связан (осознанно, до появления "смены бадди" — молча
+    перезаписывать существующую пару было бы хуже, чем ничего не сделать),
+    либо это одно и то же лицо (свою же диплинк-ссылку открыли повторно)."""
+    if uid_a == uid_b:
+        return False
+    user_a = get_user(uid_a)
+    user_b = get_user(uid_b)
+    if user_a.get("buddy_uid") or user_b.get("buddy_uid"):
+        return False
+    now = datetime.now(pytz.utc).isoformat()
+    update_user(uid_a, buddy_uid=uid_b, buddy_paired_at=now, buddy_seeking_since="")
+    update_user(uid_b, buddy_uid=uid_a, buddy_paired_at=now, buddy_seeking_since="")
+    return True
+
+def find_waiting_buddy_candidate(uid):
+    """Самый первый (FIFO — по buddy_seeking_since) из ожидающих случайного
+    матчинга, кроме самого uid."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT user_id FROM users WHERE buddy_seeking_since != '' AND user_id != ? "
+        "ORDER BY buddy_seeking_since LIMIT 1",
+        (uid,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def _tz_offset_diff_hours(user_a, user_b):
+    """Разница часовых поясов в часах — не требуем совпадения (product-
+    решение: это не блокирующий критерий матчинга), но обе стороны должны
+    явно её знать при планировании совместной работы."""
+    now = datetime.now(pytz.utc)
+    offset_a = get_user_tz(user_a).utcoffset(now.replace(tzinfo=None))
+    offset_b = get_user_tz(user_b).utcoffset(now.replace(tzinfo=None))
+    return abs((offset_a - offset_b).total_seconds()) / 3600
+
+async def _notify_buddy_paired(bot, uid_a, uid_b):
+    """Уведомляет ОБЕИХ сторон об образовавшейся паре — с явной разницей
+    часовых поясов, если она есть (product-решение: не скрывать, а
+    проговорить, чтобы учитывали при планировании)."""
+    user_a = get_user(uid_a); user_b = get_user(uid_b)
+    diff = _tz_offset_diff_hours(user_a, user_b)
+    tz_note = f"\n\n🌍 Разница часовых поясов: примерно {diff:.0f} ч — учтите при планировании." if diff >= 1 else ""
+    name_a = md_escape(user_a.get("name") or "Без имени")
+    name_b = md_escape(user_b.get("name") or "Без имени")
+    try:
+        await bot.send_message(
+            chat_id=uid_a,
+            text=f"🎉 *У тебя новый бадди — {name_b}!*{tz_note}",
+            parse_mode="Markdown", reply_markup=menu_button_kb()
+        )
+    except Exception as e:
+        print(f"Ошибка уведомления о паре бадди uid={uid_a}: {e}")
+    try:
+        await bot.send_message(
+            chat_id=uid_b,
+            text=f"🎉 *У тебя новый бадди — {name_a}!*{tz_note}",
+            parse_mode="Markdown", reply_markup=menu_button_kb()
+        )
+    except Exception as e:
+        print(f"Ошибка уведомления о паре бадди uid={uid_b}: {e}")
+
 async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
-    buddy = user.get("buddy_name","")
+    buddy_name = user.get("buddy_name", "")
+    linked_uid = user.get("buddy_uid") or ""
     buddy_tip = (
         "🔵 *Совместная работа рядом* — просто работайте рядом (видеозвонок, кафе). "
         "Мозг с СДВГ активируется от присутствия другого человека — даже без слов.\n\n"
@@ -9180,21 +9338,91 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Внешняя ответственность работает там, где внутренняя не справляется."
     )
     text = f"👥 *Бадди при СДВГ*\n\n{buddy_tip}\n\n"
-    if buddy:
-        text += f"*Твой бадди:* {md_escape(buddy)}"
+    if linked_uid:
+        partner = get_user(int(linked_uid))
+        partner_name = (partner.get("name") if partner else "") or "бадди"
+        text += f"*Твой бадди:* {md_escape(partner_name)} ✅"
+        buttons = [
+            [InlineKeyboardButton("💬 Написать бадди сейчас", callback_data="buddy_ping")],
+            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+        ]
+    elif buddy_name:
+        text += f"*Твой бадди:* {md_escape(buddy_name)} _(не пользуется ботом)_"
         buttons = [
             [InlineKeyboardButton("✏️ Изменить", callback_data="buddy_set")],
             [InlineKeyboardButton("💬 Написать бадди сейчас", callback_data="buddy_ping")],
+            [InlineKeyboardButton("🔗 Пригласить в бота", callback_data="buddy_invite_link")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ]
     else:
         text += "_Бадди не задан._"
-        buttons = [
-            [InlineKeyboardButton("➕ Добавить бадди", callback_data="buddy_set")],
-            [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
-        ]
+        buttons = [[InlineKeyboardButton("➕ Добавить бадди (просто имя)", callback_data="buddy_set")],
+                   [InlineKeyboardButton("🔗 Пригласить друга", callback_data="buddy_invite_link")]]
+        if user.get("buddy_seeking_since"):
+            buttons.append([InlineKeyboardButton("⏳ Ищу бадди... (отменить)", callback_data="buddy_cancel_seeking")])
+        else:
+            buttons.append([InlineKeyboardButton("🔍 Найди мне бадди", callback_data="buddy_find_match")])
+        buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     await _render_tracked(q.message, ctx, "buddy", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
                            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def buddy_invite_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    username = ctx.bot.username
+    if not username:
+        await _edit_or_send(q, "Не получилось сделать ссылку — попробуй чуть позже.", reply_markup=menu_button_kb())
+        return
+    link = f"https://t.me/{username}?start=buddy_{uid}"
+    text = (
+        "🔗 *Пригласи друга в бадди*\n\n"
+        "Отправь ему эту ссылку — как только он запустит бота по ней, вы автоматически станете парой:\n\n"
+        f"`{link}`"
+    )
+    await _render_tracked(q.message, ctx, "buddy", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown",
+                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Бадди", callback_data="go_buddy")]]))
+
+async def buddy_find_match(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    user = get_user(uid)
+    if user.get("buddy_uid"):
+        await _edit_or_send(q, "У тебя уже есть бадди.", reply_markup=menu_button_kb())
+        return
+    candidate = find_waiting_buddy_candidate(uid)
+    if candidate is None:
+        update_user(uid, buddy_seeking_since=datetime.now(pytz.utc).isoformat())
+        await _edit_or_send(
+            q,
+            "🔍 Ищу тебе бадди среди тех, кто тоже сейчас ищет — как только кто-то найдётся, "
+            "напишу сам. Можно продолжать пользоваться ботом как обычно.",
+            reply_markup=menu_button_kb()
+        )
+        return
+    if finalize_buddy_pairing(uid, candidate):
+        await _edit_or_send(q, "🎉 Нашёлся бадди! Пишу вам обоим.", reply_markup=menu_button_kb())
+        await _notify_buddy_paired(ctx.bot, uid, candidate)
+    else:
+        await _edit_or_send(q, "Не получилось — попробуй ещё раз.", reply_markup=menu_button_kb())
+
+async def buddy_cancel_seeking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    update_user(uid, buddy_seeking_since="")
+    await buddy_menu(update, ctx)
+
+async def buddy_invite_accept(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"✅ Принять" на приглашении по диплинку — см. _handle_existing_user_buddy_invite
+    (для уже зарегистрированного) и _finalize_pending_buddy_invite (для
+    только что прошедшего онбординг) — эта ветка обслуживает ПЕРВЫЙ случай."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    inviter_uid = int(q.data.replace("buddy_invite_accept_", ""))
+    if finalize_buddy_pairing(uid, inviter_uid):
+        await _edit_or_send(q, "🎉 Готово, теперь вы бадди!", reply_markup=menu_button_kb())
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid)
+    else:
+        await _edit_or_send(q, "Не получилось — возможно, у кого-то из вас уже есть бадди.", reply_markup=menu_button_kb())
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -11385,6 +11613,10 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
+    app.add_handler(CallbackQueryHandler(buddy_invite_link,    pattern="^buddy_invite_link$"))
+    app.add_handler(CallbackQueryHandler(buddy_find_match,     pattern="^buddy_find_match$"))
+    app.add_handler(CallbackQueryHandler(buddy_cancel_seeking, pattern="^buddy_cancel_seeking$"))
+    app.add_handler(CallbackQueryHandler(buddy_invite_accept,  pattern="^buddy_invite_accept_\\d+$"))
     app.add_handler(CallbackQueryHandler(midday_callback, pattern="^mid_"))
     app.add_handler(CallbackQueryHandler(go_focus,          pattern="^go_focus$"))
     app.add_handler(CallbackQueryHandler(focus_start_callback, pattern="^focus_start_\\d+$"))
