@@ -1074,6 +1074,15 @@ def delete_pool_task(uid, task_id):
     conn.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
     conn.commit(); conn.close()
 
+def update_pool_task(uid, task_id, text):
+    """Правка формулировки существующего дела в «Списке дел» (IDEAS.md
+    2026-08-28) — раньше единственным способом исправить опечатку или
+    уточнить дело было удалить его и добавить заново, теряя дату создания
+    (created), из-за которой пункт снова выглядел бы "свежим" в списке."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE tasks SET text=? WHERE id=? AND user_id=?", (text, task_id, uid))
+    conn.commit(); conn.close()
+
 def clear_pool_tasks(uid):
     """Реальный запрос (IDEAS.md 2026-08-28): список дел растёт в
     нечитаемое "кладбище" пунктов без штатного способа его разобрать или
@@ -7153,8 +7162,12 @@ POOL_STALE_DAYS = 14  # см. task_pool_text — с какого возраст�
 def task_pool_kb(pool):
     rows = []
     if pool:
+        # Реальный запрос (IDEAS.md 2026-08-28): единственным способом
+        # исправить опечатку или уточнить формулировку было удалить дело и
+        # добавить заново — с потерей даты создания и позиции в списке.
+        rows.append([InlineKeyboardButton("✏️ Изменить дело", callback_data="pool_edit_menu")])
         rows.append([InlineKeyboardButton("🗑 Удалить дело", callback_data="pool_del_menu")])
-    rows.append([InlineKeyboardButton("✏️ Добавить дело", callback_data="pool_add")])
+    rows.append([InlineKeyboardButton("➕ Добавить дело", callback_data="pool_add")])
     if pool:
         # Реальный запрос (IDEAS.md 2026-08-28): единственным способом
         # разобрать разросшийся список было удалять по одному — не хватало
@@ -7247,6 +7260,43 @@ async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     task_id = int(q.data.replace("pooldel_", ""))
     delete_pool_task(q.from_user.id, task_id)
     await send_pool_delete_menu(q.message, q.from_user.id)
+
+async def send_pool_edit_menu(message, uid):
+    """«✏️ Изменить дело» (IDEAS.md 2026-08-28) — тот же паттерн выбора
+    пункта, что и send_pool_delete_menu, только тап ведёт не к удалению, а
+    к запросу новой формулировки (см. pool_edit_item_start)."""
+    pool = get_pool_tasks(uid)
+    if not pool:
+        await _edit_msg_or_send(message, task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
+        return
+    rows = [[InlineKeyboardButton(f"✏️ {t['text'][:35]}", callback_data=f"pooledit_{t['id']}")] for t in pool]
+    rows.append([InlineKeyboardButton("◀️ Назад", callback_data="go_task_pool")])
+    await _edit_msg_or_send(message, "Что изменить?", reply_markup=InlineKeyboardMarkup(rows))
+
+async def show_task_pool_edit(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    await send_pool_edit_menu(q.message, q.from_user.id)
+
+async def pool_edit_item_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    task_id = int(q.data.replace("pooledit_", ""))
+    pool = get_pool_tasks(uid)
+    item = next((t for t in pool if t["id"] == task_id), None)
+    if item is None:
+        await send_pool_edit_menu(q.message, uid)
+        return
+    ctx.user_data["awaiting_pool_edit"] = task_id
+    ctx.user_data["awaiting_pool_edit_set_at"] = datetime.now().isoformat()
+    await _render_tracked(
+        q.message, ctx, "task_pool",
+        f"✏️ Сейчас: *{md_escape(item['text'])}*\n\nНапиши новый текст этого дела.",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_task_pool")]])
+    )
 
 async def pool_clear_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """"🧹 Очистить весь список" — необратимо, поэтому отдельный экран
@@ -7937,6 +7987,8 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("task_walk", None)
     ctx.user_data["awaiting_pool_add"] = False
     ctx.user_data.pop("awaiting_pool_add_set_at", None)
+    ctx.user_data.pop("awaiting_pool_edit", None)
+    ctx.user_data.pop("awaiting_pool_edit_set_at", None)
     ctx.user_data["awaiting_reminder_add"] = False
     ctx.user_data.pop("awaiting_reminder_add_set_at", None)
     ctx.user_data.pop("awaiting_reminder_edit", None)
@@ -8283,6 +8335,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # вставленным текстом целиком (удобно, если вставляешь список).
         items = update.message.text.strip().split("\n")
         await add_pool_and_reply(update.message, uid, items, ctx=ctx)
+    elif ctx.user_data.get("awaiting_pool_edit") and not _awaiting_flag_expired(ctx, "awaiting_pool_edit"):
+        task_id = ctx.user_data.pop("awaiting_pool_edit")
+        ctx.user_data.pop("awaiting_pool_edit_set_at", None)
+        new_text = update.message.text.strip()
+        if not new_text:
+            ctx.user_data["awaiting_pool_edit"] = task_id
+            retry_text = "Не увидел текста — напиши ещё раз."
+            if not await _edit_tracked_msg(ctx, "task_pool", retry_text, reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
+        else:
+            update_pool_task(uid, task_id, new_text)
+            pool = get_pool_tasks(uid)
+            confirm_text = f"✅ Изменил: {md_escape(new_text)}\n\n" + task_pool_text(pool)
+            kb = task_pool_kb(pool)
+            if not await _edit_tracked_msg(ctx, "task_pool", confirm_text, parse_mode="Markdown", reply_markup=kb):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
     elif ctx.user_data.get("awaiting_reminder_add") and not _awaiting_flag_expired(ctx, "awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
         # reminder_seed — недостающая половина фразы для parse_reminder_request,
@@ -12147,6 +12215,8 @@ def main():
     app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
     app.add_handler(CallbackQueryHandler(show_task_pool_delete, pattern="^pool_del_menu$"))
     app.add_handler(CallbackQueryHandler(pool_delete_item,     pattern="^pooldel_"))
+    app.add_handler(CallbackQueryHandler(show_task_pool_edit,  pattern="^pool_edit_menu$"))
+    app.add_handler(CallbackQueryHandler(pool_edit_item_start, pattern="^pooledit_"))
     app.add_handler(CallbackQueryHandler(pool_clear_menu,      pattern="^pool_clear_menu$"))
     app.add_handler(CallbackQueryHandler(pool_clear_confirm,   pattern="^pool_clear_confirm$"))
     app.add_handler(CallbackQueryHandler(pool_use_item,        pattern="^pooluse_"))
