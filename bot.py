@@ -608,6 +608,22 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, event TEXT, created TEXT
     )""")
+    # 🧘 Коворкинг — открытые заявки на совместную тихую рабочую сессию
+    # (product-обсуждение с пользователем): участникам не нужно знать друг
+    # о друге ничего, кроме факта "кто-то ещё сейчас тоже работает" — бот
+    # просто синхронизирует старт/конец, без создания общего чата. start_at/
+    # end_at — в UTC (единая точка отсчёта для участников в разных поясах,
+    # конвертируются в локальное время каждого только при отображении).
+    c.execute("""CREATE TABLE IF NOT EXISTS coworking_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        creator_id INTEGER, start_at TEXT, end_at TEXT, duration_minutes INTEGER,
+        created_at TEXT, started_notified INTEGER DEFAULT 0, finished_notified INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS coworking_participants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER, user_id INTEGER, joined_at TEXT,
+        UNIQUE(session_id, user_id)
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -1065,6 +1081,100 @@ def recur_label(remind_at_key, recur):
         except Exception:
             return "каждую неделю"
     return ""
+
+# ── COWORKING (🧘 открытые сессии совместной тишины) ────────────────────────
+def create_coworking_session(creator_id, start_at_utc_iso, duration_minutes):
+    """start_at_utc_iso — уже посчитанный, ЗАВЕДОМО В БУДУЩЕМ момент старта
+    в UTC (перевод из локального времени создателя — забота вызывающего
+    кода, см. handle_text/awaiting_coworking_time). Создатель сразу
+    становится первым участником — не нужно отдельно "присоединяться" к
+    собственной сессии."""
+    end_at = (datetime.fromisoformat(start_at_utc_iso) + timedelta(minutes=duration_minutes)).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.execute(
+        "INSERT INTO coworking_sessions(creator_id, start_at, end_at, duration_minutes, created_at) VALUES (?, ?, ?, ?, ?)",
+        (creator_id, start_at_utc_iso, end_at, duration_minutes, datetime.now(pytz.utc).isoformat())
+    )
+    session_id = cur.lastrowid
+    conn.execute(
+        "INSERT OR IGNORE INTO coworking_participants(session_id, user_id, joined_at) VALUES (?, ?, ?)",
+        (session_id, creator_id, datetime.now(pytz.utc).isoformat())
+    )
+    conn.commit(); conn.close()
+    return session_id
+
+def get_open_coworking_sessions():
+    """Заявки, на которые ещё можно записаться — старт строго в будущем."""
+    now_iso = datetime.now(pytz.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM coworking_sessions WHERE start_at > ? ORDER BY start_at", (now_iso,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_coworking_session(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM coworking_sessions WHERE id=?", (session_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def join_coworking_session(session_id, user_id):
+    """True, если это НОВОЕ присоединение (для решения, нужно ли обновлять
+    счётчик у уже присоединившихся) — False, если уже был в сессии."""
+    conn = sqlite3.connect(DB_PATH)
+    before = conn.execute(
+        "SELECT 1 FROM coworking_participants WHERE session_id=? AND user_id=?", (session_id, user_id)
+    ).fetchone()
+    if before:
+        conn.close()
+        return False
+    conn.execute(
+        "INSERT INTO coworking_participants(session_id, user_id, joined_at) VALUES (?, ?, ?)",
+        (session_id, user_id, datetime.now(pytz.utc).isoformat())
+    )
+    conn.commit(); conn.close()
+    return True
+
+def get_coworking_participants(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT user_id FROM coworking_participants WHERE session_id=? ORDER BY joined_at", (session_id,)
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def get_due_coworking_starts():
+    now_iso = datetime.now(pytz.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM coworking_sessions WHERE start_at<=? AND started_notified=0", (now_iso,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_due_coworking_ends():
+    now_iso = datetime.now(pytz.utc).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM coworking_sessions WHERE end_at<=? AND finished_notified=0", (now_iso,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def mark_coworking_started(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE coworking_sessions SET started_notified=1 WHERE id=?", (session_id,))
+    conn.commit(); conn.close()
+
+def mark_coworking_finished(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE coworking_sessions SET finished_notified=1 WHERE id=?", (session_id,))
+    conn.commit(); conn.close()
 
 def get_latest_evening_plan(uid):
     """Вчерашний вечерний дневник для переноса плана в утро.
@@ -4873,6 +4983,7 @@ def skills_list_kb(page=0):
             for p in range(page_count)
         ])
     rows.append([InlineKeyboardButton("👥 Бадди — совместная работа рядом", callback_data="go_buddy")])
+    rows.append([InlineKeyboardButton("🧘 Коворкинг — открытые сессии тишины", callback_data="go_coworking")])
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -7138,6 +7249,141 @@ async def remind_snooze_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     except Exception:
         pass
 
+# ── COWORKING (🧘) ───────────────────────────────────────────────────────────
+# Реальный запрос (product-обсуждение): открытые заявки на совместную тихую
+# рабочую сессию — не привязаны к паре бадди, участникам не нужно знать
+# ничего друг о друге, кроме того, что кто-то ещё сейчас тоже работает
+# (body doubling). Бот только синхронизирует старт/конец по времени —
+# никакого общего чата, никакого раскрытия личности.
+COWORKING_DURATIONS = (25, 45, 60)
+
+def _coworking_session_text(session, viewer_uid, count):
+    viewer = get_user(viewer_uid)
+    local_start = datetime.fromisoformat(session["start_at"]).astimezone(get_user_tz(viewer))
+    return (
+        f"🧘 Сессия на *{local_start.strftime('%H:%M')}*, {session['duration_minutes']} мин\n\n"
+        f"Участников: *{count}*"
+    )
+
+async def go_coworking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    user = get_user(uid)
+    sessions = get_open_coworking_sessions()
+    if sessions:
+        lines = []
+        rows = []
+        for s in sessions:
+            local_start = datetime.fromisoformat(s["start_at"]).astimezone(get_user_tz(user))
+            count = len(get_coworking_participants(s["id"]))
+            lines.append(f"🧘 {local_start.strftime('%H:%M')} · {s['duration_minutes']} мин · {count} присоединились")
+            rows.append([InlineKeyboardButton(
+                f"Присоединиться — {local_start.strftime('%H:%M')}", callback_data=f"coworking_join_{s['id']}"
+            )])
+        text = "🧘 *Коворкинг — открытые сессии*\n\n" + "\n".join(lines)
+    else:
+        text = ("🧘 *Коворкинг*\n\n_Пока нет открытых сессий — совместная тихая работа: "
+                "ставишь время, к тебе может присоединиться кто угодно, никто никого не видит, "
+                "бот просто сообщает всем, когда начинать и заканчивать._")
+        rows = []
+    rows.append([InlineKeyboardButton("➕ Создать сессию", callback_data="coworking_create_start")])
+    rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
+    await _render_tracked(q.message, ctx, "coworking", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+                           parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+async def coworking_create_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    ctx.user_data["awaiting_coworking_time"] = True
+    ctx.user_data["awaiting_coworking_time_set_at"] = datetime.now().isoformat()
+    await _render_tracked(
+        q.message, ctx, "coworking",
+        "🧘 Во сколько начинаем? Напиши время в формате *ЧЧ:ММ* (сегодня), например `18:00`.",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_coworking")]])
+    )
+
+async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    start_utc = ctx.user_data.pop("coworking_pending_start_utc", None)
+    if start_utc is None:
+        await _edit_or_send(q, "Не нашёл время сессии — начни заново.", reply_markup=menu_button_kb())
+        return
+    minutes = int(q.data.replace("coworking_dur_", ""))
+    session_id = create_coworking_session(uid, start_utc, minutes)
+    user = get_user(uid)
+    local_start = datetime.fromisoformat(start_utc).astimezone(get_user_tz(user))
+    text = (
+        f"✅ *Сессия создана*\n\n🧘 {local_start.strftime('%H:%M')}, {minutes} мин\n\n"
+        "Как только кто-то присоединится — увидишь здесь же. Начнём точно вовремя."
+    )
+    await send_tracked_notification(
+        ctx.bot, uid, f"coworking_{session_id}", text,
+        parse_mode="Markdown", reply_markup=menu_button_kb()
+    )
+
+async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    session_id = int(q.data.replace("coworking_join_", ""))
+    session = get_coworking_session(session_id)
+    if session is None or session["start_at"] <= datetime.now(pytz.utc).isoformat():
+        await q.answer("Эта сессия уже недоступна.")
+        return
+    join_coworking_session(session_id, uid)
+    await q.answer("Готово, ты в сессии!")
+    participants = get_coworking_participants(session_id)
+    count = len(participants)
+    # Обновляем счётчик участников у ВСЕХ, включая уже присоединившихся
+    # раньше — send_tracked_notification (см. её докстринг) сама заменяет
+    # предыдущее сообщение того же канала на новое, тем же приёмом, что и
+    # у остальных фоновых уведомлений в этом файле.
+    for pid in participants:
+        text = _coworking_session_text(session, pid, count)
+        try:
+            await send_tracked_notification(
+                ctx.bot, pid, f"coworking_{session_id}", text,
+                parse_mode="Markdown", reply_markup=menu_button_kb()
+            )
+        except Exception as e:
+            print(f"Ошибка обновления счётчика коворкинга uid={pid}: {e}")
+
+async def check_coworking_sessions(app):
+    """Отдельная раз-в-минутную джоба (как и sweep_scheduled_deletions) —
+    итерирует по СЕССИЯМ, а не по пользователям, поэтому не встроена в
+    check_notifications/_process_user_notifications."""
+    try:
+        for session in get_due_coworking_starts():
+            participants = get_coworking_participants(session["id"])
+            for pid in participants:
+                try:
+                    await app.bot.send_message(
+                        chat_id=pid,
+                        text=f"🧘 *Сессия началась!* {session['duration_minutes']} минут тишины.\n\nВас сегодня: *{len(participants)}*",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"Ошибка старта коворкинга uid={pid}: {e}")
+            mark_coworking_started(session["id"])
+        for session in get_due_coworking_ends():
+            participants = get_coworking_participants(session["id"])
+            for pid in participants:
+                try:
+                    await app.bot.send_message(
+                        chat_id=pid,
+                        text=f"✅ *Готово!* {session['duration_minutes']} минут тишины позади. Хорошая работа 👏",
+                        parse_mode="Markdown",
+                        reply_markup=menu_button_kb()
+                    )
+                except Exception as e:
+                    print(f"Ошибка завершения коворкинга uid={pid}: {e}")
+            mark_coworking_finished(session["id"])
+    except Exception as e:
+        print(f"Ошибка check_coworking_sessions: {e}")
+
 
 # ── DAY CARD ───────────────────────────────────────────────────────────────
 def build_day_card_text(uid, for_date):
@@ -7279,6 +7525,9 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("awaiting_reminder_add_set_at", None)
     ctx.user_data.pop("awaiting_reminder_edit", None)
     ctx.user_data.pop("awaiting_reminder_edit_set_at", None)
+    ctx.user_data.pop("awaiting_coworking_time", None)
+    ctx.user_data.pop("awaiting_coworking_time_set_at", None)
+    ctx.user_data.pop("coworking_pending_start_utc", None)
     ctx.user_data["awaiting_work_start"] = False
     ctx.user_data["coach_mode"] = False
     ctx.user_data.pop("coach_history", None)
@@ -7582,6 +7831,35 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data.pop("awaiting_task_edit_set_at", None)
         await _delete_task_answer(ctx, update.message)
         await apply_task_edit(update.message, ctx, uid, key, update.message.text.strip())
+    elif ctx.user_data.get("awaiting_coworking_time") and not _awaiting_flag_expired(ctx, "awaiting_coworking_time"):
+        ctx.user_data["awaiting_coworking_time"] = False
+        ctx.user_data.pop("awaiting_coworking_time_set_at", None)
+        text = update.message.text.strip()
+        # Та же регулярка, что и у awaiting_time (настройки уведомлений) —
+        # ЧЧ:ММ, час без ведущего нуля разрешён и сразу нормализуется.
+        if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
+            h, m = map(int, text.split(":"))
+            user_tz = get_user_tz(get_user(uid))
+            now_local = datetime.now(user_tz)
+            start_local = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+            if start_local <= now_local:
+                retry_text = "Это время уже прошло сегодня. Напиши время попозже, в формате ЧЧ:ММ."
+                if not await _edit_tracked_msg(ctx, "coworking", retry_text, reply_markup=menu_button_kb()):
+                    await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
+                ctx.user_data["awaiting_coworking_time"] = True
+            else:
+                ctx.user_data["coworking_pending_start_utc"] = start_local.astimezone(pytz.utc).isoformat()
+                dur_row = [InlineKeyboardButton(f"{m} мин", callback_data=f"coworking_dur_{m}") for m in COWORKING_DURATIONS]
+                confirm_text = f"На сколько минут? Начало в *{text}*."
+                if not await _edit_tracked_msg(ctx, "coworking", confirm_text, parse_mode="Markdown",
+                                                reply_markup=InlineKeyboardMarkup([dur_row])):
+                    await update.message.reply_text(confirm_text, parse_mode="Markdown",
+                                                     reply_markup=InlineKeyboardMarkup([dur_row]))
+        else:
+            retry_text = "Неверный формат. Напиши время в формате ЧЧ:ММ, например `18:00`."
+            if not await _edit_tracked_msg(ctx, "coworking", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
+                await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
+            ctx.user_data["awaiting_coworking_time"] = True
     elif ctx.user_data.get("awaiting_pool_add") and not _awaiting_flag_expired(ctx, "awaiting_pool_add"):
         ctx.user_data["awaiting_pool_add"] = False
         ctx.user_data.pop("awaiting_pool_add_set_at", None)
@@ -11084,6 +11362,10 @@ def main():
     app.add_handler(CallbackQueryHandler(reminder_cancel_item, pattern="^remdel_"))
     app.add_handler(CallbackQueryHandler(reminder_edit_start,  pattern="^remedit_"))
     app.add_handler(CallbackQueryHandler(remind_snooze_callback, pattern="^remind_snooze_"))
+    app.add_handler(CallbackQueryHandler(go_coworking,            pattern="^go_coworking$"))
+    app.add_handler(CallbackQueryHandler(coworking_create_start,  pattern="^coworking_create_start$"))
+    app.add_handler(CallbackQueryHandler(coworking_set_duration,  pattern="^coworking_dur_\\d+$"))
+    app.add_handler(CallbackQueryHandler(coworking_join_callback, pattern="^coworking_join_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
@@ -11115,6 +11397,7 @@ def main():
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
     scheduler.add_job(sweep_scheduled_deletions, 'cron', minute='*', args=[app])
+    scheduler.add_job(check_coworking_sessions, 'cron', minute='*', args=[app])
     # Раз в сутки, в наименее людное время по UTC — см. backup_database.
     scheduler.add_job(backup_database, 'cron', hour=3, minute=0, args=[app])
     scheduler.start()
