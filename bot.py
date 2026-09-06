@@ -10804,10 +10804,21 @@ async def weekly_report(app, uid):
         tasks_done = 0
         energy_sum = 0
         energy_count = 0
+        # Реальный запрос (IDEAS.md 2026-08-28): дневной чекин каждый день
+        # спрашивает "что происходит?" (mid_nostart/mid_scary/... — см.
+        # MIDDAY_LABELS/midday_callback) и сохраняет ответ, но эта причина
+        # прокрастинации нигде за неделю не суммировалась — отчёт показывал
+        # только факты (заполнено/не заполнено), а не ПОЧЕМУ буксовало.
+        # "✅ Всё по плану" не считается причиной — исключаем её из подсчёта.
+        cause_counts = {}
 
         for d in days:
             m = get_diary(uid, "morning", d)
             e = get_diary(uid, "evening", d)
+
+            state = get_diary(uid, "midday", d).get("state")
+            if state and state != MIDDAY_LABELS["mid_ok"]:
+                cause_counts[state] = cause_counts.get(state, 0) + 1
 
             # Реальный баг (13-й чекап, тот же класс, что get_latest_evening_plan):
             # "сделано ли утро/вечер" проверялось по ОДНОМУ полю (focus/e_ach/e_a)
@@ -10874,6 +10885,12 @@ async def weekly_report(app, uid):
 
         if not int(user.get("streak_hidden") or 0):
             lines.append(f"🔥 Текущий стрик: *{streak} {ru_days(streak)}*")
+
+        if cause_counts:
+            top_causes = sorted(cause_counts.items(), key=lambda kv: -kv[1])[:3]
+            lines.append("\n🧩 *Что чаще всего мешало:*")
+            for label, count in top_causes:
+                lines.append(f"• {label} — {count} {ru_days(count)}")
 
         # Мотивационный вывод
         lines.append("")
