@@ -9446,6 +9446,251 @@ async def send_guide_section(message, section_id):
     )
 
 
+NOTIF_TICK_CONCURRENCY = 10  # см. check_notifications/_process_user_notifications
+
+
+async def _process_user_notifications(app, user):
+    """Тело тика check_notifications для ОДНОГО пользователя — вынесено в
+    отдельную функцию, чтобы обрабатывать всех пользователей тика ПАРАЛЛЕЛЬНО
+    (см. вызов через asyncio.gather + семафор в check_notifications), а не
+    строго по очереди. Сама логика внутри не изменилась ни на строчку.
+
+    Реальный риск (IDEAS.md 2026-08-28): раньше единственный раз-в-минуту
+    тик обходил всех пользователей строго последовательно — единственный
+    медленный/подвисший await (сетевой таймаут Telegram у одного человека)
+    задерживал уведомления всем, кто шёл за ним в списке этого же тика, и
+    рисковал не уложить весь тик в 60 секунд при росте базы пользователей.
+    """
+    uid = user["user_id"]
+    try:
+        # Реальный баг (16-й чекап, шире, чем фикс 15-го раунда):
+        # user тут раньше был снимком из ЕДИНОГО запроса get_all_notif_users()
+        # в начале ВСЕГО тика, взятым до единого await — а весь тик
+        # обрабатывает всех пользователей последовательно, каждый со
+        # своими await на отправку. К моменту, когда очередь доходит
+        # до конкретного uid, могли пройти секунды (и много чужих
+        # await) — и даже morning/weekly/midday/evening/+2ч-проверки
+        # НИЖЕ (не только маячок/research, что чинили в 15-м раунде)
+        # читали этот же устаревший снимок notif_enabled. Если человек
+        # выключил уведомления, пока сидел в очереди этого тика,
+        # уведомление всё равно уходило. Перечитываем свежим здесь же.
+        user = get_user(uid)
+        # Реальный баг: tz/now_dt/now/is_monday раньше вычислялись из
+        # того же устаревшего снимка user ДО перечитывания выше — если
+        # пользователь как раз в этот момент меняет город/таймзону,
+        # весь остаток тика для него всё равно считался по старому
+        # часовому поясу. Вычисляем только после свежего get_user.
+        tz = get_user_tz(user)
+        now_dt = datetime.now(tz)
+        now = now_dt.strftime("%H:%M")
+        is_monday = now_dt.weekday() == 0
+        day_key = now_dt.strftime("%Y-%m-%d")
+
+        # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
+        # в БД, и триггер — "время уже наступило и сегодня ещё не
+        # отправлено", а не "ровно эта минута". Иначе один пропущенный
+        # тик (рестарт от вотчдога, деплой ровно в нужную минуту)
+        # молча хоронит уведомление на весь день — это реально
+        # случалось.
+        # notif_enabled — общий тумблер конкретно для этих 3x/день
+        # уведомлений; маячок/фокус-таймер/resume-check ниже от него
+        # не зависят — у них своё собственное включение.
+        notif_master_on = int(user.get("notif_enabled") or 0)
+        if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
+                and user.get("morning_sent_date") != day_key
+                and user.get("notif_snooze_morning") != day_key):
+            # Помечаем "отправлено" только после реального успеха — иначе
+            # временный сбой (таймаут телеграма, юзер заблокировал бота)
+            # навсегда съедает уведомление на весь день без единой попытки.
+            if await morning_notification(app, uid):
+                update_user(uid, morning_sent_date=day_key)
+
+        # Отчёт по итогам недели — независимое условие, не вложенное в
+        # блок утреннего уведомления: раньше он делил с ним внешний if,
+        # и получал ровно одну попытку в тот же тик, что и morning —
+        # если сама эта попытка проваливалась, следующий тик уже не
+        # заходил внутрь (morning_sent_date к тому моменту чаще всего
+        # уже проставлен), и weekly_report больше не пересматривался
+        # целую неделю. Заодно раньше зависел от notif_morning_on,
+        # хотя это разные, независимо переключаемые уведомления.
+        #
+        # Шлём утром в ПОНЕДЕЛЬНИК, а не в воскресенье (реальный баг,
+        # репорт от Артёма): при отправке в воскресенье утром окно
+        # "последние 7 дней" включало ещё не начатое воскресенье —
+        # отчёт показывал 5 из 7, даже если человек закрывал оба
+        # блока в тот же день позже. Заодно текст отчёта и так уже
+        # обращён к следующей неделе ("Следующая неделя начинается
+        # с одной задачи A" + кнопка "☀️ Начать новую неделю") —
+        # на утро понедельника это звучит естественно, а на утро
+        # воскресенья, до конца недели, нет.
+        if (notif_master_on and is_monday and now >= user.get("notif_morning", "09:00")
+                and user.get("weekly_report_sent_date") != day_key):
+            if await weekly_report(app, uid):
+                update_user(uid, weekly_report_sent_date=day_key)
+
+        if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
+                and user.get("midday_sent_date") != day_key
+                and user.get("notif_snooze_midday") != day_key):
+            if await midday_notification(app, uid):
+                update_user(uid, midday_sent_date=day_key)
+
+        if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
+                and user.get("evening_sent_date") != day_key
+                and user.get("notif_snooze_evening") != day_key):
+            if await evening_notification(app, uid):
+                update_user(uid, evening_sent_date=day_key)
+
+        # Предупреждение об окончании пробного периода — не завязано
+        # на notif_master_on (это разовое коммерческое уведомление,
+        # не ежедневный ритуал), не ограничено конкретным временем
+        # суток; сама функция взводит trial_warning_sent один раз
+        # за весь триал.
+        await send_trial_ending_warning(app, uid)
+
+        # Напоминание если пропустил утро (+2 часа) — та же логика
+        # "время прошло и сегодня ещё не отправлено", что и для
+        # утро/день/вечер выше, а не точное совпадение минуты.
+        try:
+            mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
+            reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
+            # Если пользователь уже внутри утреннего диалога (просто ещё не
+            # дошёл до задач) — не шлём это напоминание. Его кнопка "Заполнить
+            # утро" ведёт на entry point с allow_reentry=True и перезапускает
+            # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
+            morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
+            # Сравниваем полными datetime, а не строками "HH:MM" — если
+            # notif_morning стоит в пределах 2 часов до полуночи (напр.
+            # 22:30), reminder_time уходит на следующий календарный день
+            # (00:30), а now.strftime("%H:%M") этого не знает: сравнение
+            # "08:00" >= "00:30" истинно почти весь день, и напоминание
+            # срывается на много часов раньше нужного (реальный баг).
+            # Реальный баг (19-й чекап): finish_morning ВСЕГДА пишет
+            # непустую строку дневника (через _merged_task_fields —
+            # ключи focus/b1/b2/c1/c2/c3 присутствуют, даже если все
+            # значения "") — уже после разминки/писем/благодарности,
+            # даже если человек так и не дошёл до постановки задач
+            # (например явно отказался в "📋 Поставить задачи?").
+            # "not get_diary(...)" проверяло сам факт наличия строки,
+            # а не наличие хоть одной реальной задачи — из-за чего
+            # это напоминание никогда не срабатывало именно для тех,
+            # кому оно нужнее всего: кто начал утро, но не поставил
+            # ни одной задачи.
+            morning_for_reminder = get_diary(uid, "morning", day_key)
+            if (notif_master_on and now_dt >= reminder_time and int(user.get("notif_morning_on") or 1)
+                    and user.get("morning_reminder_sent_date") != day_key
+                    and not any(morning_for_reminder.get(k) for k, _ in TASK_FIELDS)
+                    and not morning_conv_active):
+                # Как и остальные уведомления в этом тике — помечаем
+                # "отправлено" только после реального успеха, а не до
+                # (раньше было наоборот: временный сбой отправки навсегда
+                # съедал это напоминание на весь день без единой попытки).
+                # По отдельной просьбе — самоудаление через 30 минут
+                # (а не общие 15, как у остальных каналов).
+                # Реальный запрос: условие срабатывания — именно
+                # отсутствие задач (см. комментарий выше), а не
+                # "утро не закрыто" — но текст говорил про утро, и
+                # кнопка "Заполнить утро" вела в morning_start,
+                # который (даже пройдя ритуал целиком) перезапускал
+                # его заново, если ctx.user_data не помнил прогресс.
+                # Текст и кнопка теперь говорят о том, что реально
+                # не сделано — задачи — и ведут сразу в 📋 Задачи,
+                # без лишнего обхода через утренний ритуал.
+                await send_tracked_notification(
+                    app.bot, uid, "morning_reminder",
+                    "📋 *Задачи на сегодня ещё не поставлены*\n\n"
+                    "Без конкретной цели день с СДВГ-мозгом легко расползается на десяток "
+                    "начатых и брошенных дел. Даже одна главная задача — это точка, к которой "
+                    "можно вернуться, когда потерялся(ась). Займёт 2 минуты.",
+                    ttl_seconds=1800,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")
+                    ]])
+                )
+                update_user(uid, morning_reminder_sent_date=day_key)
+        except Exception:
+            pass
+
+        # Маячок — два независимых блока: задачи и навыки. user тут
+        # снапшот с начала тика — если только что выше в этом же
+        # тике отправился дневной чекин, midday_sent_date уже
+        # записан в БД, но не в этом старом словаре. send_task_beacon
+        # сверяет именно midday_sent_date для своего анти-дубль
+        # guard'а ("не дублируем маячок в течение получаса после
+        # дневного чекина") — со старым user guard молчаливо не
+        # срабатывал именно в тот единственный тик, когда дневной
+        # чекин реально только что ушёл, и маячок дублировал тот же
+        # вопрос секундами позже (тот же класс бага, что уже чинили
+        # для resume_check_due). Перечитываем свежим из БД.
+        user = get_user(uid)
+        await send_task_beacon(app, user)
+        await send_skill_beacon(app, user)
+
+        # Разовое напоминание "пора начинать" — время задаётся
+        # утром, см. morning_task_offer_yes / send_work_start_reminder
+        await send_work_start_reminder(app, user)
+
+        # Свои напоминания (⏰ Напоминания) — разбираются ИИ из
+        # свободного текста, см. parse_reminder_request
+        await send_due_reminders(app, user, now_dt)
+
+        # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
+        # (не в памяти планировщика), чтобы рестарт процесса её не терял
+        due_raw = user.get("resume_check_due") or ""
+        if due_raw:
+            try:
+                due_dt = datetime.fromisoformat(due_raw)
+                if now_dt >= due_dt:
+                    # user — снапшот с начала тика; между ним и этой
+                    # строкой прошло время (await на других
+                    # уведомлениях того же пользователя выше). Если
+                    # человек уже сам нажал "Отдыхаю" ещё раз и
+                    # запланировал новую проверку — сверяем со
+                    # свежим значением из БД, иначе затираем её
+                    # пустой строкой прямо под носом (тот же баг
+                    # класс, что чинили в send_focus_end).
+                    fresh_due = get_user(uid).get("resume_check_due") or ""
+                    if fresh_due == due_raw and await send_resume_check(app.bot, uid):
+                        update_user(uid, resume_check_due="")
+            except Exception as e:
+                print(f"Ошибка resume_check_due uid={uid}: {e}")
+
+        # Исследовательские вопросы — тот же общий тумблер notif_enabled,
+        # что и утро/день/вечер: "выключить всё" должно выключать и их.
+        # Реальный баг (15-й чекап): notif_master_on был снят один раз
+        # в начале тика и не перечитывался — user к этой строке уже
+        # свежий (перечитан выше перед маячками), а notif_master_on
+        # всё ещё старое значение. Если человек выключил уведомления
+        # ровно в тот же тик, пока шли await на предыдущих отправках,
+        # research-вопрос всё равно уходил, хотя "выключить всё"
+        # должно было выключить и его — тот же класс бага, что уже
+        # чинили для user-снапшота выше по этому же тику.
+        if int(user.get("notif_enabled") or 0):
+            try:
+                created_at = user.get("created_at") or now_dt.date().isoformat()
+                days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
+                done_days = [x for x in (user.get("research_done") or "").split(",") if x]
+                for milestone in [3, 7, 14, 30]:
+                    if days_since >= milestone and str(milestone) not in done_days:
+                        if 10 <= now_dt.hour <= 12:
+                            await send_research_question(app, uid, milestone)
+                        break
+            except Exception as e:
+                print(f"Ошибка research uid={uid}: {e}")
+
+        # Фокус-таймер
+        if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
+            try:
+                end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
+                if now_dt >= end_dt:
+                    await send_focus_end(app, uid, int(user.get("focus_duration", 25) or 25), user["focus_end_time"])
+            except Exception as e:
+                print(f"Ошибка focus uid={uid}: {e}")
+
+    except Exception as e:
+        print(f"Ошибка check_notifications uid={uid}: {e}")
+
+
 async def check_notifications(app):
     """Каждую минуту — уведомления для всех пользователей у кого они включены."""
     global _last_heartbeat
@@ -9453,235 +9698,17 @@ async def check_notifications(app):
     try:
         users = get_all_notif_users()
 
-        for user in users:
-            uid = user["user_id"]
-            try:
-                # Реальный баг (16-й чекап, шире, чем фикс 15-го раунда):
-                # user тут раньше был снимком из ЕДИНОГО запроса get_all_notif_users()
-                # в начале ВСЕГО тика, взятым до единого await — а весь тик
-                # обрабатывает всех пользователей последовательно, каждый со
-                # своими await на отправку. К моменту, когда очередь доходит
-                # до конкретного uid, могли пройти секунды (и много чужих
-                # await) — и даже morning/weekly/midday/evening/+2ч-проверки
-                # НИЖЕ (не только маячок/research, что чинили в 15-м раунде)
-                # читали этот же устаревший снимок notif_enabled. Если человек
-                # выключил уведомления, пока сидел в очереди этого тика,
-                # уведомление всё равно уходило. Перечитываем свежим здесь же.
-                user = get_user(uid)
-                # Реальный баг: tz/now_dt/now/is_monday раньше вычислялись из
-                # того же устаревшего снимка user ДО перечитывания выше — если
-                # пользователь как раз в этот момент меняет город/таймзону,
-                # весь остаток тика для него всё равно считался по старому
-                # часовому поясу. Вычисляем только после свежего get_user.
-                tz = get_user_tz(user)
-                now_dt = datetime.now(tz)
-                now = now_dt.strftime("%H:%M")
-                is_monday = now_dt.weekday() == 0
-                day_key = now_dt.strftime("%Y-%m-%d")
+        # Ограничиваем степень параллелизма — не ради самого event loop
+        # (он один и тот же), а чтобы не открыть сотни одновременных
+        # sqlite-соединений и не упереться в flood control Telegram при
+        # резком росте базы пользователей.
+        semaphore = asyncio.Semaphore(NOTIF_TICK_CONCURRENCY)
 
-                # Утро/день/вечер и +2ч напоминание отмечаются как отправленные
-                # в БД, и триггер — "время уже наступило и сегодня ещё не
-                # отправлено", а не "ровно эта минута". Иначе один пропущенный
-                # тик (рестарт от вотчдога, деплой ровно в нужную минуту)
-                # молча хоронит уведомление на весь день — это реально
-                # случалось.
-                # notif_enabled — общий тумблер конкретно для этих 3x/день
-                # уведомлений; маячок/фокус-таймер/resume-check ниже от него
-                # не зависят — у них своё собственное включение.
-                notif_master_on = int(user.get("notif_enabled") or 0)
-                if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
-                        and user.get("morning_sent_date") != day_key
-                        and user.get("notif_snooze_morning") != day_key):
-                    # Помечаем "отправлено" только после реального успеха — иначе
-                    # временный сбой (таймаут телеграма, юзер заблокировал бота)
-                    # навсегда съедает уведомление на весь день без единой попытки.
-                    if await morning_notification(app, uid):
-                        update_user(uid, morning_sent_date=day_key)
+        async def _bounded(user):
+            async with semaphore:
+                await _process_user_notifications(app, user)
 
-                # Отчёт по итогам недели — независимое условие, не вложенное в
-                # блок утреннего уведомления: раньше он делил с ним внешний if,
-                # и получал ровно одну попытку в тот же тик, что и morning —
-                # если сама эта попытка проваливалась, следующий тик уже не
-                # заходил внутрь (morning_sent_date к тому моменту чаще всего
-                # уже проставлен), и weekly_report больше не пересматривался
-                # целую неделю. Заодно раньше зависел от notif_morning_on,
-                # хотя это разные, независимо переключаемые уведомления.
-                #
-                # Шлём утром в ПОНЕДЕЛЬНИК, а не в воскресенье (реальный баг,
-                # репорт от Артёма): при отправке в воскресенье утром окно
-                # "последние 7 дней" включало ещё не начатое воскресенье —
-                # отчёт показывал 5 из 7, даже если человек закрывал оба
-                # блока в тот же день позже. Заодно текст отчёта и так уже
-                # обращён к следующей неделе ("Следующая неделя начинается
-                # с одной задачи A" + кнопка "☀️ Начать новую неделю") —
-                # на утро понедельника это звучит естественно, а на утро
-                # воскресенья, до конца недели, нет.
-                if (notif_master_on and is_monday and now >= user.get("notif_morning", "09:00")
-                        and user.get("weekly_report_sent_date") != day_key):
-                    if await weekly_report(app, uid):
-                        update_user(uid, weekly_report_sent_date=day_key)
-
-                if (notif_master_on and now >= user.get("notif_midday", "13:00") and int(user.get("notif_midday_on") or 1)
-                        and user.get("midday_sent_date") != day_key
-                        and user.get("notif_snooze_midday") != day_key):
-                    if await midday_notification(app, uid):
-                        update_user(uid, midday_sent_date=day_key)
-
-                if (notif_master_on and now >= user.get("notif_evening", "21:00") and int(user.get("notif_evening_on") or 1)
-                        and user.get("evening_sent_date") != day_key
-                        and user.get("notif_snooze_evening") != day_key):
-                    if await evening_notification(app, uid):
-                        update_user(uid, evening_sent_date=day_key)
-
-                # Предупреждение об окончании пробного периода — не завязано
-                # на notif_master_on (это разовое коммерческое уведомление,
-                # не ежедневный ритуал), не ограничено конкретным временем
-                # суток; сама функция взводит trial_warning_sent один раз
-                # за весь триал.
-                await send_trial_ending_warning(app, uid)
-
-                # Напоминание если пропустил утро (+2 часа) — та же логика
-                # "время прошло и сегодня ещё не отправлено", что и для
-                # утро/день/вечер выше, а не точное совпадение минуты.
-                try:
-                    mh, mm = map(int, user.get("notif_morning", "09:00").split(":"))
-                    reminder_time = now_dt.replace(hour=mh, minute=mm, second=0, microsecond=0) + timedelta(hours=2)
-                    # Если пользователь уже внутри утреннего диалога (просто ещё не
-                    # дошёл до задач) — не шлём это напоминание. Его кнопка "Заполнить
-                    # утро" ведёт на entry point с allow_reentry=True и перезапускает
-                    # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
-                    morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
-                    # Сравниваем полными datetime, а не строками "HH:MM" — если
-                    # notif_morning стоит в пределах 2 часов до полуночи (напр.
-                    # 22:30), reminder_time уходит на следующий календарный день
-                    # (00:30), а now.strftime("%H:%M") этого не знает: сравнение
-                    # "08:00" >= "00:30" истинно почти весь день, и напоминание
-                    # срывается на много часов раньше нужного (реальный баг).
-                    # Реальный баг (19-й чекап): finish_morning ВСЕГДА пишет
-                    # непустую строку дневника (через _merged_task_fields —
-                    # ключи focus/b1/b2/c1/c2/c3 присутствуют, даже если все
-                    # значения "") — уже после разминки/писем/благодарности,
-                    # даже если человек так и не дошёл до постановки задач
-                    # (например явно отказался в "📋 Поставить задачи?").
-                    # "not get_diary(...)" проверяло сам факт наличия строки,
-                    # а не наличие хоть одной реальной задачи — из-за чего
-                    # это напоминание никогда не срабатывало именно для тех,
-                    # кому оно нужнее всего: кто начал утро, но не поставил
-                    # ни одной задачи.
-                    morning_for_reminder = get_diary(uid, "morning", day_key)
-                    if (notif_master_on and now_dt >= reminder_time and int(user.get("notif_morning_on") or 1)
-                            and user.get("morning_reminder_sent_date") != day_key
-                            and not any(morning_for_reminder.get(k) for k, _ in TASK_FIELDS)
-                            and not morning_conv_active):
-                        # Как и остальные уведомления в этом тике — помечаем
-                        # "отправлено" только после реального успеха, а не до
-                        # (раньше было наоборот: временный сбой отправки навсегда
-                        # съедал это напоминание на весь день без единой попытки).
-                        # По отдельной просьбе — самоудаление через 30 минут
-                        # (а не общие 15, как у остальных каналов).
-                        # Реальный запрос: условие срабатывания — именно
-                        # отсутствие задач (см. комментарий выше), а не
-                        # "утро не закрыто" — но текст говорил про утро, и
-                        # кнопка "Заполнить утро" вела в morning_start,
-                        # который (даже пройдя ритуал целиком) перезапускал
-                        # его заново, если ctx.user_data не помнил прогресс.
-                        # Текст и кнопка теперь говорят о том, что реально
-                        # не сделано — задачи — и ведут сразу в 📋 Задачи,
-                        # без лишнего обхода через утренний ритуал.
-                        await send_tracked_notification(
-                            app.bot, uid, "morning_reminder",
-                            "📋 *Задачи на сегодня ещё не поставлены*\n\n"
-                            "Без конкретной цели день с СДВГ-мозгом легко расползается на десяток "
-                            "начатых и брошенных дел. Даже одна главная задача — это точка, к которой "
-                            "можно вернуться, когда потерялся(ась). Займёт 2 минуты.",
-                            ttl_seconds=1800,
-                            parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton("📋 Поставить задачи", callback_data="go_tasks")
-                            ]])
-                        )
-                        update_user(uid, morning_reminder_sent_date=day_key)
-                except Exception:
-                    pass
-
-                # Маячок — два независимых блока: задачи и навыки. user тут
-                # снапшот с начала тика — если только что выше в этом же
-                # тике отправился дневной чекин, midday_sent_date уже
-                # записан в БД, но не в этом старом словаре. send_task_beacon
-                # сверяет именно midday_sent_date для своего анти-дубль
-                # guard'а ("не дублируем маячок в течение получаса после
-                # дневного чекина") — со старым user guard молчаливо не
-                # срабатывал именно в тот единственный тик, когда дневной
-                # чекин реально только что ушёл, и маячок дублировал тот же
-                # вопрос секундами позже (тот же класс бага, что уже чинили
-                # для resume_check_due). Перечитываем свежим из БД.
-                user = get_user(uid)
-                await send_task_beacon(app, user)
-                await send_skill_beacon(app, user)
-
-                # Разовое напоминание "пора начинать" — время задаётся
-                # утром, см. morning_task_offer_yes / send_work_start_reminder
-                await send_work_start_reminder(app, user)
-
-                # Свои напоминания (⏰ Напоминания) — разбираются ИИ из
-                # свободного текста, см. parse_reminder_request
-                await send_due_reminders(app, user, now_dt)
-
-                # Повторная проверка после "Отдыхаю 10-15 мин" — хранится в БД
-                # (не в памяти планировщика), чтобы рестарт процесса её не терял
-                due_raw = user.get("resume_check_due") or ""
-                if due_raw:
-                    try:
-                        due_dt = datetime.fromisoformat(due_raw)
-                        if now_dt >= due_dt:
-                            # user — снапшот с начала тика; между ним и этой
-                            # строкой прошло время (await на других
-                            # уведомлениях того же пользователя выше). Если
-                            # человек уже сам нажал "Отдыхаю" ещё раз и
-                            # запланировал новую проверку — сверяем со
-                            # свежим значением из БД, иначе затираем её
-                            # пустой строкой прямо под носом (тот же баг
-                            # класс, что чинили в send_focus_end).
-                            fresh_due = get_user(uid).get("resume_check_due") or ""
-                            if fresh_due == due_raw and await send_resume_check(app.bot, uid):
-                                update_user(uid, resume_check_due="")
-                    except Exception as e:
-                        print(f"Ошибка resume_check_due uid={uid}: {e}")
-
-                # Исследовательские вопросы — тот же общий тумблер notif_enabled,
-                # что и утро/день/вечер: "выключить всё" должно выключать и их.
-                # Реальный баг (15-й чекап): notif_master_on был снят один раз
-                # в начале тика и не перечитывался — user к этой строке уже
-                # свежий (перечитан выше перед маячками), а notif_master_on
-                # всё ещё старое значение. Если человек выключил уведомления
-                # ровно в тот же тик, пока шли await на предыдущих отправках,
-                # research-вопрос всё равно уходил, хотя "выключить всё"
-                # должно было выключить и его — тот же класс бага, что уже
-                # чинили для user-снапшота выше по этому же тику.
-                if int(user.get("notif_enabled") or 0):
-                    try:
-                        created_at = user.get("created_at") or now_dt.date().isoformat()
-                        days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
-                        done_days = [x for x in (user.get("research_done") or "").split(",") if x]
-                        for milestone in [3, 7, 14, 30]:
-                            if days_since >= milestone and str(milestone) not in done_days:
-                                if 10 <= now_dt.hour <= 12:
-                                    await send_research_question(app, uid, milestone)
-                                break
-                    except Exception as e:
-                        print(f"Ошибка research uid={uid}: {e}")
-
-                # Фокус-таймер
-                if str(user.get("focus_active", "0")) == "1" and user.get("focus_end_time"):
-                    try:
-                        end_dt = datetime.fromisoformat(user["focus_end_time"]).astimezone(tz)
-                        if now_dt >= end_dt:
-                            await send_focus_end(app, uid, int(user.get("focus_duration", 25) or 25), user["focus_end_time"])
-                    except Exception as e:
-                        print(f"Ошибка focus uid={uid}: {e}")
-
-            except Exception as e:
-                print(f"Ошибка check_notifications uid={uid}: {e}")
+        await asyncio.gather(*(_bounded(user) for user in users))
 
     except Exception as e:
         print(f"Ошибка check_notifications: {e}")
