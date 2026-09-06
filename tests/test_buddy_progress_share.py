@@ -126,8 +126,11 @@ async def main():
     print("3. _share_buddy_progress uses cooperative 'давай тоже' wording when the recipient hasn't done it yet")
 
     # 4. Celebratory wording when the recipient HAS already done their own
-    #    morning today.
-    bot.update_user(uid2, morning_filled_at=datetime.now(bot.pytz.utc).isoformat())
+    #    morning today. morning_filled_at is written by real code (finish_morning/
+    #    apply_task_edit) as the user's own LOCAL time (Tbilisi here) -- using
+    #    UTC instead would drift a calendar day near midnight Tbilisi time and
+    #    make this a real-clock-dependent flake.
+    bot.update_user(uid2, morning_filled_at=datetime.now(TBILISI).isoformat())
     fbot4 = FakeBot()
     await bot._share_buddy_progress(fbot4, uid1, "morning")
     _, text4, _ = fbot4.sent[0]
