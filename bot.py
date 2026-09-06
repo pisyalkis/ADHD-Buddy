@@ -1306,6 +1306,13 @@ def apply_yesterday_plan_if_empty(uid, today, morning):
         val = y_plan.get(plan_key)
         if val:
             morning[task_key] = val
+            # Реальный запрос (IDEAS.md 2026-09-01): автоперенос ничем не
+            # отличал в интерфейсе задачу, молча подставленную из вчерашнего
+            # плана, от той, что человек только что реально набрал/выбрал —
+            # см. _carried_* в _tasks_text_and_kb/_walk_progress_text.
+            # Снимается при первом же реальном редактировании этого слота
+            # (apply_task_edit) — тогда это уже осознанное сегодняшнее решение.
+            morning[f"_carried_{task_key}"] = 1
             filled = True
     if filled:
         save_diary(uid, "morning", morning, for_date=today)
@@ -6334,7 +6341,8 @@ def _tasks_text_and_kb(morning, done_set, gender):
         val = morning.get(key, "")
         if not val:
             continue
-        lines.append(f"{icon}: {md_escape(val)}")
+        carried_note = " _(↩️ из вчерашнего плана)_" if morning.get(f"_carried_{key}") else ""
+        lines.append(f"{icon}: {md_escape(val)}{carried_note}")
         mark = "✅" if key in done_set else "▫️"
         button_text = f"{mark} {SHORT_TASK_LABELS[key]}: {_short_button_text(val)}"
         checkbox_rows.append([InlineKeyboardButton(button_text, callback_data=f"task_done_{key}")])
@@ -6487,6 +6495,7 @@ def _walk_progress_text(uid, today, exclude_key=None):
     morning = get_diary(uid, "morning", today)
     lines = [
         f"✅ {icon}: {md_escape(morning[key])}"
+        + (" _(↩️ из вчерашнего плана)_" if morning.get(f"_carried_{key}") else "")
         for key, icon in TASK_FIELDS
         if key != exclude_key and morning.get(key)
     ]
@@ -6944,6 +6953,10 @@ async def apply_task_edit(message, ctx, uid, key, text, pool_item_id=None):
     # намерение снимать отметку только при смене текста.
     text_changed = old_text != text
     morning[key] = text
+    # Слот тронули явно (через 📋 Задачи, выбор из пула или свободный текст) —
+    # это уже осознанное сегодняшнее решение, а не молчаливый автоперенос
+    # вчерашнего плана (см. пометку _carried_* в apply_yesterday_plan_if_empty).
+    morning.pop(f"_carried_{key}", None)
     link_key = f"_pool_link_{key}"
     if pool_item_id is not None:
         morning[link_key] = pool_item_id
