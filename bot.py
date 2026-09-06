@@ -2619,9 +2619,9 @@ async def _finalize_pending_buddy_invite(ctx, message, uid):
     inviter_uid = ctx.user_data.pop("pending_buddy_invite", None)
     if inviter_uid is None:
         return
-    if finalize_buddy_pairing(uid, inviter_uid):
+    if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await message.reply_text("🎉 Готово — теперь вы с другом бадди!", reply_markup=menu_button_kb())
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid)
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=BUDDY_REFERRAL_REWARD_DAYS)
     # Если finalize_buddy_pairing вернула False (пригласивший уже успел
     # обзавестись бадди, пока новый пользователь проходил онбординг) —
     # молча не оформляем пару, не срывая под конец онбординг лишней
@@ -9261,11 +9261,19 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # случайный матчинг), даёт настоящие уведомления между парой в будущих
 # фичах (шеринг прогресса и т.п.). Оба могут существовать одновременно —
 # buddy_uid просто приоритетнее в отображении, когда есть.
-def finalize_buddy_pairing(uid_a, uid_b):
+BUDDY_REFERRAL_REWARD_DAYS = 7
+
+def finalize_buddy_pairing(uid_a, uid_b, reward_referral=False):
     """True, если пара реально образовалась. Отказывает, если кто-то из
     двоих уже связан (осознанно, до появления "смены бадди" — молча
     перезаписывать существующую пару было бы хуже, чем ничего не сделать),
-    либо это одно и то же лицо (свою же диплинк-ссылку открыли повторно)."""
+    либо это одно и то же лицо (свою же диплинк-ссылку открыли повторно).
+
+    reward_referral=True — только для пар, образованных по диплинк-
+    приглашению (не для случайного матчинга: там никто никого не приводил
+    в бота, наградить не за что) — начисляет обеим сторонам
+    BUDDY_REFERRAL_REWARD_DAYS дней доступа через тот же grant_access_days,
+    которым продлевается доступ при реальной оплате (см. successful_payment_callback)."""
     if uid_a == uid_b:
         return False
     user_a = get_user(uid_a)
@@ -9275,6 +9283,9 @@ def finalize_buddy_pairing(uid_a, uid_b):
     now = datetime.now(pytz.utc).isoformat()
     update_user(uid_a, buddy_uid=uid_b, buddy_paired_at=now, buddy_seeking_since="")
     update_user(uid_b, buddy_uid=uid_a, buddy_paired_at=now, buddy_seeking_since="")
+    if reward_referral:
+        grant_access_days(uid_a, BUDDY_REFERRAL_REWARD_DAYS)
+        grant_access_days(uid_b, BUDDY_REFERRAL_REWARD_DAYS)
     return True
 
 def find_waiting_buddy_candidate(uid):
@@ -9315,21 +9326,24 @@ BUDDY_GUIDE_TEXT = (
     "_Часовые пояса не обязаны совпадать — просто держите разницу в голове при планировании._"
 )
 
-async def _notify_buddy_paired(bot, uid_a, uid_b):
+async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0):
     """Уведомляет ОБЕИХ сторон об образовавшейся паре — с явной разницей
     часовых поясов, если она есть (product-решение: не скрывать, а
     проговорить, чтобы учитывали при планировании), и следом — гайд
     "как работать с бадди" (см. BUDDY_GUIDE_TEXT), чтобы пара не осталась
-    один на один с вопросом "и что теперь делать"."""
+    один на один с вопросом "и что теперь делать". referral_days>0 (только
+    для пар по диплинк-приглашению, см. finalize_buddy_pairing) добавляет
+    строчку про начисленный обеим сторонам бонус."""
     user_a = get_user(uid_a); user_b = get_user(uid_b)
     diff = _tz_offset_diff_hours(user_a, user_b)
     tz_note = f"\n\n🌍 Разница часовых поясов: примерно {diff:.0f} ч — учтите при планировании." if diff >= 1 else ""
+    bonus_note = f"\n\n🎁 Вам обоим начислено по {referral_days} дн. доступа — бонус за приглашение друга." if referral_days else ""
     name_a = md_escape(user_a.get("name") or "Без имени")
     name_b = md_escape(user_b.get("name") or "Без имени")
     try:
         await bot.send_message(
             chat_id=uid_a,
-            text=f"🎉 *У тебя новый бадди — {name_b}!*{tz_note}",
+            text=f"🎉 *У тебя новый бадди — {name_b}!*{tz_note}{bonus_note}",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         await bot.send_message(chat_id=uid_a, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
@@ -9338,7 +9352,7 @@ async def _notify_buddy_paired(bot, uid_a, uid_b):
     try:
         await bot.send_message(
             chat_id=uid_b,
-            text=f"🎉 *У тебя новый бадди — {name_a}!*{tz_note}",
+            text=f"🎉 *У тебя новый бадди — {name_a}!*{tz_note}{bonus_note}",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
         await bot.send_message(chat_id=uid_b, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
@@ -9405,7 +9419,8 @@ async def buddy_invite_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
         "🔗 *Пригласи друга в бадди*\n\n"
         "Отправь ему эту ссылку — как только он запустит бота по ней, вы автоматически станете парой:\n\n"
-        f"`{link}`"
+        f"`{link}`\n\n"
+        f"🎁 Когда пара образуется, вы оба получите по {BUDDY_REFERRAL_REWARD_DAYS} дн. доступа в подарок."
     )
     await _render_tracked(q.message, ctx, "buddy", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown",
                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Бадди", callback_data="go_buddy")]]))
@@ -9446,9 +9461,9 @@ async def buddy_invite_accept(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     inviter_uid = int(q.data.replace("buddy_invite_accept_", ""))
-    if finalize_buddy_pairing(uid, inviter_uid):
+    if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await _edit_or_send(q, "🎉 Готово, теперь вы бадди!", reply_markup=menu_button_kb())
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid)
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=BUDDY_REFERRAL_REWARD_DAYS)
     else:
         await _edit_or_send(q, "Не получилось — возможно, у кого-то из вас уже есть бадди.", reply_markup=menu_button_kb())
 
