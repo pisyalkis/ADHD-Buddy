@@ -110,7 +110,11 @@ async def main():
     make_user(uid3, "Игорь"); make_user(uid4, "Соня")
     ok2 = bot.finalize_buddy_pairing(uid3, uid4, reward_referral=True)
     assert ok2 is True
-    today = date.today()
+    # grant_access_days computes "today" via the user's own tz (Tbilisi,
+    # UTC+4) -- date.today() uses the SYSTEM tz instead, which can be a
+    # different calendar day near midnight Tbilisi time. Match the bot's
+    # own reference point to avoid a real-clock-dependent flake.
+    today = datetime.now(bot.pytz.timezone("Asia/Tbilisi")).date()
     expected = (today + timedelta(days=bot.BUDDY_REFERRAL_REWARD_DAYS)).isoformat()
     assert bot.get_user(uid3)["subscription_until"][:10] == expected, bot.get_user(uid3)["subscription_until"]
     assert bot.get_user(uid4)["subscription_until"][:10] == expected, bot.get_user(uid4)["subscription_until"]

@@ -92,7 +92,13 @@ async def main():
     app = FakeApp()
     await bot.check_notifications(app)
     texts = [t for _, t, _ in app.bot.sent]
-    midday_count = sum(1 for t in texts if "Дневной чекин" in t)
+    # The midday opener now rotates (see MIDDAY_OPENERS/_daily_text_variant)
+    # -- match any of the pool's openers rather than one hardcoded string.
+    midday_count = sum(
+        1 for t in texts
+        if any(o.format(name="Артем") in t for o in bot.MIDDAY_OPENERS)
+        or any(o.format(name="Артем") in t for o in bot.MIDDAY_NO_MORNING_OPENERS)
+    )
     beacon_count = sum(1 for t in texts if "Маячок" in t)
     assert midday_count == 1, texts
     assert beacon_count == 0, \

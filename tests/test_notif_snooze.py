@@ -119,6 +119,10 @@ async def main():
         uid, notif_enabled=1, notif_morning_on=1, notif_morning=soon_past,
         notif_midday_on=0, notif_evening_on=0,
         morning_sent_date="", notif_snooze_morning=today_iso,
+        # Also independent of morning's own snooze (see _process_user_notifications)
+        # and can land on a real Monday during a run -- mark it already sent so
+        # it doesn't pollute this assertion, same as the guard above for midday/evening.
+        weekly_report_sent_date=today_iso,
     )
     app = FakeApp()
     await bot.check_notifications(app)
