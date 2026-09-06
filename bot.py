@@ -5430,6 +5430,7 @@ def _settings_main_text_and_kb(user):
         [InlineKeyboardButton("🔔 Уведомления", callback_data="go_settings_notifications")],
         [InlineKeyboardButton("✏️ Имя", callback_data="set_name")],
         [InlineKeyboardButton("🌍 Город", callback_data="set_city")],
+        [InlineKeyboardButton("🪞 Главные трудности", callback_data="go_settings_struggles")],
         [InlineKeyboardButton("🎛 Редактировать отчёты", callback_data="edit_reports")],
         [InlineKeyboardButton(
             "🔥 Стрик: скрыт — показать" if sh else "🔥 Стрик: показывается — скрыть",
@@ -5438,6 +5439,31 @@ def _settings_main_text_and_kb(user):
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
     ]
     return "⚙️ *Общие*", InlineKeyboardMarkup(rows)
+
+def _settings_struggles_text_and_kb(user):
+    """«🪞 Главные трудности» (IDEAS.md 2026-08-27) — те же PROBLEM_ITEMS, что
+    и на онбординге (см. start_problem_checklist/problems_done), только
+    пересмотреть выбор можно в любой момент позже, а не один раз навсегда.
+    Одним плоским списком с чекбоксами, а не пошаговым чек-листом с
+    "Дальше" по группам — тот пейсинг был нужен для первого знакомства с
+    формулировками, здесь же это осознанный пересмотр уже сделанного
+    выбора, торопиться прочитать не нужно.
+
+    Влияет на то же самое, что и при онбординге: ротацию навыка дня
+    (get_daily_skill/struggles) и порядок причин в дневном чекине
+    (PROBLEM_TO_MID/mid_procr_kb) — правки применяются сразу же."""
+    selected = set(s for s in (user.get("struggles") or "").split(",") if s)
+    rows = [
+        [InlineKeyboardButton(("✅ " if key in selected else "▫️ ") + label, callback_data=f"toggle_struggle_{key}")]
+        for key, label in PROBLEM_ITEMS
+    ]
+    rows.append([InlineKeyboardButton("◀️ Общие", callback_data="go_settings")])
+    text = (
+        "🪞 *Главные трудности*\n\n"
+        "То же самое, что спрашивали при регистрации — можно пересмотреть в любой момент.\n\n"
+        "_Влияет на навык дня и порядок причин в дневном чекине._"
+    )
+    return text, InlineKeyboardMarkup(rows)
 
 def _settings_notifications_text_and_kb(user):
     """Расписание утро/день/вечер + вход в отдельный экран 📳 Маячки
@@ -5786,6 +5812,26 @@ async def go_settings_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_and_cancel_ritual(ctx, update)
     text, kb = _settings_beacon_text_and_kb(get_user(q.from_user.id))
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
+
+async def go_settings_struggles(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    text, kb = _settings_struggles_text_and_kb(get_user(q.from_user.id))
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
+
+async def toggle_struggle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    key = q.data.replace("toggle_struggle_", "")
+    selected = [s for s in (get_user(uid).get("struggles") or "").split(",") if s]
+    if key in selected:
+        selected.remove(key)
+    else:
+        selected.append(key)
+    update_user(uid, struggles=",".join(selected))
+    text, kb = _settings_struggles_text_and_kb(get_user(uid))
     await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -12182,6 +12228,8 @@ def main():
     app.add_handler(CallbackQueryHandler(go_settings,      pattern="^go_settings$"))
     app.add_handler(CallbackQueryHandler(go_settings_notifications, pattern="^go_settings_notifications$"))
     app.add_handler(CallbackQueryHandler(go_settings_beacon, pattern="^go_settings_beacon$"))
+    app.add_handler(CallbackQueryHandler(go_settings_struggles, pattern="^go_settings_struggles$"))
+    app.add_handler(CallbackQueryHandler(toggle_struggle_callback, pattern="^toggle_struggle_"))
     app.add_handler(CallbackQueryHandler(edit_reports_menu, pattern="^edit_reports$"))
     app.add_handler(CallbackQueryHandler(toggle_field_callback, pattern="^toggle_field_"))
     app.add_handler(CallbackQueryHandler(quickdisable_field_callback, pattern="^quickdisable_"))
