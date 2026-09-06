@@ -10049,6 +10049,17 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_energy":
+        # Реальный запрос (IDEAS.md 2026-09-04): совет "мало энергии — сократи
+        # список" оставался только текстом — не хватало самого действия.
+        # Кнопка показывается только если реально есть что сокращать: A
+        # (focus) поставлена и ещё не сделана (иначе "оставить одну" не про
+        # что), и есть хотя бы одна ещё не убранная B/C-задача.
+        has_extra = any(morning.get(k) for k in ("b1", "b2", "c1", "c2", "c3"))
+        kb_rows = []
+        if morning.get("focus") and "focus" not in done_set and has_extra:
+            kb_rows.append([InlineKeyboardButton("🎯 Оставить только А на сегодня", callback_data="mid_energy_only_a")])
+        base_kb = back_kb_with_skill("mid_energy")
+        kb = InlineKeyboardMarkup(kb_rows + list(base_kb.inline_keyboard)) if kb_rows else base_kb
         await _edit_or_send(q,
             personalize(
                 f"🔋 *Мало энергии*\n\nЗадача: _{focus}_\n\n"
@@ -10060,7 +10071,31 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "_Низкая энергия — не лень. Иногда честный ответ — 15 минут отдыха, а не борьба с собой._",
                 gender
             ),
-            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_energy")
+            parse_mode="Markdown", reply_markup=kb
+        )
+
+    elif action == "mid_energy_only_a":
+        # Реальный запрос (IDEAS.md 2026-09-04): единственное действие, которое
+        # реально снижает нагрузку при низкой энергии — сократить список задач
+        # до одной A. Незавершённые B/C — в 📥 Список дел (та же логика, что и
+        # у вечернего переноса, см. _carry_unfinished_tasks_to_pool), а не
+        # молча стираются: уже выполненные слоты просто убираются с сегодня.
+        existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
+        for key in ("b1", "b2", "c1", "c2", "c3"):
+            text = morning.get(key)
+            if not text:
+                continue
+            if key not in done_set and not morning.get(f"_pool_link_{key}") and text.lower() not in existing_pool_texts:
+                add_pool_task(uid, text)
+                existing_pool_texts.add(text.lower())
+            morning.pop(key, None)
+            morning.pop(f"_pool_link_{key}", None)
+        save_diary(uid, "morning", morning, for_date=today)
+        await _refresh_pinned_tasks_message(ctx, uid)
+        await _edit_or_send(q,
+            f"🎯 *Оставил(а) только А на сегодня:*\n_{md_escape(morning.get('focus') or '')}_\n\n"
+            "Остальное — в 📥 Список дел, никуда не делось. Этого достаточно.",
+            parse_mode="Markdown", reply_markup=menu_button_kb()
         )
 
     elif action == "mid_time":
