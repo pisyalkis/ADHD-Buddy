@@ -504,6 +504,55 @@ MOTIVATIONS_F = [
     "Сделай одно дело. Потом ещё одно.",
 ]
 
+# Реальный запрос: 3x/день уведомления (утро/день/вечер) шлют один и тот же
+# фиксированный заголовок/призыв КАЖДЫЙ день, годами — со временем это
+# примелькивается и перестаёт восприниматься (в отличие от MOTIVATIONS выше,
+# у которых уже была вариативность). Ротация — тот же принцип, что и у
+# get_daily_skill (см. _daily_text_variant): устойчиво к рестартам процесса
+# (hashlib, а не built-in hash()), меняется по дате и заводится своей солью
+# на каждый отдельный пул, чтобы разные пулы одного дня не совпадали по
+# одному и тому же хэшу. Помечаем "(а)" через personalize(), где форма
+# зависит от пола — как и везде в файле.
+MORNING_GREETINGS = [
+    "☀️ Доброе утро, {name}!",
+    "🌅 С добрым утром, {name}!",
+    "☀️ {name}, доброе утро!",
+    "🌤 Утро настало, {name}!",
+    "☀️ Привет, {name}! Новый день начался",
+]
+MORNING_CLOSERS = [
+    "Готов(а) начать? 👇",
+    "Погнали? 👇",
+    "С чего начнём сегодня? 👇",
+    "Готов(а) к делу? 👇",
+]
+MIDDAY_NO_MORNING_OPENERS = [
+    "☕ *{name}, как дела?*",
+    "☕ *Привет, {name}! Как проходит день?*",
+    "🕐 *{name}, экватор дня — как оно?*",
+    "☕ *{name}, как ты сейчас?*",
+]
+MIDDAY_OPENERS = [
+    "☕ *Дневной чекин, {name}!*",
+    "☕ *Как дела, {name}?*",
+    "🕐 *Экватор дня, {name}!*",
+    "☕ *{name}, как продвигается день?*",
+]
+EVENING_OPENERS = [
+    ("🌙 *Привет, {name}!*", "День заканчивается. Время закрыть его и поставить планы на завтра."),
+    ("🌙 *{name}, как прошёл день?*", "Самое время подвести итоги и заглянуть в завтра."),
+    ("🌆 *Вечер, {name}!*", "День почти закончился — соберём итоги и планы на завтра."),
+    ("🌙 *{name}, время подводить итоги*", "Ещё немного — и можно отпустить сегодняшний день."),
+]
+
+def _daily_text_variant(uid, today, salt, pool):
+    """Стабильный (не меняется при повторном вызове в тот же день, не
+    сбивается рестартом процесса) выбор варианта из pool — тот же принцип,
+    что у get_daily_skill. salt разводит независимые пулы одного и того же
+    дня/пользователя (иначе все они совпадали бы на одном и том же хэше)."""
+    digest = hashlib.md5(f"{today}{uid}{salt}".encode()).hexdigest()
+    return pool[int(digest, 16) % len(pool)]
+
 WARMUP = [
     ("Шея — повороты 🔄", "Медленно влево-вправо, 5 раз"),
     ("Плечи — круги 🔄", "Вперёд 5 раз, назад 5 раз"),
@@ -9687,9 +9736,10 @@ async def midday_notification(app, uid):
         today, morning, done_set = get_today_context(user)
 
         if not morning:
+            opener = _daily_text_variant(uid, today, "midday_no_morning", MIDDAY_NO_MORNING_OPENERS).format(name=name)
             await send_tracked_notification(
                 app.bot, uid, "midday",
-                f"☕ *{name}, как дела?*\n\nУтренний дневник не заполнен — и это нормально. Как сейчас?",
+                f"{opener}\n\nУтренний дневник не заполнен — и это нормально. Как сейчас?",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Всё хорошо", callback_data="mid_ok")],
@@ -9700,9 +9750,10 @@ async def midday_notification(app, uid):
             return True
 
         tasks = build_tasks_summary(morning, done_set)
+        opener = _daily_text_variant(uid, today, "midday", MIDDAY_OPENERS).format(name=name)
         await send_tracked_notification(
             app.bot, uid, "midday",
-            f"☕ *Дневной чекин, {name}!*\n\n"
+            f"{opener}\n\n"
             f"Твои задачи на сегодня:\n{tasks}\n\n"
             f"Над чем работаешь сейчас?\n\n"
             f"_Чтобы выключить дневные уведомления — ⚙️ Настройки_",
@@ -10108,12 +10159,14 @@ async def morning_notification(app, uid):
             if low_energy:
                 energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
 
+            greeting = _daily_text_variant(uid, today, "morning_greeting", MORNING_GREETINGS).format(name=name)
+            closer = personalize(_daily_text_variant(uid, today, "morning_closer", MORNING_CLOSERS), gender)
             text = (
-                f"☀️ *Доброе утро, {name}!*\n\n"
+                f"{greeting}\n\n"
                 f"_{motiv}_{plan_text}{energy_note}\n\n"
                 f"💡 *Навык дня:* {skill['name']}\n"
                 f"_{skill['desc']}_\n\n"
-                f"{g(gender, 'Готов', 'Готова')} начать? 👇"
+                f"{closer}"
             )
         await send_tracked_notification(
             app.bot, uid, "morning", text,
@@ -10150,12 +10203,14 @@ async def evening_notification(app, uid):
         if _evening_conv is not None and (uid, uid) in _evening_conv._conversations:
             return False
         name = md_escape(user.get("name", ""))
+        opener, subline = _daily_text_variant(uid, today, "evening", EVENING_OPENERS)
+        opener = opener.format(name=name)
         # Реальный запрос: не самоудалять по тишине — раньше пропадало через
         # 15 минут (INACTIVE_SCREEN_TTL_SEC), даже если ещё не ответили.
         await send_tracked_notification(
             app.bot, uid, "evening",
-            f"🌙 *Привет, {name}!*\n\n"
-            "День заканчивается. Время закрыть его и поставить планы на завтра.\n\n"
+            f"{opener}\n\n"
+            f"{subline}\n\n"
             "5 минут — и голова свободна 👇",
             ttl_seconds=0,
             parse_mode="Markdown",
