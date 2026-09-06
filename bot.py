@@ -6330,6 +6330,13 @@ def _tasks_text_and_kb(morning, done_set, gender):
     # удобен для ПОСТАНОВКИ (в т.ч. пустых слотов подряд), а не только правки
     # уже заполненной задачи, для которой теперь есть прямые "✏️ <метка>" выше.
     buttons.append([InlineKeyboardButton("✏️ Поставить/изменить задачи", callback_data="walk_tasks")])
+    # Реальный запрос (IDEAS.md 2026-08-26): разбивка большой задачи на шаги
+    # была только в статье про навык и в подсказках коуча при прокрастинации —
+    # приходилось самому заново печатать задачу коучу. Кнопка передаёт
+    # ближайшую невыполненную задачу коучу напрямую (см. task_breakdown_callback),
+    # без повторного ввода. Показываем только если реально есть что разбивать.
+    if next_undone_task(morning, done_set):
+        buttons.append([InlineKeyboardButton("🔧 Разбей на шаги", callback_data="task_breakdown")])
     kb_rows = buttons + [
         [InlineKeyboardButton("📥 Список дел", callback_data="go_task_pool")],
         [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
@@ -6396,6 +6403,26 @@ async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     await _offer_task_input(q.message, ctx, uid, key)
+
+async def task_breakdown_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"🔧 Разбей на шаги" (см. _tasks_text_and_kb) — передаёт ближайшую
+    невыполненную задачу коучу напрямую, без повторного набора текста
+    вручную (тот же сценарий, что уже решён для "📥 В список дел"/"⏰
+    Напомнить об этом" из ответа коуча, только в обратную сторону)."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    today, morning, done_set = get_today_context(get_user(uid))
+    task = next_undone_task(morning, done_set)
+    if not task:
+        await _edit_or_send(q, "Все задачи уже сделаны — разбивать нечего 🎉", reply_markup=menu_button_kb())
+        return
+    await send_coach(
+        q.message,
+        f"Не могу начать задачу «{task}» — она кажется слишком большой. "
+        "Разбей её на маленькие конкретные шаги и подскажи, с какого начать.",
+        uid, ctx=ctx
+    )
 
 async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Больше не выставляется новыми экранами (см. walk_tasks_start) —
@@ -11816,6 +11843,7 @@ def main():
     app.add_handler(CallbackQueryHandler(morning_task_offer_no,  pattern="^morning_tasks_no$"))
     app.add_handler(CallbackQueryHandler(skip_work_start,        pattern="^skip_work_start$"))
     app.add_handler(CallbackQueryHandler(edit_task_callback, pattern="^edit_task_"))
+    app.add_handler(CallbackQueryHandler(task_breakdown_callback, pattern="^task_breakdown$"))
     app.add_handler(CallbackQueryHandler(add_next_task_callback, pattern="^add_next_task$"))
     app.add_handler(CallbackQueryHandler(walk_tasks_start, pattern="^walk_tasks$"))
     app.add_handler(CallbackQueryHandler(walk_skip_callback, pattern="^walk_skip_"))
