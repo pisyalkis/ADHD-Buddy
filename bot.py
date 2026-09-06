@@ -625,6 +625,14 @@ def init_db():
         ("notif_snooze_evening", "''"),
         ("notif_snooze_beacon", "''"),
         ("notif_snooze_skillbeacon", "''"),
+        # Напоминание принять лекарство (IDEAS.md 2026-08-26): просветительский
+        # текст про медикаменты уже был, самого напоминания — нет. По умолчанию
+        # ВЫКЛЮЧЕНО (в отличие от notif_morning_on/midday/evening) — это
+        # опциональная фича, а не часть основного ежедневного ритуала.
+        ("notif_med", "'09:00'"),
+        ("notif_med_on", "0"),
+        ("notif_snooze_med", "''"),
+        ("med_sent_date", "''"),
         ("trial_warning_sent", "0"),
         ("beacon_enabled", "0"),
         ("beacon_interval", "2"),
@@ -4955,6 +4963,11 @@ def _settings_notifications_text_and_kb(user):
     mo = int(user.get("notif_morning_on") or 1)
     do = int(user.get("notif_midday_on")  or 1)
     eo = int(user.get("notif_evening_on") or 1)
+    # Напоминание про лекарство — независимая опциональная фича (по
+    # умолчанию выключена), не часть основного 3x/день ритуала выше, см.
+    # notif_med_on/send_med_reminder (IDEAS.md 2026-08-26).
+    med = user.get("notif_med", "09:00")
+    med_on = int(user.get("notif_med_on") or 0)
     tz_name = user.get("timezone") or USER_TIMEZONE
     city_name = md_escape(user.get("city") or "")
     tz_display = f"{city_name} · {tz_name}" if city_name else tz_name
@@ -4966,6 +4979,8 @@ def _settings_notifications_text_and_kb(user):
         f"{'✅' if do else '🔕'} День: *{d}*\n"
         f"{'✅' if eo else '🔕'} Вечер: *{e}*\n"
         "_Основной ритуал дня — по расписанию, один раз_\n\n"
+        f"{'✅' if med_on else '🔕'} 💊 Лекарство: *{med if med_on else 'выкл'}*\n"
+        "_Отдельное необязательное напоминание, не часть ритуала выше_\n\n"
         f"🌍 Таймзона: *{tz_display}*\n\n"
         "_Нажми на время чтобы изменить, на иконку — включить/выключить_"
     )
@@ -4976,6 +4991,8 @@ def _settings_notifications_text_and_kb(user):
          InlineKeyboardButton(f"☕ {d}", callback_data="set_midday")],
         [InlineKeyboardButton(f"{'✅' if eo else '🔕'} Вечер", callback_data="toggle_evening"),
          InlineKeyboardButton(f"🌙 {e}", callback_data="set_evening")],
+        [InlineKeyboardButton(f"{'✅' if med_on else '🔕'} 💊 Лекарство", callback_data="toggle_med"),
+         InlineKeyboardButton(f"💊 {med}", callback_data="set_med")],
         [InlineKeyboardButton("📳 Маячки →", callback_data="go_settings_beacon")],
         [InlineKeyboardButton(
             "🔕 Выключить все" if enabled else "🔔 Включить все",
@@ -5188,8 +5205,8 @@ async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_
 
 async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    block = q.data.replace("set_", "")  # morning / midday / evening / beacon_start / beacon_end
-    labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
+    block = q.data.replace("set_", "")  # morning / midday / evening / med / beacon_start / beacon_end
+    labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее", "med": "💊 напоминания про лекарство"}
     beacon_labels = {"beacon_start": "🌅 начало", "beacon_end": "🌇 конец"}
     clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["setting_notif"] = block
@@ -5378,6 +5395,7 @@ DISABLE_NOTIF_TARGETS = {
     "evening":     ("notif_evening_on", "Вечерние уведомления"),
     "beacon":      ("beacon_enabled", "Маячки внимания: задачи"),
     "skillbeacon": ("skill_beacon_enabled", "Маячки внимания: навыки"),
+    "med":         ("notif_med_on", "Напоминание про лекарство"),
 }
 
 def _append_row(kb, row):
@@ -7196,7 +7214,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 field = f"notif_{block}"
                 update_user(uid, **{field: text})
-                update_user(uid, notif_enabled=1)
+                # "med" — независимая опциональная фича (см. notif_med_on,
+                # по умолчанию выключена), не часть основного 3x/день
+                # ритуала — включаем только её собственный тумблер, а не
+                # общий notif_enabled (тот же принцип, что и у маячков).
+                if block == "med":
+                    update_user(uid, notif_med_on=1)
+                else:
+                    update_user(uid, notif_enabled=1)
                 # check_notifications шлёт как только "now >= время И сегодня
                 # ещё не отправлено" (чтобы переживать пропущенные тики) — если
                 # новое время уже прошло сегодня, это без правки прислало бы
@@ -7207,8 +7232,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 new_h, new_m = map(int, text.split(":"))
                 if (new_h, new_m) <= (now_tz.hour, now_tz.minute):
                     update_user(uid, **{f"{block}_sent_date": now_tz.date().isoformat()})
-                labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер"}
-                confirm_text = f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\nУведомления включены."
+                labels = {"morning": "☀️ Утро", "midday": "☕ День", "evening": "🌙 Вечер", "med": "💊 Лекарство"}
+                enabled_note = "Напоминание включено." if block == "med" else "Уведомления включены."
+                confirm_text = f"{labels.get(block,'')} уведомление установлено на *{text}* ✅\n\n{enabled_note}"
                 confirm_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Уведомления", callback_data="go_settings_notifications")]])
                 if not await _edit_settings_msg(ctx, confirm_text, parse_mode="Markdown", reply_markup=confirm_kb):
                     await update.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=confirm_kb)
@@ -9192,6 +9218,25 @@ async def evening_notification(app, uid):
         print(f"Ошибка вечернего уведомления: {e}")
         return False
 
+async def send_med_reminder(app, uid):
+    """Напоминание принять лекарство — независимая, по умолчанию выключенная
+    опция (см. notif_med_on), не часть основного 3x/день ритуала. Реальный
+    запрос (IDEAS.md 2026-08-26): просветительский текст про то, что
+    медикаменты и психотерапия работают лучше вместе, уже есть в ℹ️ О боте
+    — самого напоминания принять лекарство не было, хотя инфраструктура
+    времени/тумблеров для этого уже есть (та же, что у утро/день/вечер)."""
+    try:
+        await send_tracked_notification(
+            app.bot, uid, "med_reminder",
+            "💊 *Пора принять лекарство*\n\nЕсли уже принял(а) — можно просто закрыть это сообщение.",
+            parse_mode="Markdown",
+            reply_markup=_append_row(menu_button_kb(), disable_notif_row("med"))
+        )
+        return True
+    except Exception as e:
+        print(f"Ошибка напоминания про лекарство uid={uid}: {e}")
+        return False
+
 async def send_trial_ending_warning(app, uid):
     """По просьбе (IDEAS.md 2026-08-30): ни одна из плановых рассылок не
     предупреждает заранее об окончании пробного периода — первое, что
@@ -9700,6 +9745,15 @@ async def _process_user_notifications(app, user):
                 and user.get("notif_snooze_evening") != day_key):
             if await evening_notification(app, uid):
                 update_user(uid, evening_sent_date=day_key)
+
+        # Напоминание принять лекарство — независимо от notif_master_on
+        # (см. send_med_reminder): опциональная фича, по умолчанию
+        # выключенная (notif_med_on=0), а не часть основного ритуала выше.
+        if (int(user.get("notif_med_on") or 0) and now >= user.get("notif_med", "09:00")
+                and user.get("med_sent_date") != day_key
+                and user.get("notif_snooze_med") != day_key):
+            if await send_med_reminder(app, uid):
+                update_user(uid, med_sent_date=day_key)
 
         # Предупреждение об окончании пробного периода — не завязано
         # на notif_master_on (это разовое коммерческое уведомление,
@@ -10637,11 +10691,11 @@ def main():
     app.add_handler(CallbackQueryHandler(beacon_types_menu, pattern="^beacon_types_menu$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon_type_callback, pattern="^toggle_beacontype_"))
     app.add_handler(CallbackQueryHandler(beacon_technique_done, pattern="^beacon_technique_done$"))
-    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|beacon_start|beacon_end)$"))
+    app.add_handler(CallbackQueryHandler(set_time_prompt,  pattern="^set_(morning|midday|evening|med|beacon_start|beacon_end)$"))
     app.add_handler(CallbackQueryHandler(set_name_prompt,   pattern="^set_name$"))
     app.add_handler(CallbackQueryHandler(set_city_prompt,   pattern="^set_city$"))
     app.add_handler(CallbackQueryHandler(toggle_notif,       pattern="^toggle_notif$"))
-    app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening)$"))
+    app.add_handler(CallbackQueryHandler(toggle_notif_block, pattern="^toggle_(morning|midday|evening|med)$"))
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(toggle_streak_visibility, pattern="^toggle_streak_visibility$"))
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
