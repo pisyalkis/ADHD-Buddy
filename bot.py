@@ -9949,6 +9949,81 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _reply_chunked_markdown(update.message, parts)
 
 
+BACKUP_TARGET_UID = NOTIFY_USER_ID  # получатель бэкапа в Telegram — тот же админ, что и остальные admin_*
+
+
+async def backup_database(app):
+    """Раз в сутки (см. scheduler.add_job ниже) и по команде /backup —
+    делает снимок БД и отправляет файлом администратору в Telegram.
+
+    Реальный запрос (IDEAS.md 2026-09-02): бэкапа БД не было вообще — вся
+    история пользователей жила в одном sqlite-файле без единой копии.
+    Облачного хранилища (S3 и т.п.) в проекте нет и добавлять его ради
+    одного бэкапа — лишняя инфраструктура; Telegram уже умеет принимать
+    файлы, а администратору бот и так пишет напрямую (NOTIFY_USER_ID) —
+    самое дешёвое надёжное хранилище копии не на том же диске, что и
+    сам процесс (Railway передеплоивает контейнер, что не должно унести
+    с собой единственную копию бэкапа, лежащую рядом с ним же).
+
+    sqlite3 Connection.backup() (а не обычное копирование файла) —
+    официальный API именно для консистентного снимка ЖИВОЙ базы: бот
+    продолжает писать в DB_PATH (WAL) во время бэкапа, обычный файловый
+    copy рисковал бы скопировать файл в момент недописанной транзакции.
+    Блокирующий вызов — оборачиваем в asyncio.to_thread, тем же приёмом,
+    что уже применён к синхронным вызовам Anthropic в этом файле.
+
+    Временный файл удаляется сразу после отправки (успешной или нет) —
+    сам бэкап живёт в чате с администратором, копить локальные версии
+    рядом с БД незачем и только тратит место на диске."""
+    ts = datetime.now(pytz.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    tmp_path = f"{DB_PATH}.backup_{ts}.tmp"
+    try:
+        def _do_backup():
+            src = sqlite3.connect(DB_PATH)
+            dst = sqlite3.connect(tmp_path)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+        await asyncio.to_thread(_do_backup)
+        with open(tmp_path, "rb") as f:
+            await app.bot.send_document(
+                chat_id=BACKUP_TARGET_UID,
+                document=f,
+                filename=f"adhd_backup_{ts}.db",
+                caption=f"💾 Бэкап БД от {ts} UTC"
+            )
+        return True
+    except Exception as e:
+        print(f"⚠️ Ошибка бэкапа БД: {e}", flush=True)
+        try:
+            await app.bot.send_message(chat_id=BACKUP_TARGET_UID, text=f"⚠️ Бэкап БД не удался: {e}")
+        except Exception:
+            pass
+        return False
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+async def admin_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ручной /backup поверх той же backup_database, что и суточная
+    джоба — не дублирует логику, просто вызывает её по требованию, когда
+    не хочется ждать ночного расписания."""
+    uid = update.effective_user.id
+    if uid != NOTIFY_USER_ID:
+        await update.message.reply_text(
+            f"⛔ Нет доступа.\n\nТвой ID: `{uid}`",
+            parse_mode="Markdown"
+        )
+        return
+    await update.message.reply_text("💾 Делаю бэкап...")
+    ok = await backup_database(ctx.application)
+    if not ok:
+        await update.message.reply_text("⚠️ Бэкап не удался — подробности в логе.")
+
+
 async def admin_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != NOTIFY_USER_ID:
@@ -10394,6 +10469,7 @@ def main():
     app.add_handler(CommandHandler("users", admin_users), group=-1)
     app.add_handler(CommandHandler("send", admin_send), group=-1)
     app.add_handler(CommandHandler("broadcast", admin_broadcast), group=-1)
+    app.add_handler(CommandHandler("backup", admin_backup), group=-1)
     app.add_handler(CallbackQueryHandler(admin_msg_start, pattern="^admin_msg_"), group=-1)
     app.add_handler(CommandHandler("newpromo", newpromo_command), group=-1)
     app.add_handler(CommandHandler("blogger", blogger_command), group=-1)
@@ -10526,6 +10602,8 @@ def main():
     # Каждую минуту проверяем время уведомлений для каждого пользователя
     scheduler.add_job(check_notifications, 'cron', minute='*', args=[app])
     scheduler.add_job(sweep_scheduled_deletions, 'cron', minute='*', args=[app])
+    # Раз в сутки, в наименее людное время по UTC — см. backup_database.
+    scheduler.add_job(backup_database, 'cron', hour=3, minute=0, args=[app])
     scheduler.start()
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
