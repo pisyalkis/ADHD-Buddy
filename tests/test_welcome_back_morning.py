@@ -83,17 +83,19 @@ async def main():
     app2 = FakeApp()
     await bot.morning_notification(app2, uid2)
     _chat2, text2, _kb2 = app2.bot.sent[0]
-    assert "Доброе утро" in text2, text2
+    # Приветствие ротируется (см. MORNING_GREETINGS/_daily_text_variant) —
+    # проверяем, что это ОДИН ИЗ обычных вариантов, а не жёстко один текст.
+    assert any(g.format(name="Вика") in text2 for g in bot.MORNING_GREETINGS), text2
     assert "С возвращением" not in text2, text2
-    print("4. A 1-day gap (ordinary case) still gets the normal 'Доброе утро' greeting (no regression)")
+    print("4. A 1-day gap (ordinary case) still gets one of the normal rotating greetings (no regression)")
 
     # 5. Brand-new user (no streak at all yet) -> also the ordinary greeting,
     #    not treated as "returning".
     app3 = FakeApp()
     await bot.morning_notification(app3, uid0)
     _chat3, text3, _kb3 = app3.bot.sent[0]
-    assert "Доброе утро" in text3, text3
-    print("5. A brand-new user (no streak yet) also gets the ordinary greeting, not the welcome-back one")
+    assert any(g.format(name="Новичок") in text3 for g in bot.MORNING_GREETINGS), text3
+    print("5. A brand-new user (no streak yet) also gets one of the ordinary rotating greetings, not the welcome-back one")
 
     print("\nALL WELCOME-BACK-MORNING TESTS PASSED")
 
