@@ -1470,6 +1470,7 @@ _PERSONALIZE_IRREGULAR = {
     "должен(а)":            ("должен", "должна"),
     "отвлёкся(ась)":        ("отвлёкся", "отвлеклась"),
     "вернулся(ась)":        ("вернулся", "вернулась"),
+    "сорвался(ась)":        ("сорвался", "сорвалась"),
     "провёл(а)":            ("провёл", "провела"),
     "благодарен(а)":        ("благодарен", "благодарна"),
     "несовершенным(ой)":    ("несовершенным", "несовершенной"),
@@ -5124,6 +5125,15 @@ COACH_PROMPTS = {
     "c_procr":    "Прокрастинирую и понимаю это — что делать прямо сейчас?",
     "c_overload": "Слишком много всего, не знаю с чего начать — помоги расставить приоритеты",
     "c_tip":      "Дай один быстрый совет из тренинга навыков СДВГ",
+    # Реальный запрос (IDEAS.md 2026-08-27): у коуча были быстрые кнопки на
+    # "не начинаю"/"отвлёкся"/"прокрастинирую" и т.п. — но ни одной на
+    # стыд/срыв, хотя это частое и особенно тяжёлое состояние при СДВГ
+    # (самобичевание после провала мешает вернуться к делу сильнее, чем сам
+    # провал). system-промпт send_coach уже отдельно просит "никогда не
+    # морализируй и не стыди" — эти кнопки дают явный повод применить именно
+    # это правило.
+    "c_shame":    "Стыдно за себя — чувствую вину и хочется провалиться из-за того, что не сделал(а) то, что должен(на) был(а). Помоги не скатиться в самобичевание.",
+    "c_setback":  "Сорвался(ась) с плана — облажался(ась) сегодня, и кажется, что весь день уже испорчен и можно бросать. Помоги вернуться в дело, а не сдаться.",
 }
 
 # Человекочитаемые подписи состояния для дневного чекина — сохраняются в карточку дня
@@ -5154,6 +5164,8 @@ async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❓ Что дальше?", callback_data="c_next")],
             [InlineKeyboardButton("😩 Прокрастинирую", callback_data="c_procr")],
             [InlineKeyboardButton("🌀 Всё навалилось", callback_data="c_overload")],
+            [InlineKeyboardButton(personalize("😔 Стыдно за себя", gender), callback_data="c_shame")],
+            [InlineKeyboardButton(personalize("💥 Сорвался(ась)", gender), callback_data="c_setback")],
             [InlineKeyboardButton("💡 Совет дня", callback_data="c_tip")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
@@ -12139,7 +12151,7 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
-    app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
+    app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip|shame|setback)$"))
     app.add_handler(CallbackQueryHandler(coach_to_pool,     pattern="^coach_to_pool$"))
     app.add_handler(CallbackQueryHandler(coach_to_reminder, pattern="^coach_to_reminder$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
