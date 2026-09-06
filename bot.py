@@ -2313,6 +2313,14 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         inviter_name = md_escape(get_user(inviter_uid).get("name") or "")
         intro = f"👋 Тебя пригласил(а) *{inviter_name}* — привет! Я *ADHD Buddy*"
 
+    # Реальный запрос (IDEAS.md 2026-08-27): полное объяснение цены (см.
+    # TRIAL_INFO_TIP) звучало только в самом конце онбординга — для внешнего,
+    # незнакомого с продуктом пользователя это значит уже отдать имя и пол,
+    # ничего не зная про деньги, пока не дойдёт до конца. Не дублируем тут
+    # весь TRIAL_INFO_TIP (это было бы слишком рано и слишком подробно для
+    # самого первого сообщения) — только одна короткая строка-упоминание,
+    # чтобы это не звучало как "подстава" тому, кто не дойдёт до конца.
+    price_hint = f"_Первые {TRIAL_DAYS} дней бесплатно, дальше по желанию — {STARS_PRICE_MONTHLY} ⭐️ Stars/мес._\n\n"
     await _onboard_clear_prev(ctx, ctx.bot, update.effective_chat.id)
     _onboard_track(ctx, await update.message.reply_text(
         f"{intro} — помощник для людей с СДВГ и всех, у кого есть трудности с фокусом и прокрастинацией.\n\n"
@@ -2320,6 +2328,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• Преодолевать фрустрацию и прокрастинацию\n"
         "• Строить структуру дня без лишнего давления\n"
         "• Замечать прогресс и не терять мотивацию\n\n"
+        f"{price_hint}"
         "Как тебя зовут?",
         parse_mode="Markdown"
     ))
