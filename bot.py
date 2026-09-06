@@ -728,6 +728,13 @@ def init_db():
         ("beacon_last_sent", "''"),
         ("beacon_start", "'09:00'"),
         ("beacon_end", "'21:00'"),
+        # Реальный запрос (IDEAS.md 2026-08-30): маячок навыков уже умеет "N
+        # случайных раз в день" (skill_beacon_mode="random", см. ниже) —
+        # непредсказуемый режим обычно эффективнее против привыкания у СДВГ,
+        # но не был перенесён на маячок задач, хотя вся инфраструктура общая
+        # (beacon_start/beacon_end, _in_beacon_hours, _skill_beacon_random_times).
+        ("beacon_mode", "'interval'"),
+        ("beacon_daily_count", "3"),
         ("morning_sent_date", "''"),
         ("midday_sent_date", "''"),
         ("evening_sent_date", "''"),
@@ -5458,6 +5465,8 @@ def _settings_beacon_text_and_kb(user):
     с навыками), их интервалы/режимы и рабочие часы."""
     be = int(user.get("beacon_enabled")   or 0)
     bi = int(user.get("beacon_interval")  or 2)
+    bmode = user.get("beacon_mode") or "interval"
+    bcount = int(user.get("beacon_daily_count") or 3)
     bs = user.get("beacon_start") or "09:00"
     bfin = user.get("beacon_end") or "21:00"
     se = int(user.get("skill_beacon_enabled") or 0)
@@ -5465,7 +5474,10 @@ def _settings_beacon_text_and_kb(user):
     sint = int(user.get("skill_beacon_interval") or 60)
     scount = int(user.get("skill_beacon_daily_count") or 3)
 
-    beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
+    if bmode == "random":
+        beacon_label = f"{bcount} раз(а) в день, в случайные моменты"
+    else:
+        beacon_label = "каждый час" if bi == 1 else f"каждые {bi} ч"
     if smode == "random":
         skill_label = f"{scount} раз(а) в день, в случайные моменты"
     else:
@@ -5483,6 +5495,14 @@ def _settings_beacon_text_and_kb(user):
         InlineKeyboardButton(f"{'→' if bi==1 else ''} 1 ч", callback_data="beacon_int_1"),
         InlineKeyboardButton(f"{'→' if bi==2 else ''} 2 ч", callback_data="beacon_int_2"),
         InlineKeyboardButton(f"{'→' if bi==3 else ''} 3 ч", callback_data="beacon_int_3"),
+    ]
+    beacon_mode_row = [
+        InlineKeyboardButton(f"{'→' if bmode=='interval' else ''} Интервал", callback_data="beacon_mode_interval"),
+        InlineKeyboardButton(f"{'→' if bmode=='random' else ''} Рандом N/день", callback_data="beacon_mode_random"),
+    ]
+    beacon_count_row = [
+        InlineKeyboardButton(f"{'→' if bcount==n else ''} {n}", callback_data=f"beacon_count_{n}")
+        for n in (1, 2, 3, 4, 5)
     ]
     beacon_hours_row = [
         InlineKeyboardButton(f"🌅 С {bs}", callback_data="set_beacon_start"),
@@ -5503,9 +5523,10 @@ def _settings_beacon_text_and_kb(user):
     ]
     rows = [
         [InlineKeyboardButton(
-            f"{'✅' if be else '🔕'} Маячки: задачи", callback_data="toggle_beacon"),
-         *([InlineKeyboardButton("Интервал:", callback_data="noop")] if be else [])],
-        *([ beacon_interval_row ] if be else []),
+            f"{'✅' if be else '🔕'} Маячки: задачи", callback_data="toggle_beacon")],
+        *([ beacon_mode_row ] if be else []),
+        *([ beacon_interval_row ] if (be and bmode == "interval") else []),
+        *([ beacon_count_row ] if (be and bmode == "random") else []),
         [InlineKeyboardButton(
             f"{'✅' if se else '🔕'} Маячки: навыки", callback_data="toggle_skill_beacon")],
         *([ skill_mode_row ] if se else []),
@@ -5767,6 +5788,24 @@ async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     interval = int(q.data.split("_")[2])
     update_user(uid, beacon_interval=interval)
+    text, kb = _settings_beacon_text_and_kb(get_user(uid))
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
+
+async def beacon_set_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    mode = "random" if q.data == "beacon_mode_random" else "interval"
+    update_user(uid, beacon_mode=mode)
+    text, kb = _settings_beacon_text_and_kb(get_user(uid))
+    await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
+
+async def beacon_set_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    count = int(q.data.replace("beacon_count_", ""))
+    update_user(uid, beacon_daily_count=count)
     text, kb = _settings_beacon_text_and_kb(get_user(uid))
     await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
@@ -6050,27 +6089,35 @@ async def send_task_beacon(app, user):
 
         tz = get_user_tz(user)
         now = datetime.now(tz)
-        interval_h = int(user.get("beacon_interval") or 2)
 
         if not _in_beacon_hours(user, now): return
 
-        # beacon_last_sent почти всегда вчерашний в начале дня (маячок ещё не
-        # стрелял сегодня) — интервал "с последней отправки" формально
-        # огромный и проходит мгновенно. Раньше это значило "стреляй, как
-        # только утро появится", даже если утро заполнено буквально минуту
-        # назад. Берём более позднюю точку отсчёта из двух: последняя
-        # отправка маячка ИЛИ момент, когда сегодня заполнили утро — и ждём
-        # полный интервал именно от неё.
-        baseline_dt = None
-        for ts in (user.get("beacon_last_sent") or "", user.get("morning_filled_at") or ""):
-            if not ts: continue
-            try:
-                dt = datetime.fromisoformat(ts).astimezone(tz)
-                if baseline_dt is None or dt > baseline_dt:
-                    baseline_dt = dt
-            except Exception:
-                pass
-        if baseline_dt and (now - baseline_dt).total_seconds() < interval_h * 3600 - 30: return
+        if (user.get("beacon_mode") or "interval") == "random":
+            # "N случайных раз в день" (IDEAS.md 2026-08-30) — тот же режим,
+            # что уже есть у маячка навыков (см. _skill_beacon_random_times);
+            # непредсказуемый режим обычно эффективнее фиксированного
+            # интервала против привыкания/игнорирования у СДВГ.
+            if not _task_beacon_random_due(user, now): return
+        else:
+            interval_h = int(user.get("beacon_interval") or 2)
+
+            # beacon_last_sent почти всегда вчерашний в начале дня (маячок ещё не
+            # стрелял сегодня) — интервал "с последней отправки" формально
+            # огромный и проходит мгновенно. Раньше это значило "стреляй, как
+            # только утро появится", даже если утро заполнено буквально минуту
+            # назад. Берём более позднюю точку отсчёта из двух: последняя
+            # отправка маячка ИЛИ момент, когда сегодня заполнили утро — и ждём
+            # полный интервал именно от неё.
+            baseline_dt = None
+            for ts in (user.get("beacon_last_sent") or "", user.get("morning_filled_at") or ""):
+                if not ts: continue
+                try:
+                    dt = datetime.fromisoformat(ts).astimezone(tz)
+                    if baseline_dt is None or dt > baseline_dt:
+                        baseline_dt = dt
+                except Exception:
+                    pass
+            if baseline_dt and (now - baseline_dt).total_seconds() < interval_h * 3600 - 30: return
 
         # Тот же случай, но со стороны дневного чекина: если утро заполнено
         # задолго до дневного чекина, а маячок пока не стрелял, дневной чекин
@@ -6156,6 +6203,25 @@ def _skill_beacon_random_times(user, now, count):
     rnd = random.Random(f"{user.get('user_id')}-{start_dt.date().isoformat()}")
     bucket = window / count
     return [start_dt + timedelta(seconds=i * bucket + rnd.uniform(0, bucket)) for i in range(count)]
+
+def _task_beacon_random_due(user, now):
+    """"N случайных раз в день" для маячка ЗАДАЧ — тот же принцип и та же
+    общая инфраструктура (beacon_start/beacon_end, _skill_beacon_random_times),
+    что и у _skill_beacon_due для маячка навыков, только с полями и last-sent
+    маячка задач (beacon_daily_count/beacon_last_sent), чтобы оба маячка
+    планировались независимо друг от друга."""
+    count = max(1, int(user.get("beacon_daily_count") or 3))
+    targets = _skill_beacon_random_times(user, now, count)
+    last_raw = user.get("beacon_last_sent") or ""
+    last_dt = None
+    if last_raw:
+        try:
+            last_dt = datetime.fromisoformat(last_raw).astimezone(now.tzinfo)
+        except Exception:
+            pass
+    if last_dt:
+        targets = [t for t in targets if t > last_dt]
+    return bool(targets) and now >= targets[0]
 
 def _skill_beacon_due(user, now):
     """Пора ли слать напоминание с навыком — либо фиксированный интервал в
@@ -12018,6 +12084,8 @@ def main():
     app.add_handler(CallbackQueryHandler(toggle_beacon,      pattern="^toggle_beacon$"))
     app.add_handler(CallbackQueryHandler(toggle_streak_visibility, pattern="^toggle_streak_visibility$"))
     app.add_handler(CallbackQueryHandler(beacon_set_interval, pattern="^beacon_int_\\d+$"))
+    app.add_handler(CallbackQueryHandler(beacon_set_mode,     pattern="^beacon_mode_(interval|random)$"))
+    app.add_handler(CallbackQueryHandler(beacon_set_count,    pattern="^beacon_count_\\d+$"))
     app.add_handler(CallbackQueryHandler(toggle_skill_beacon, pattern="^toggle_skill_beacon$"))
     app.add_handler(CallbackQueryHandler(set_skill_beacon_mode, pattern="^skill_mode_(interval|random)$"))
     app.add_handler(CallbackQueryHandler(set_skill_beacon_interval, pattern="^skill_int_\\d+$"))
