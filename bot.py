@@ -7577,6 +7577,13 @@ RESEARCH_OPEN_Q_DAY3_LOW = "Что не получилось или что бы�
 RESEARCH_OPEN_Q_DAY3_OK  = "Что было самым полезным за эти 3 дня?"
 RESEARCH_OPEN_Q_DAY7     = "Что мешало использовать бота на этой неделе?"
 RESEARCH_OPEN_Q_DAY14    = "Что стоит упростить или убрать в боте?"
+# По просьбе (IDEAS.md 2026-09-02): день 30 — единственный из четырёх без
+# открытого текстового вопроса, а сам ответ здесь уже триггерит алерт
+# админу "⚠️ НИЗКАЯ ОЦЕНКА — нужна связь!" (см. low_rating в research_callback)
+# — самый тревожный сигнал риска оттока во всём боте раньше долетал без
+# единого слова о причине. Вопрос только для низкой оценки — для остальных
+# ответов терминальное "Спасибо" остаётся как было.
+RESEARCH_OPEN_Q_DAY30_LOW = "Что могло бы изменить твоё мнение?"
 
 RESEARCH_QUESTION_LABELS = {
     "day3_rating":  "Насколько полезен бот через 3 дня? (оценка 1-5)",
@@ -7586,6 +7593,7 @@ RESEARCH_QUESTION_LABELS = {
     "day14_rating": "Насколько вероятно порекомендуешь бота другу с СДВГ? (0-10)",
     "day14_text":   RESEARCH_OPEN_Q_DAY14,
     "day30_rating": "Если бот перестанет работать — как ты к этому отнесёшься?",
+    "day30_text":   RESEARCH_OPEN_Q_DAY30_LOW,
 }
 
 def save_research(uid, day, question, answer):
@@ -7806,16 +7814,29 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         update_user(uid, research_awaiting=f"14_open:{RESEARCH_OPEN_Q_DAY14}")
     elif day == 30:
-        # Терминальная ветка — открытого вопроса дальше нет, поэтому
-        # трекнутая research-карточка тут не заменяется новым сообщением
-        # того же канала, а просто удаляется (см. _mark_notif_answered),
-        # и финальное "Спасибо" — уже обычное, самостоятельное сообщение
-        # (тот же принцип, что и итоговые сводки ритуала).
-        await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "research")
-        await q.message.reply_text(
-            "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
-            reply_markup=menu_button_kb()
-        )
+        if low_rating:
+            # По просьбе (IDEAS.md 2026-09-02): именно здесь уже уходит
+            # алерт "⚠️ НИЗКАЯ ОЦЕНКА — нужна связь!" (см. выше) — открытый
+            # вопрос теперь идёт следом, тем же принципом "одно актуальное
+            # сообщение", что и в ветках day==7/14 (заменяет ту же
+            # трекнутую research-карточку, а не создаёт новую).
+            await send_tracked_notification(
+                getattr(ctx, "bot", None), uid, "research",
+                f"Записал.\n\n*И ещё — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY30_LOW}",
+                parse_mode="Markdown"
+            )
+            update_user(uid, research_awaiting=f"30_open:{RESEARCH_OPEN_Q_DAY30_LOW}")
+        else:
+            # Терминальная ветка — открытого вопроса дальше нет, поэтому
+            # трекнутая research-карточка тут не заменяется новым сообщением
+            # того же канала, а просто удаляется (см. _mark_notif_answered),
+            # и финальное "Спасибо" — уже обычное, самостоятельное сообщение
+            # (тот же принцип, что и итоговые сводки ритуала).
+            await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "research")
+            await q.message.reply_text(
+                "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
+                reply_markup=menu_button_kb()
+            )
 
 
 # Реальный запрос: "О боте" был одним длинным сплошным текстом — разбит
@@ -9773,7 +9794,13 @@ async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 RESEARCH_MILESTONES = [3, 7, 14, 30]
-RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14}  # у дня 30 нет открытого текстового вопроса
+# У дня 30 открытый вопрос теперь тоже есть (см. research_callback), но
+# только для низкой оценки — в отличие от 3/7/14, которые спрашивают его
+# всегда. Не добавляем 30 сюда: "пропущенные" ниже сверяют факт вопроса с
+# фактом ответа по рейтингу без учёта ЗНАЧЕНИЯ рейтинга, так что для дня 30
+# это ложно пометило бы обычные (не низкие) ответы как "спросили, но не
+# ответили" — вопрос им вообще не задавался.
+RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14}
 
 async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id

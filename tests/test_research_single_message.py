@@ -135,8 +135,12 @@ async def main():
     print("4. Day 7's 'recorded' note and open question are now ONE message, not two")
 
     # ══════════════════════════════════════════════════════════════════════
-    # Day 30: terminal branch -- no follow-up, tracked message is deleted
-    # (not replaced) and the final "Спасибо" is a plain, untracked message.
+    # Day 30, GOOD-signal answer ("sad" = "Очень расстроюсь", the user would
+    # be upset to lose the bot -- not a low_rating value): terminal branch,
+    # no follow-up, tracked message is deleted (not replaced) and the final
+    # "Спасибо" is a plain, untracked message. "nope"/"glad" ARE low_rating
+    # values and now get an open-question follow-up instead -- see
+    # test_research_day30_open_question.py.
     # ══════════════════════════════════════════════════════════════════════
     uid3 = 3
     conn = sqlite3.connect(bot.DB_PATH)
@@ -149,12 +153,12 @@ async def main():
 
     ctx3 = FakeCtx(app3.bot)
     rating_screen3 = FakeMsg(chat_id=uid3); rating_screen3.message_id = rating_mid3
-    upd4 = FakeUpdate(uid3, data="research_30_glad", message=rating_screen3)
+    upd4 = FakeUpdate(uid3, data="research_30_sad", message=rating_screen3)
     await bot.research_callback(upd4, ctx3)
     assert (uid3, rating_mid3) in app3.bot.deleted
     assert bot._get_notif_msg_id(uid3, "research") is None
     assert rating_screen3.reply_calls and "Спасибо" in rating_screen3.reply_calls[0][0]
-    print("5. Day 30 (terminal) deletes the tracked rating message and sends a plain final thank-you")
+    print("5. Day 30 (terminal, good-signal answer) deletes the tracked rating message and sends a plain final thank-you")
 
     print("\nALL RESEARCH-SINGLE-MESSAGE TESTS PASSED")
 
