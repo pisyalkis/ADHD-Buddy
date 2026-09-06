@@ -135,7 +135,7 @@ async def main():
     await bot.buddy_menu(upd_menu, FakeCtx(FakeBot()))
     linked_text, linked_kb = menu_msg.texts[-1]
     assert "Вика" in linked_text, linked_text
-    assert kb_callbacks(linked_kb) == ["buddy_ping", "buddy_guide", "go_menu"], kb_callbacks(linked_kb)
+    assert kb_callbacks(linked_kb) == ["buddy_ping", "buddy_guide", "buddy_unlink_menu", "go_menu"], kb_callbacks(linked_kb)
     print("4. buddy_menu shows the linked partner's real name and a button to revisit the buddy guide")
 
     # 4b. _parse_buddy_invite_arg: valid deep link for a brand-new user.

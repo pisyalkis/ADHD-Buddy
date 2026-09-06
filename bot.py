@@ -9288,6 +9288,21 @@ def finalize_buddy_pairing(uid_a, uid_b, reward_referral=False):
         grant_access_days(uid_b, BUDDY_REFERRAL_REWARD_DAYS)
     return True
 
+def unlink_buddy_pair(uid):
+    """Разрывает пару БЕЗ охлаждения — обе стороны сразу же снова свободны
+    искать бадди (пригласить нового или включить случайный матчинг).
+    Возвращает uid бывшего партнёра, чтобы вызывающий код мог отправить ему
+    нейтральное уведомление (см. buddy_unlink_confirm), либо None, если
+    пары не было."""
+    user = get_user(uid)
+    partner_uid = user.get("buddy_uid") or ""
+    if not partner_uid:
+        return None
+    partner_uid = int(partner_uid)
+    update_user(uid, buddy_uid="", buddy_paired_at="")
+    update_user(partner_uid, buddy_uid="", buddy_paired_at="")
+    return partner_uid
+
 def find_waiting_buddy_candidate(uid):
     """Самый первый (FIFO — по buddy_seeking_since) из ожидающих случайного
     матчинга, кроме самого uid."""
@@ -9380,6 +9395,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons = [
             [InlineKeyboardButton("💬 Написать бадди сейчас", callback_data="buddy_ping")],
             [InlineKeyboardButton("📖 Как работать с бадди", callback_data="buddy_guide")],
+            [InlineKeyboardButton("🔄 Сменить бадди", callback_data="buddy_unlink_menu")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ]
     elif buddy_name:
@@ -9407,6 +9423,46 @@ async def buddy_guide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _render_tracked(q.message, ctx, "buddy", BUDDY_GUIDE_TEXT, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
                            parse_mode="Markdown",
                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Бадди", callback_data="go_buddy")]]))
+
+async def buddy_unlink_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"🔄 Сменить бадди" — необратимо на месте, поэтому отдельный экран
+    подтверждения (тот же принцип, что и у pool_clear_menu), а не мгновенный
+    разрыв одним тапом."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    linked_uid = get_user(uid).get("buddy_uid") or ""
+    if not linked_uid:
+        await buddy_menu(update, ctx)
+        return
+    partner = get_user(int(linked_uid))
+    partner_name = md_escape((partner.get("name") if partner else "") or "бадди")
+    text = (
+        f"🔄 *Сменить бадди?*\n\n"
+        f"Пара с {partner_name} прервётся сразу — без охлаждения, можно тут же пригласить нового "
+        f"или включить случайный матчинг. {partner_name} получит нейтральное уведомление, без "
+        f"подробностей о причине — это не \"ты больше не нужен(на)\", а просто смена формата."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, сменить", callback_data="buddy_unlink_confirm")],
+        [InlineKeyboardButton("◀️ Отмена", callback_data="go_buddy")],
+    ])
+    await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
+
+async def buddy_unlink_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    partner_uid = unlink_buddy_pair(uid)
+    if partner_uid is not None:
+        try:
+            await ctx.bot.send_message(
+                chat_id=partner_uid,
+                text="👥 Твой бадди решил(а) попробовать по-другому — пара расформирована. "
+                     "Можно пригласить нового бадди или найти через случайный матчинг в 👥 Бадди.",
+                reply_markup=menu_button_kb()
+            )
+        except Exception as e:
+            print(f"Ошибка уведомления о разрыве пары бадди uid={partner_uid}: {e}")
+    await buddy_menu(update, ctx)
 
 async def buddy_invite_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -11657,6 +11713,8 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
     app.add_handler(CallbackQueryHandler(buddy_guide,           pattern="^buddy_guide$"))
+    app.add_handler(CallbackQueryHandler(buddy_unlink_menu,     pattern="^buddy_unlink_menu$"))
+    app.add_handler(CallbackQueryHandler(buddy_unlink_confirm,  pattern="^buddy_unlink_confirm$"))
     app.add_handler(CallbackQueryHandler(buddy_invite_link,    pattern="^buddy_invite_link$"))
     app.add_handler(CallbackQueryHandler(buddy_find_match,     pattern="^buddy_find_match$"))
     app.add_handler(CallbackQueryHandler(buddy_cancel_seeking, pattern="^buddy_cancel_seeking$"))
