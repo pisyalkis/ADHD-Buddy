@@ -8838,6 +8838,16 @@ RESEARCH_OPEN_Q_DAY14    = "Что стоит упростить или убра
 # единого слова о причине. Вопрос только для низкой оценки — для остальных
 # ответов терминальное "Спасибо" остаётся как было.
 RESEARCH_OPEN_Q_DAY30_LOW = "Что могло бы изменить твоё мнение?"
+# По просьбе (IDEAS.md 2026-09-03): раньше исследовательская программа
+# заканчивалась на 30-м дне — не было точек после того, как пробный период
+# и первый месяц использования давно позади, а именно тогда виден настоящий
+# долгосрочный retention/отток. День 60 — тем же принципом, что 3/7/14
+# (всегда есть открытый вопрос, см. RESEARCH_TEXT_FOLLOWUP_DAYS): короткая
+# проверка "реально ли что-то поменялось в подходе к делам". День 90 — тем
+# же принципом, что 30 (открытый вопрос только при рискованном ответе,
+# остальное — терминальная благодарность): "стал ли бот привычкой".
+RESEARCH_OPEN_Q_DAY60 = "Что изменилось (или не изменилось) в твоём подходе к делам за эти два месяца?"
+RESEARCH_OPEN_Q_DAY90_LOW = "Что могло бы вернуть бота в твою рутину?"
 
 RESEARCH_QUESTION_LABELS = {
     "day3_rating":  "Насколько полезен бот через 3 дня? (оценка 1-5)",
@@ -8848,6 +8858,10 @@ RESEARCH_QUESTION_LABELS = {
     "day14_text":   RESEARCH_OPEN_Q_DAY14,
     "day30_rating": "Если бот перестанет работать — как ты к этому отнесёшься?",
     "day30_text":   RESEARCH_OPEN_Q_DAY30_LOW,
+    "day60_rating": "За 2 месяца что-то реально изменилось в том, как справляешься с делами?",
+    "day60_text":   RESEARCH_OPEN_Q_DAY60,
+    "day90_rating": "Оглядываясь на 3 месяца — бот стал частью твоей рутины?",
+    "day90_text":   RESEARCH_OPEN_Q_DAY90_LOW,
 }
 
 def save_research(uid, day, question, answer):
@@ -8936,6 +8950,32 @@ async def send_research_question(app, uid, day):
                 [InlineKeyboardButton(personalize("😅 Даже рад(а)", user["gender"]), callback_data="research_30_glad")],
             ])
         )
+
+    elif day == 60:
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, уже 2 месяца с ботом!*\n\n"
+            f"За это время что-то реально изменилось в том, как справляешься с делами?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Да, заметно", callback_data="research_60_big_change")],
+                [InlineKeyboardButton("🤏 Есть небольшие сдвиги", callback_data="research_60_small_change")],
+                [InlineKeyboardButton("😐 Почти нет", callback_data="research_60_no_change")],
+            ])
+        )
+
+    elif day == 90:
+        await send_tracked_notification(
+            app.bot, uid, "research",
+            f"🔬 *{name}, целых 3 месяца с ботом!*\n\n"
+            f"Оглядываясь назад — бот стал частью твоей рутины, или больше от случая к случаю?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔁 Да, полноценная привычка", callback_data="research_90_habit")],
+                [InlineKeyboardButton("🤷 От случая к случаю", callback_data="research_90_occasional")],
+                [InlineKeyboardButton(personalize("😶 Почти забыл(а) про бота", user["gender"]), callback_data="research_90_forgot")],
+            ])
+        )
     else:
         return  # неизвестный день — ничего не отправили, помечать нечего
 
@@ -8967,6 +9007,8 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "yes": "Да, был момент", "maybe": "Не уверен(а)", "no": "Нет пока",
         "sad": "Очень расстроюсь", "meh": "Немного расстроюсь",
         "nope": "Всё равно", "glad": "Даже рад(а)",
+        "big_change": "Да, заметно", "small_change": "Есть небольшие сдвиги", "no_change": "Почти нет",
+        "habit": "Полноценная привычка", "occasional": "От случая к случаю", "forgot": "Почти забыл(а) про бота",
     }
     answer = personalize(LABELS.get(value, value), gender)
     save_research(uid, day, f"day{day}_rating", answer)
@@ -8989,6 +9031,10 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         low_rating = value == "no"
     elif day == 30:
         low_rating = value in ("nope", "glad")
+    elif day == 60:
+        low_rating = value == "no_change"
+    elif day == 90:
+        low_rating = value == "forgot"
     else:
         low_rating = value in ("1", "2")
     if NOTIFY_USER_ID:
@@ -9089,6 +9135,31 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "research")
             await q.message.reply_text(
                 "Спасибо! Это очень важный для меня ответ 🙏\n\nБот продолжает работать — до встречи завтра.",
+                reply_markup=menu_button_kb()
+            )
+    elif day == 60:
+        # Тот же принцип "всегда есть открытый вопрос", что и в day==7/14 —
+        # это не терминальная точка программы, за ней ещё есть день 90.
+        await send_tracked_notification(
+            getattr(ctx, "bot", None), uid, "research",
+            f"Записал! Спасибо 🙏\n\n*И ещё — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY60}",
+            parse_mode="Markdown"
+        )
+        update_user(uid, research_awaiting=f"60_open:{RESEARCH_OPEN_Q_DAY60}")
+    elif day == 90:
+        if low_rating:
+            await send_tracked_notification(
+                getattr(ctx, "bot", None), uid, "research",
+                f"Записал.\n\n*И ещё — ответь текстом:*\n\n{RESEARCH_OPEN_Q_DAY90_LOW}",
+                parse_mode="Markdown"
+            )
+            update_user(uid, research_awaiting=f"90_open:{RESEARCH_OPEN_Q_DAY90_LOW}")
+        else:
+            # Терминальная ветка программы (тот же принцип, что day==30 выше,
+            # только теперь 90 — фактический конец исследовательских точек).
+            await _mark_notif_answered(getattr(ctx, "bot", None), uid, getattr(q.message, "message_id", None), "research")
+            await q.message.reply_text(
+                "Спасибо! Очень ценно это знать 🙏\n\nБот продолжает работать рядом с тобой.",
                 reply_markup=menu_button_kb()
             )
 
@@ -11431,7 +11502,7 @@ async def _process_user_notifications(app, user):
                 created_at = user.get("created_at") or now_dt.date().isoformat()
                 days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
                 done_days = [x for x in (user.get("research_done") or "").split(",") if x]
-                for milestone in [3, 7, 14, 30]:
+                for milestone in [3, 7, 14, 30, 60, 90]:
                     if days_since >= milestone and str(milestone) not in done_days:
                         if 10 <= now_dt.hour <= 12:
                             await send_research_question(app, uid, milestone)
@@ -11615,14 +11686,15 @@ async def admin_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _reply_chunked_markdown(update.message, lines)
 
 
-RESEARCH_MILESTONES = [3, 7, 14, 30]
-# У дня 30 открытый вопрос теперь тоже есть (см. research_callback), но
-# только для низкой оценки — в отличие от 3/7/14, которые спрашивают его
-# всегда. Не добавляем 30 сюда: "пропущенные" ниже сверяют факт вопроса с
-# фактом ответа по рейтингу без учёта ЗНАЧЕНИЯ рейтинга, так что для дня 30
-# это ложно пометило бы обычные (не низкие) ответы как "спросили, но не
-# ответили" — вопрос им вообще не задавался.
-RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14}
+RESEARCH_MILESTONES = [3, 7, 14, 30, 60, 90]
+# У дней 30 и 90 открытый вопрос тоже есть (см. research_callback), но
+# только для низкой/рискованной оценки — в отличие от 3/7/14/60, которые
+# спрашивают его всегда. Не добавляем 30/90 сюда: "пропущенные" ниже
+# сверяют факт вопроса с фактом ответа по рейтингу без учёта ЗНАЧЕНИЯ
+# рейтинга, так что для этих дней это ложно пометило бы обычные (не
+# низкие/рискованные) ответы как "спросили, но не ответили" — вопрос им
+# вообще не задавался.
+RESEARCH_TEXT_FOLLOWUP_DAYS = {3, 7, 14, 60}
 
 async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
