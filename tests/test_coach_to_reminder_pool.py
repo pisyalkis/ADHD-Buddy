@@ -103,7 +103,7 @@ async def main():
     print("1. coach_to_pool adds the coach's own advice text into the task pool")
 
     # 2. coach_to_reminder arms awaiting_reminder_add + stashes the advice as
-    #    coach_reminder_seed, WITHOUT requiring the user to retype the advice.
+    #    reminder_seed, WITHOUT requiring the user to retype the advice.
     uid2 = 2
     make_user(uid2, "Вика")
     ctx2 = FakeCtx(FakeBot())
@@ -112,7 +112,7 @@ async def main():
     update2 = FakeUpdate(uid2, data="coach_to_reminder", message=msg2)
     await bot.coach_to_reminder(update2, ctx2)
     assert ctx2.user_data.get("awaiting_reminder_add") is True
-    assert ctx2.user_data.get("coach_reminder_seed") == advice
+    assert ctx2.user_data.get("reminder_seed") == advice
     print("2. coach_to_reminder arms awaiting_reminder_add and stashes the coach's advice as a seed")
 
     # 3. Typing just the TIME (no content) combines with the seed before
@@ -133,7 +133,7 @@ async def main():
         bot.parse_reminder_request = orig_parse
 
     assert captured.get("text") == f"через 20 минут: {advice}", captured
-    assert ctx2.user_data.get("coach_reminder_seed") is None, \
+    assert ctx2.user_data.get("reminder_seed") is None, \
         "the seed must be consumed (popped) once used, not left lingering"
     reminders = bot.get_reminders(uid2)
     assert any(r["text"] == advice for r in reminders), reminders
@@ -161,20 +161,20 @@ async def main():
 
     assert ctx3.user_data.get("awaiting_reminder_add") is True, \
         "a failed parse must re-arm awaiting_reminder_add for a retry"
-    assert ctx3.user_data.get("coach_reminder_seed") == advice, \
+    assert ctx3.user_data.get("reminder_seed") == advice, \
         "a failed parse must restore the seed, not lose the coach's advice"
     print("4. A failed parse re-arms the retry and restores the coach's advice seed instead of losing it")
 
     # 5. clear_awaiting_and_cancel_ritual/clear_awaiting_flags clean up both
-    #    new keys -- no stale coach_last_reply/coach_reminder_seed leaking
+    #    new keys -- no stale coach_last_reply/reminder_seed leaking
     #    into an unrelated later flow.
     ctx4 = FakeCtx(FakeBot())
     ctx4.user_data["coach_last_reply"] = advice
-    ctx4.user_data["coach_reminder_seed"] = advice
+    ctx4.user_data["reminder_seed"] = advice
     bot.clear_awaiting_flags(ctx4)
     assert "coach_last_reply" not in ctx4.user_data
-    assert "coach_reminder_seed" not in ctx4.user_data
-    print("5. clear_awaiting_flags cleans up coach_last_reply/coach_reminder_seed")
+    assert "reminder_seed" not in ctx4.user_data
+    print("5. clear_awaiting_flags cleans up coach_last_reply/reminder_seed")
 
     print("\nALL COACH-TO-REMINDER-POOL TESTS PASSED")
 
