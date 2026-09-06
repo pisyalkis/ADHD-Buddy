@@ -67,9 +67,17 @@ async def main():
     user = bot.get_user(uid)
     await bot.send_due_reminders(app, user, now_dt)
 
+    # Real request (IDEAS.md 2026-08-29, later PR): a fired one-time
+    # reminder is no longer DELETED outright -- it's kept under the same id
+    # with remind_at pushed to REMINDER_FIRED_SENTINEL (far future, never
+    # due again) so a "⏰ Ещё через 10 мин" snooze tap can still find and
+    # reschedule it by id. The important invariant from THIS bug is
+    # unchanged: the concurrent edit turned off repeat, so it must NOT be
+    # treated as still-recurring (rescheduled to a real near-term date).
     survivor = bot.get_reminder(uid, rem_id)
-    assert survivor is None, \
-        f"the concurrent edit turned off repeat -- reminder must be cancelled (not rescheduled as recurring), got: {survivor}"
+    assert survivor is not None, f"a fired one-time reminder must be kept (sentinel-disarmed), not deleted, got: {survivor}"
+    assert survivor["remind_at"] == bot.REMINDER_FIRED_SENTINEL, \
+        f"the concurrent edit turned off repeat -- reminder must be sentinel-disarmed (not rescheduled as recurring), got: {survivor}"
     print("1. send_due_reminders honors a concurrent edit made during the send (re-fetches before reschedule/cancel)")
 
     # Sanity: with NO concurrent edit, a recurring reminder is still

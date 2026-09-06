@@ -4831,13 +4831,15 @@ async def coach_to_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     содержит времени, поэтому переиспользуем ТОТ ЖЕ флаг awaiting_reminder_add
     и тот же parse_reminder_request, что и обычное добавление напоминания
     (см. reminder_add_start), только просим у пользователя ОДНО время, а не
-    всю фразу заново. coach_reminder_seed — совет коуча, который handle_text
-    склеит с ответом пользователя перед разбором (см. awaiting_reminder_add)."""
+    всю фразу заново. reminder_seed — совет коуча, который handle_text
+    склеит с ответом пользователя перед разбором (см. awaiting_reminder_add;
+    тот же ключ переиспользует reminder_quick_template — не про коуча
+    конкретно, а вообще "недостающая половина фразы для parse_reminder_request")."""
     q = update.callback_query; await q.answer()
     advice = ctx.user_data.get("coach_last_reply", "")
     ctx.user_data["awaiting_reminder_add"] = True
     ctx.user_data["awaiting_reminder_add_set_at"] = datetime.now().isoformat()
-    ctx.user_data["coach_reminder_seed"] = advice
+    ctx.user_data["reminder_seed"] = advice
     text = (
         f"⏰ *Когда напомнить об этом?*\n\n_«{md_escape(advice)}»_\n\n"
         "Напиши, например: «через 20 минут» или «завтра в 9»."
@@ -6934,11 +6936,50 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     ctx.user_data["awaiting_reminder_add"] = True
     ctx.user_data["awaiting_reminder_add_set_at"] = datetime.now().isoformat()
+    # Реальный запрос (IDEAS.md 2026-09-05): 📥 Список дел даёт быстрый
+    # one-tap выбор готового пункта, а у напоминаний единственный способ —
+    # свободная фраза целиком. Кнопки-шаблоны ниже (см. REMINDER_QUICK_TEMPLATES/
+    # reminder_quick_template) закрывают самый частый случай — "нужно
+    # напомнить именно СЕЙЧАС, в момент паралича инициации" — без необходимости
+    # печатать время, только само дело.
+    template_row = [
+        InlineKeyboardButton(label, callback_data=cb)
+        for cb, (_, label) in REMINDER_QUICK_TEMPLATES.items()
+    ]
     await _render_tracked(
         q.message, ctx, "reminders",
         "Когда и о чём напомнить? Напиши свободно, например:\n"
         "`через 20 минут проверить почту`\n`завтра в 10 позвонить Джону`\n"
-        "`каждый день в 9 пить воду`\n`каждый вторник звонить маме`",
+        "`каждый день в 9 пить воду`\n`каждый вторник звонить маме`\n\n"
+        "Или выбери время и просто напиши, о чём напомнить:",
+        ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            template_row,
+            [InlineKeyboardButton("Отмена", callback_data="go_reminders")],
+        ])
+    )
+
+REMINDER_QUICK_TEMPLATES = {
+    "remind_tpl_10m":  ("через 10 минут",        "+10 мин"),
+    "remind_tpl_1h":   ("через 1 час",           "+1 час"),
+    "remind_tpl_tmrw": ("завтра в 9 утра",       "Завтра утром"),
+}
+
+async def reminder_quick_template(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Кнопка-шаблон времени (см. REMINDER_QUICK_TEMPLATES) — тот же приём,
+    что и у coach_to_reminder (reminder_seed): пользователя просят написать
+    ТОЛЬКО дело, время уже задано шаблоном, handle_text склеит их перед
+    parse_reminder_request."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    time_phrase, label = REMINDER_QUICK_TEMPLATES[q.data]
+    ctx.user_data["awaiting_reminder_add"] = True
+    ctx.user_data["awaiting_reminder_add_set_at"] = datetime.now().isoformat()
+    ctx.user_data["reminder_seed"] = time_phrase
+    await _render_tracked(
+        q.message, ctx, "reminders",
+        f"⏰ *{label}* — о чём напомнить?\n\nНапиши коротко, например: «проверить почту».",
         ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_reminders")]])
@@ -7014,6 +7055,21 @@ async def handle_edit_reminder_intent(message, ctx, uid, query):
         reply_markup=reminder_edit_candidates_kb(candidates)
     )
 
+# Реальный запрос (IDEAS.md 2026-08-29): сработавшее напоминание давало
+# только "◀️ Меню" — нет "⏰ Ещё через 10 мин", хотя для аудитории с СДВГ
+# это одна из самых частых потребностей у напоминаний, не только у
+# фокус-таймера. Разовое напоминание после срабатывания УДАЛЯЛОСЬ бы из
+# БД (см. было cancel_reminder ниже) — значит к моменту тапа "снуз" его
+# уже не найти по id. Вместо удаления теперь переводим remind_at в
+# заведомо недостижимый "сентинел"-момент далеко в будущем (get_due_reminders
+# сравнивает remind_at<=now_key — такая строка не пройдёт эту проверку
+# практически никогда) — строка остаётся в БД под тем же id, кнопка снуза
+# просто переносит remind_at на настоящее "через 10 минут". Если снуз не
+# нажали — запись просто больше никогда не сработает (тот же класс
+# принятого компромисса, что и нерасчищаемая таблица events, IDEAS.md
+# 2026-08-31: лишняя неактивная строка не идеальна, но безопасна).
+REMINDER_FIRED_SENTINEL = "9999-12-31T23:59:59"
+
 async def send_due_reminders(app, user, now_dt):
     """Часть per-user тика check_notifications — независима от общего
     тумблера notif_enabled (как маячок и фокус-таймер): это явные
@@ -7027,7 +7083,10 @@ async def send_due_reminders(app, user, now_dt):
                 chat_id=uid,
                 text=f"⏰ *Напоминание*\n\n{md_escape(rem['text'])}",
                 parse_mode="Markdown",
-                reply_markup=menu_button_kb()
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏰ Ещё через 10 мин", callback_data=f"remind_snooze_{rem['id']}")],
+                    [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+                ])
             )
             # Только самоудаление по тишине — НЕ через notif_msg_ids/
             # send_tracked_notification: два разных напоминания могут
@@ -7045,9 +7104,30 @@ async def send_due_reminders(app, user, now_dt):
             if fresh_rem.get("recur"):
                 reschedule_reminder(uid, fresh_rem["id"], next_recur_time(fresh_rem["remind_at"], fresh_rem["recur"], now_dt))
             else:
-                cancel_reminder(uid, fresh_rem["id"])
+                reschedule_reminder(uid, fresh_rem["id"], REMINDER_FIRED_SENTINEL)
         except Exception as e:
             print(f"Ошибка reminder uid={uid}: {e}")
+
+async def remind_snooze_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"⏰ Ещё через 10 мин" на сработавшем напоминании — см. REMINDER_FIRED_SENTINEL."""
+    q = update.callback_query
+    uid = q.from_user.id
+    rem_id = int(q.data.replace("remind_snooze_", ""))
+    rem = get_reminder(uid, rem_id)
+    if rem is None:
+        await q.answer("Это напоминание уже не найти.")
+        return
+    new_time = (datetime.now(get_user_tz(get_user(uid))) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    reschedule_reminder(uid, rem_id, new_time)
+    await q.answer("⏰ Напомню через 10 минут")
+    try:
+        await q.message.edit_text(
+            f"⏰ *Отложено на 10 минут*\n\n{md_escape(rem['text'])}",
+            parse_mode="Markdown",
+            reply_markup=menu_button_kb()
+        )
+    except Exception:
+        pass
 
 
 # ── DAY CARD ───────────────────────────────────────────────────────────────
@@ -7196,7 +7276,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("coach_msg_id", None)
     ctx.user_data.pop("coach_chat_id", None)
     ctx.user_data.pop("coach_last_reply", None)
-    ctx.user_data.pop("coach_reminder_seed", None)
+    ctx.user_data.pop("reminder_seed", None)
     ctx.user_data.pop("admin_msg_target", None)
     ctx.user_data.pop("admin_msg_name", None)
 
@@ -7502,11 +7582,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await add_pool_and_reply(update.message, uid, items, ctx=ctx)
     elif ctx.user_data.get("awaiting_reminder_add") and not _awaiting_flag_expired(ctx, "awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
-        # coach_reminder_seed (см. coach_to_reminder) — совет коуча сам по
-        # себе не содержит времени, пользователя просят написать ТОЛЬКО
-        # время; склеиваем с советом в одну фразу для parse_reminder_request,
-        # который и так умеет извлекать из свободного текста и время, и суть.
-        seed = ctx.user_data.pop("coach_reminder_seed", None)
+        # reminder_seed — недостающая половина фразы для parse_reminder_request,
+        # которую заранее знает вызывающий код, а не пользователь: либо совет
+        # коуча без времени (см. coach_to_reminder — пользователя просят
+        # написать ТОЛЬКО время), либо время из кнопки-шаблона без содержания
+        # (см. reminder_quick_template — просят написать ТОЛЬКО о чём
+        # напомнить). Склеиваем в одну фразу — parse_reminder_request и так
+        # умеет извлекать из свободного текста и время, и суть, независимо
+        # от порядка частей.
+        seed = ctx.user_data.pop("reminder_seed", None)
         raw_text = update.message.text.strip()
         parse_text = f"{raw_text}: {seed}" if seed else raw_text
         now_dt = datetime.now(get_user_tz(get_user(uid)))
@@ -7514,7 +7598,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if parsed is None:
             ctx.user_data["awaiting_reminder_add"] = True
             if seed:
-                ctx.user_data["coach_reminder_seed"] = seed
+                ctx.user_data["reminder_seed"] = seed
             retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
             if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
                 await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
@@ -10861,8 +10945,10 @@ def main():
     app.add_handler(CallbackQueryHandler(pool_write_own,       pattern="^poolwrite_"))
     app.add_handler(CallbackQueryHandler(show_reminders,       pattern="^go_reminders$"))
     app.add_handler(CallbackQueryHandler(reminder_add_start,   pattern="^rem_add$"))
+    app.add_handler(CallbackQueryHandler(reminder_quick_template, pattern="^remind_tpl_(10m|1h|tmrw)$"))
     app.add_handler(CallbackQueryHandler(reminder_cancel_item, pattern="^remdel_"))
     app.add_handler(CallbackQueryHandler(reminder_edit_start,  pattern="^remedit_"))
+    app.add_handler(CallbackQueryHandler(remind_snooze_callback, pattern="^remind_snooze_"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
