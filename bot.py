@@ -4565,12 +4565,23 @@ async def send_coach(message, text, uid, ctx=None):
             messages=history + [{"role": "user", "content": text}]
         )
         reply_text = resp.content[0].text
-        final_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
         if ctx is not None:
             history = history + [{"role": "user", "content": text}, {"role": "assistant", "content": reply_text}]
             ctx.user_data["coach_history"] = history[-COACH_HISTORY_LIMIT:]
+            # Реальный запрос (IDEAS.md 2026-08-29): единственное конкретное
+            # действие от коуча раньше заканчивалось только кнопкой "◀️ Меню" —
+            # чтобы превратить совет в напоминание/дело, приходилось вручную
+            # перепечатывать его в другом разделе. coach_last_reply запоминает
+            # именно этот текст (без "🤖 "-префикса) для двух кнопок ниже.
+            ctx.user_data["coach_last_reply"] = reply_text
+            final_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 В список дел", callback_data="coach_to_pool"),
+                 InlineKeyboardButton("⏰ Напомнить об этом", callback_data="coach_to_reminder")],
+                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+            ])
             await _render_coach_msg(message, ctx, f"🤖 {reply_text}", reply_markup=final_kb)
         else:
+            final_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
             await thinking.edit_text(f"🤖 {reply_text}", reply_markup=final_kb)
     except Exception as e:
         err_kb = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Меню", callback_data="go_menu")]])
@@ -4634,6 +4645,34 @@ async def coach_quick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     prompt = COACH_PROMPTS.get(q.data, "")
     await send_coach(q.message, prompt, q.from_user.id, ctx)
+
+async def coach_to_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"📥 В список дел" на ответе коуча (см. send_coach/coach_last_reply) —
+    добавляет сам совет коуча как есть, без перепечатывания, через ту же
+    add_pool_and_reply, что и явный экран «📥 Список дел»/роутер свободного
+    текста (intent add_pool)."""
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+    advice = ctx.user_data.get("coach_last_reply", "")
+    await add_pool_and_reply(q.message, uid, [advice], ctx=ctx)
+
+async def coach_to_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"⏰ Напомнить об этом" на ответе коуча — совет коуча сам по себе не
+    содержит времени, поэтому переиспользуем ТОТ ЖЕ флаг awaiting_reminder_add
+    и тот же parse_reminder_request, что и обычное добавление напоминания
+    (см. reminder_add_start), только просим у пользователя ОДНО время, а не
+    всю фразу заново. coach_reminder_seed — совет коуча, который handle_text
+    склеит с ответом пользователя перед разбором (см. awaiting_reminder_add)."""
+    q = update.callback_query; await q.answer()
+    advice = ctx.user_data.get("coach_last_reply", "")
+    ctx.user_data["awaiting_reminder_add"] = True
+    ctx.user_data["awaiting_reminder_add_set_at"] = datetime.now().isoformat()
+    ctx.user_data["coach_reminder_seed"] = advice
+    text = (
+        f"⏰ *Когда напомнить об этом?*\n\n_«{md_escape(advice)}»_\n\n"
+        "Напиши, например: «через 20 минут» или «завтра в 9»."
+    )
+    await _render_coach_msg(q.message, ctx, text, parse_mode="Markdown")
 
 # ── SKILL OF THE DAY ───────────────────────────────────────────────────────
 SKILLS_PAGE_SIZE = (len(SKILLS) + 1) // 2  # 2 экрана — по тому же принципу листания, что и 📖 О СДВГ
@@ -6920,6 +6959,8 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.pop("coach_history", None)
     ctx.user_data.pop("coach_msg_id", None)
     ctx.user_data.pop("coach_chat_id", None)
+    ctx.user_data.pop("coach_last_reply", None)
+    ctx.user_data.pop("coach_reminder_seed", None)
     ctx.user_data.pop("admin_msg_target", None)
     ctx.user_data.pop("admin_msg_name", None)
 
@@ -7217,10 +7258,19 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await add_pool_and_reply(update.message, uid, items, ctx=ctx)
     elif ctx.user_data.get("awaiting_reminder_add") and not _awaiting_flag_expired(ctx, "awaiting_reminder_add"):
         ctx.user_data["awaiting_reminder_add"] = False
+        # coach_reminder_seed (см. coach_to_reminder) — совет коуча сам по
+        # себе не содержит времени, пользователя просят написать ТОЛЬКО
+        # время; склеиваем с советом в одну фразу для parse_reminder_request,
+        # который и так умеет извлекать из свободного текста и время, и суть.
+        seed = ctx.user_data.pop("coach_reminder_seed", None)
+        raw_text = update.message.text.strip()
+        parse_text = f"{raw_text}: {seed}" if seed else raw_text
         now_dt = datetime.now(get_user_tz(get_user(uid)))
-        parsed = await parse_reminder_request(update.message.text.strip(), now_dt)
+        parsed = await parse_reminder_request(parse_text, now_dt)
         if parsed is None:
             ctx.user_data["awaiting_reminder_add"] = True
+            if seed:
+                ctx.user_data["coach_reminder_seed"] = seed
             retry_text = "Не получилось понять, когда напомнить. Попробуй ещё раз, например:\n`через 20 минут проверить почту`"
             if not await _edit_tracked_msg(ctx, "reminders", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
                 await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
@@ -10372,6 +10422,8 @@ def main():
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
     app.add_handler(CallbackQueryHandler(coach_quick, pattern="^c_(start|dist|next|procr|overload|tip)$"))
+    app.add_handler(CallbackQueryHandler(coach_to_pool,     pattern="^coach_to_pool$"))
+    app.add_handler(CallbackQueryHandler(coach_to_reminder, pattern="^coach_to_reminder$"))
     app.add_handler(CallbackQueryHandler(show_skill,  pattern="^go_skill$"))
     app.add_handler(CallbackQueryHandler(skills_page_nav, pattern="^skills_page_"))
     app.add_handler(CallbackQueryHandler(show_skill_detail, pattern=r"^skill_\d+$"))
