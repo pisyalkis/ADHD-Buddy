@@ -10078,9 +10078,20 @@ async def on_error(update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
     try:
+        # Реальный запрос (IDEAS.md 2026-08-31): одинаковое "попробуй ещё
+        # раз" не различает транзиентный сбой сети/Telegram (кнопка
+        # сработает при повторном тапе) от реально сломанной функции
+        # (например ИИ недоступен) — тому, у кого что-то стабильно не
+        # работает, раньше было некуда об этом сообщить прямо с экрана
+        # ошибки. go_feedback уже в ACCESS_GATE_EXEMPT_CALLBACKS — доступен
+        # даже с истёкшим доступом.
         await target.reply_text(
-            "⚠️ Что-то пошло не так. Попробуй ещё раз или открой меню.",
-            reply_markup=menu_button_kb()
+            "⚠️ Что-то пошло не так. Попробуй ещё раз или открой меню.\n\n"
+            "Если это повторяется — напиши в 💬 Обратная связь.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+                [InlineKeyboardButton("💬 Обратная связь", callback_data="go_feedback")],
+            ])
         )
     except Exception:
         pass
