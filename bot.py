@@ -8841,6 +8841,30 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _edit_or_send(q, "👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
+WELCOME_BACK_GAP_DAYS = 3  # дней без реальной активности, чтобы считать это "давним перерывом"
+
+def _days_since_last_activity(uid):
+    """Дней с последнего реального взаимодействия (по стрику —
+    finish_morning/finish_evening, не просто открытие бота), в поясе
+    пользователя. None, если активности вообще ещё не было (стрик пуст) —
+    тогда это скорее совсем новый пользователь, чем "давно не заходил"."""
+    user = get_user(uid)
+    streak = json.loads(user.get("streak") or "[]")
+    if not streak:
+        return None
+    last = max(date.fromisoformat(d) for d in streak)
+    today = evening_day(get_user_tz(user))
+    return (today - last).days
+
+# По просьбе (IDEAS.md 2026-08-26): единственная "дни с X" логика в файле —
+# вехи 3/7/14/30 дней от created_at для research-опросов, а не от последней
+# активности; check_notifications шлёт одинаковые ☀️-уведомления независимо
+# от того, пропустил человек 1 день или 3 недели. Для аудитории со стыдом/
+# all-or-nothing мышлением обычное "Доброе утро! Навык дня: ..." после
+# многодневного перерыва читается как ничего не заметивший бот, который
+# вот-вот напомнит про стрик. Мягкое приветствие — без стрика, без ссылок
+# на "вчера" (после перерыва оно не про вчера), явным разрешением, что
+# сегодня — просто один день.
 async def morning_notification(app, uid):
     try:
         user = get_user(uid)
@@ -8857,27 +8881,11 @@ async def morning_notification(app, uid):
         name = md_escape(user.get("name", ""))
         gender = user.get("gender", "M")
 
-        ev = get_latest_evening_plan(uid)
-        last_energy = int(ev.get("e_energy", 0) or 0)
-        low_energy = last_energy in (1, 2)
-        plan_text = ""
-        if ev.get("e_a"):
-            plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {md_escape(ev['e_a'])}"
-            # Реальный баг (18-й чекап): при низкой энергии текст ниже прямо
-            # говорит "только одна задача A" — но сюда же безусловно
-            # подставлялись и B1/B2, если они были поставлены. Получалось
-            # противоречиво: список из 3 задач, а следом "достаточно одной".
-            if not low_energy:
-                if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
-                if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
+        gap = _days_since_last_activity(uid)
+        is_returning = gap is not None and gap >= WELCOME_BACK_GAP_DAYS
 
         skill = get_daily_skill(uid)
         skill_idx = SKILLS.index(skill)
-        motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
-
-        energy_note = ""
-        if low_energy:
-            energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
 
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"🧠 Подробнее: {skill['name']}", callback_data=f"skill_{skill_idx}")],
@@ -8889,13 +8897,47 @@ async def morning_notification(app, uid):
         ])
         # Реальный запрос: не самоудалять по тишине — раньше пропадало через
         # 15 минут (INACTIVE_SCREEN_TTL_SEC), даже если ещё не ответили.
+        if is_returning:
+            # Без стрика, без "вчера" (после перерыва оно не про вчера) и
+            # без вчерашнего плана — только мягкое разрешение начать заново.
+            text = (
+                f"👋 *С возвращением, {name}!*\n\n"
+                f"{g(gender, 'Не был на связи', 'Не была на связи')} пару дней — и это нормально, "
+                "стрик тут не главное. Сегодня — просто один день.\n\n"
+                f"💡 *Навык дня:* {skill['name']}\n"
+                f"_{skill['desc']}_\n\n"
+                f"{g(gender, 'Готов', 'Готова')} начать хотя бы с одной задачи? 👇"
+            )
+        else:
+            ev = get_latest_evening_plan(uid)
+            last_energy = int(ev.get("e_energy", 0) or 0)
+            low_energy = last_energy in (1, 2)
+            plan_text = ""
+            if ev.get("e_a"):
+                plan_text = f"\n\n⭐ *Сегодня тебе важно:*\n🅰️ {md_escape(ev['e_a'])}"
+                # Реальный баг (18-й чекап): при низкой энергии текст ниже прямо
+                # говорит "только одна задача A" — но сюда же безусловно
+                # подставлялись и B1/B2, если они были поставлены. Получалось
+                # противоречиво: список из 3 задач, а следом "достаточно одной".
+                if not low_energy:
+                    if ev.get("e_b1"): plan_text += f"\n🅱️ {md_escape(ev['e_b1'])}"
+                    if ev.get("e_b2"): plan_text += f"\n🅱️ {md_escape(ev['e_b2'])}"
+
+            motiv = random.choice(MOTIVATIONS_F if gender == 'F' else MOTIVATIONS_M)  # N берёт M — нейтральные фразы
+
+            energy_note = ""
+            if low_energy:
+                energy_note = "\n\n🔋 *Вчера был тяжёлый день.* Сегодня — только одна задача A. Этого достаточно."
+
+            text = (
+                f"☀️ *Доброе утро, {name}!*\n\n"
+                f"_{motiv}_{plan_text}{energy_note}\n\n"
+                f"💡 *Навык дня:* {skill['name']}\n"
+                f"_{skill['desc']}_\n\n"
+                f"{g(gender, 'Готов', 'Готова')} начать? 👇"
+            )
         await send_tracked_notification(
-            app.bot, uid, "morning",
-            f"☀️ *Доброе утро, {name}!*\n\n"
-            f"_{motiv}_{plan_text}{energy_note}\n\n"
-            f"💡 *Навык дня:* {skill['name']}\n"
-            f"_{skill['desc']}_\n\n"
-            f"{g(gender, 'Готов', 'Готова')} начать? 👇",
+            app.bot, uid, "morning", text,
             ttl_seconds=0,
             parse_mode="Markdown",
             reply_markup=kb
