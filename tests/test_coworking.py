@@ -108,7 +108,14 @@ async def main():
     ctx1 = FakeCtx(fake_bot1)
     ctx1.user_data["awaiting_coworking_time"] = True
     now_tbilisi = datetime.now(TBILISI)
-    future_time = (now_tbilisi + timedelta(hours=1)).strftime("%H:%M")
+    # The coworking time-entry flow only supports "later today" (HH:MM,
+    # no date) -- a naive "+1 hour" wraps past midnight when the sandbox's
+    # real clock is late evening, which strftime silently turns into an
+    # EARLIER time on the same calendar day (looks like the past to
+    # handle_text). Cap the offset so it always stays before midnight.
+    minutes_left_today = (24 * 60 - 1) - (now_tbilisi.hour * 60 + now_tbilisi.minute)
+    offset_minutes = max(1, min(60, minutes_left_today))
+    future_time = (now_tbilisi + timedelta(minutes=offset_minutes)).strftime("%H:%M")
     class FakeTextMsg:
         def __init__(self, uid_, text):
             self.chat_id = uid_
