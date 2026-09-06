@@ -738,6 +738,16 @@ def init_db():
         ("focus_duration", "0"),
         ("focus_minutes_today", "0"),
         ("focus_date", "''"),
+        # Калибровка "думал X — ушло Y" (IDEAS.md 2026-08-26): при первом
+        # фокус-раунде на конкретную задачу запоминаем её текст, выбранную
+        # длительность и момент старта — повторные раунды на ТУ ЖЕ задачу
+        # не перезаписывают их (оценка и точка отсчёта остаются от первой
+        # попытки). Сравнение показывается один раз, когда эта же задача
+        # отмечается выполненной (см. task_done_callback), и сбрасывается
+        # сразу же — не копится между разными задачами.
+        ("focus_task_text", "''"),
+        ("focus_task_estimate_minutes", "0"),
+        ("focus_task_started_at", "''"),
         ("city", "''"),
         ("created_at", f"'{date.today().isoformat()}'"),
         ("research_done", "''"),
@@ -7123,6 +7133,32 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         break
     done_set = set(done_list)
 
+    # Калибровка "думал X — ушло Y" (IDEAS.md 2026-08-26, см. focus_task_*
+    # в init_db) — только если ЭТА задача реально отслеживалась фокус-
+    # таймером (focus_start_callback) и текст совпадает дословно (без учёта
+    # регистра): иначе показ был бы обманчив (задача, ни разу не проходившая
+    # через фокус-раунд, не имеет никакой реальной "оценки времени").
+    calibration_note = None
+    if just_completed:
+        calib_user = get_user(uid)
+        tracked_text = (calib_user.get("focus_task_text") or "").strip()
+        completed_text = (morning.get(key) or "").strip()
+        if tracked_text and completed_text and tracked_text.lower() == completed_text.lower():
+            estimate = int(calib_user.get("focus_task_estimate_minutes") or 0)
+            started_at = calib_user.get("focus_task_started_at") or ""
+            if estimate and started_at:
+                try:
+                    calib_tz = get_user_tz(calib_user)
+                    start_dt = datetime.fromisoformat(started_at).astimezone(calib_tz)
+                    elapsed_min = max(1, int((datetime.now(calib_tz) - start_dt).total_seconds() / 60))
+                    calibration_note = (
+                        f"📊 Думал(а) *{estimate} мин* на «{md_escape(completed_text)}» — "
+                        f"по факту прошло *{elapsed_min} мин* с начала фокуса над ней."
+                    )
+                except Exception:
+                    pass
+            update_user(uid, focus_task_text="", focus_task_estimate_minutes=0, focus_task_started_at="")
+
     # Реальный баг: этот же чекбокс "▫️/✅" тапают и с маячка задач/дневного
     # чекина/resume-check (клавиатура midday_kb) — их текст ("что сейчас
     # делаешь?" и т.п.) никак не связан с экраном 📋 Задачи. Раньше тап по
@@ -7157,6 +7193,12 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
         except Exception:
             await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    if calibration_note:
+        try:
+            await q.message.reply_text(calibration_note, parse_mode="Markdown")
+        except Exception:
+            pass
 
     # По запросу: закреплённое утреннее сообщение оставляем "в изначальном
     # виде" (не добавляем в него новые задачи), но отметку о выполнении —
@@ -8316,18 +8358,31 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
     end_dt = now + timedelta(minutes=minutes)
+    _, morning_data, done_set = get_today_context(user)
+    current_task = next_undone_task(morning_data, done_set)
+
+    # Калибровка "думал X — ушло Y" (см. миграцию focus_task_*): только
+    # ПЕРВЫЙ раунд на конкретную задачу запоминает оценку и момент старта —
+    # повторные раунды на ту же задачу (тот же текст) их не трогают, иначе
+    # каждый следующий раунд обнулял бы точку отсчёта и "факт" всегда
+    # совпадал бы с последней выбранной длительностью.
+    calibration_fields = {}
+    if current_task and (user.get("focus_task_text") or "") != current_task:
+        calibration_fields = dict(
+            focus_task_text=current_task,
+            focus_task_estimate_minutes=minutes,
+            focus_task_started_at=now.isoformat(),
+        )
 
     # Обновляем DB
     update_user(uid,
         focus_active=1,
         focus_end_time=end_dt.isoformat(),
         focus_duration=minutes,
+        **calibration_fields,
     )
 
     end_str = end_dt.strftime("%H:%M")
-
-    _, morning_data, done_set = get_today_context(user)
-    current_task = next_undone_task(morning_data, done_set)
     task_hint = f"\n📌 Задача: *{current_task}*" if current_task else ""
 
     await send_tracked_notification(
