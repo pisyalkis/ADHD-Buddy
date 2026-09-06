@@ -9298,10 +9298,29 @@ def _tz_offset_diff_hours(user_a, user_b):
     offset_b = get_user_tz(user_b).utcoffset(now.replace(tzinfo=None))
     return abs((offset_a - offset_b).total_seconds()) / 3600
 
+BUDDY_GUIDE_TEXT = (
+    "📖 *Как работать с бадди*\n\n"
+    "Бадди — это не проверка домашнего задания, а поддержка через присутствие рядом. "
+    "Форматы, которые реально работают:\n\n"
+    "🔵 *Совместная работа в тишине* — созвон без разговора, просто оба работаете на связи "
+    "(видео или просто на линии). Мозг с СДВГ включается от присутствия другого человека, даже без слов.\n\n"
+    "🟣 *Партнёр по ответственности* — утром пишешь свой план на день, вечером — что получилось. "
+    "Не отчёт «на оценку», а внешняя точка опоры, которая помогает не потерять день.\n\n"
+    "🟠 *Разговор о трудностях и навыках* — обсудить, с чем сложно и как кто справляется. "
+    "Особенно полезно, если оба знакомы с навыками (ДБТ и похожее) — можно делиться конкретными приёмами.\n\n"
+    "📞 *Созвон по расписанию* — фиксированное время раз в несколько дней, не «созвонимся как-нибудь». "
+    "Конкретное время в календаре решает половину дела.\n\n"
+    "*Как часто?* Даже раз в неделю — уже ощутимо. Ежедневный чек-ин (утро/вечер) работает сильнее всего, "
+    "но начните с того, что реально потянете, а не с идеала.\n\n"
+    "_Часовые пояса не обязаны совпадать — просто держите разницу в голове при планировании._"
+)
+
 async def _notify_buddy_paired(bot, uid_a, uid_b):
     """Уведомляет ОБЕИХ сторон об образовавшейся паре — с явной разницей
     часовых поясов, если она есть (product-решение: не скрывать, а
-    проговорить, чтобы учитывали при планировании)."""
+    проговорить, чтобы учитывали при планировании), и следом — гайд
+    "как работать с бадди" (см. BUDDY_GUIDE_TEXT), чтобы пара не осталась
+    один на один с вопросом "и что теперь делать"."""
     user_a = get_user(uid_a); user_b = get_user(uid_b)
     diff = _tz_offset_diff_hours(user_a, user_b)
     tz_note = f"\n\n🌍 Разница часовых поясов: примерно {diff:.0f} ч — учтите при планировании." if diff >= 1 else ""
@@ -9313,6 +9332,7 @@ async def _notify_buddy_paired(bot, uid_a, uid_b):
             text=f"🎉 *У тебя новый бадди — {name_b}!*{tz_note}",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
+        await bot.send_message(chat_id=uid_a, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
     except Exception as e:
         print(f"Ошибка уведомления о паре бадди uid={uid_a}: {e}")
     try:
@@ -9321,6 +9341,7 @@ async def _notify_buddy_paired(bot, uid_a, uid_b):
             text=f"🎉 *У тебя новый бадди — {name_a}!*{tz_note}",
             parse_mode="Markdown", reply_markup=menu_button_kb()
         )
+        await bot.send_message(chat_id=uid_b, text=BUDDY_GUIDE_TEXT, parse_mode="Markdown")
     except Exception as e:
         print(f"Ошибка уведомления о паре бадди uid={uid_b}: {e}")
 
@@ -9344,6 +9365,7 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += f"*Твой бадди:* {md_escape(partner_name)} ✅"
         buttons = [
             [InlineKeyboardButton("💬 Написать бадди сейчас", callback_data="buddy_ping")],
+            [InlineKeyboardButton("📖 Как работать с бадди", callback_data="buddy_guide")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ]
     elif buddy_name:
@@ -9365,6 +9387,12 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     await _render_tracked(q.message, ctx, "buddy", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
                            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def buddy_guide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    await _render_tracked(q.message, ctx, "buddy", BUDDY_GUIDE_TEXT, ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
+                           parse_mode="Markdown",
+                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Бадди", callback_data="go_buddy")]]))
 
 async def buddy_invite_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -11613,6 +11641,7 @@ def main():
     app.add_handler(CallbackQueryHandler(buddy_menu,      pattern="^go_buddy$"))
     app.add_handler(CallbackQueryHandler(buddy_set,       pattern="^buddy_set$"))
     app.add_handler(CallbackQueryHandler(buddy_ping,      pattern="^buddy_ping$"))
+    app.add_handler(CallbackQueryHandler(buddy_guide,           pattern="^buddy_guide$"))
     app.add_handler(CallbackQueryHandler(buddy_invite_link,    pattern="^buddy_invite_link$"))
     app.add_handler(CallbackQueryHandler(buddy_find_match,     pattern="^buddy_find_match$"))
     app.add_handler(CallbackQueryHandler(buddy_cancel_seeking, pattern="^buddy_cancel_seeking$"))
