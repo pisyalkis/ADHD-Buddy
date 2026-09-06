@@ -1107,15 +1107,40 @@ def add_streak(uid, for_date=None):
         update_user(uid, streak=json.dumps(streak))
 
 def calc_streak(uid):
+    """Текущий стрик — подряд идущие дни в streak, считая от сегодня назад.
+
+    Реальный запрос (IDEAS.md 2026-08-28): ЛЮБОЙ один пропущенный вечер
+    обнулял весь стрик целиком, хотя бот отдельно борется с всё-или-ничего
+    мышлением (unfinished_shame, bot.py) — сам стрик этому принципу не
+    следовал и наказывал ровно тот срыв, от стыда за который бот защищает
+    в других местах. Один одиночный разрыв (ровно один пропущенный день)
+    теперь прощается — "заморозка", как у Duolingo, а не безлимитная
+    амнистия: на весь подсчёт прощается только ОДИН разрыв, второй пропуск
+    в той же цепочке всё равно останавливает счёт на этом месте (иначе
+    стрик можно было бы растить, пропуская через день до бесконечности).
+    Заморозка не действует на самую первую позицию (i=0) — "сегодня ещё
+    не сделано" не разрыв цепочки, а норма (сегодняшний день просто ещё
+    не закончился); счётчик и раньше показывал 0, пока сегодня не
+    отмечено, это поведение не должно меняться."""
     user = get_user(uid)
     tz = get_user_tz(user)
     today = evening_day(tz)
     streak = sorted(set(json.loads(user["streak"])), reverse=True)
     if not streak: return 0
     count = 0
+    expected_gap = 0
+    grace_used = False
     for i, d in enumerate(streak):
-        if (today - date.fromisoformat(d)).days == i: count += 1
-        else: break
+        actual_gap = (today - date.fromisoformat(d)).days
+        if actual_gap == expected_gap:
+            count += 1
+            expected_gap += 1
+        elif i > 0 and actual_gap == expected_gap + 1 and not grace_used:
+            grace_used = True
+            count += 1
+            expected_gap = actual_gap + 1
+        else:
+            break
     return count
 
 # ── TIMEZONE HELPERS ───────────────────────────────────────────────────────
