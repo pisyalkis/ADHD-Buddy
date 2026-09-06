@@ -1135,9 +1135,20 @@ def next_recur_time(remind_at_key, recur, now_dt):
     """Следующее срабатывание повторяющегося напоминания, строго позже
     now_dt — если бот был офлайн и пропустил несколько срабатываний
     подряд, отматывает сразу до ближайшего будущего момента, а не
-    присылает пачку пропущенных напоминаний одно за другим."""
-    step = timedelta(days=1) if recur == "daily" else timedelta(days=7)
+    присылает пачку пропущенных напоминаний одно за другим.
+
+    "weekdays" (по будням, IDEAS.md 2026-08-27) — шаг по одному дню, а не
+    фиксированные 7, с пропуском субботы/воскресенья: типичный кейс —
+    напоминание принять лекарство или собраться на работу, которое НЕ
+    нужно по выходным (единственная альтернатива раньше — либо получать
+    его и в выходные, либо вручную создавать 5 одинаковых записей)."""
     when = datetime.fromisoformat(remind_at_key)
+    if recur == "weekdays":
+        when += timedelta(days=1)
+        while when <= now_dt.replace(tzinfo=None) or when.weekday() >= 5:
+            when += timedelta(days=1)
+        return when.strftime("%Y-%m-%dT%H:%M:%S")
+    step = timedelta(days=1) if recur == "daily" else timedelta(days=7)
     while when <= now_dt.replace(tzinfo=None):
         when += step
     return when.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1148,6 +1159,8 @@ def recur_label(remind_at_key, recur):
     """Короткое описание повтора для сообщений — '' для разового."""
     if recur == "daily":
         return "каждый день"
+    if recur == "weekdays":
+        return "по будням"
     if recur == "weekly":
         try:
             wd = date.fromisoformat(remind_at_key[:10]).weekday()
@@ -4781,15 +4794,20 @@ async def parse_reminder_request(text, now_dt):
                 "Ты парсер напоминаний для Telegram-бота. Пользователь пишет свободным текстом просьбу "
                 "поставить напоминание — разовое («напомни через 20 минут проверить почту», «завтра в 10 "
                 "позвонить Джону») или повторяющееся («каждый день в 9 пить воду», «каждый вторник звонить "
-                "маме», «ежедневно в 8 вечера»). "
+                "маме», «ежедневно в 8 вечера», «по будням в 9 утра выпить таблетку», «каждый рабочий день "
+                "напомни собраться на работу»). "
                 f"Сейчас у пользователя {now_dt.strftime('%Y-%m-%d %H:%M')} ({weekday}). "
                 "Верни СТРОГО один JSON-объект без пояснений и без markdown-разметки: "
-                '{"remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "короткая суть дела", "recur": "daily"|"weekly"|""}. '
-                'recur — "daily" для «каждый день»/«ежедневно», "weekly" для «каждый <день недели>»/«по '
-                '<дням недели>», иначе "". remind_at — момент ПЕРВОГО срабатывания: для разового — как обычно; '
-                'для "daily" — ближайшее время из фразы (сегодня, если оно ещё не прошло, иначе завтра); для '
-                '"weekly" — ближайшая дата нужного дня недели. remind_at обязательно строго позже текущего '
-                "времени, в том же часовом поясе, что и текущее время пользователя (конвертировать не нужно). "
+                '{"remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "короткая суть дела", "recur": '
+                '"daily"|"weekly"|"weekdays"|""}. '
+                'recur — "daily" для «каждый день»/«ежедневно» (включая выходные), "weekdays" для «по будням»/'
+                '«каждый рабочий день»/«по рабочим дням» (Пн-Пт, БЕЗ выходных — не путать с "daily"), "weekly" '
+                'для «каждый <день недели>»/«по <дням недели>», иначе "". remind_at — момент ПЕРВОГО '
+                'срабатывания: для разового — как обычно; для "daily"/"weekdays" — ближайшее время из фразы '
+                '(сегодня, если оно ещё не прошло, иначе завтра — а если "weekdays" и это выпадает на выходные, '
+                'ближайший будний день); для "weekly" — ближайшая дата нужного дня недели. remind_at обязательно '
+                "строго позже текущего времени, в том же часовом поясе, что и текущее время пользователя "
+                "(конвертировать не нужно). "
                 'Если не удалось понять время или дело — верни {"error": "причина"}.'
             ),
             messages=[{"role": "user", "content": text}]
@@ -4805,8 +4823,14 @@ async def parse_reminder_request(text, now_dt):
         if when.replace(tzinfo=None) <= now_dt.replace(tzinfo=None):
             return None
         recur = data.get("recur") or ""
-        if recur not in ("daily", "weekly"):
+        if recur not in ("daily", "weekly", "weekdays"):
             recur = ""
+        # Подстраховка: модель иногда всё равно называет дату выходного дня
+        # для "weekdays", несмотря на инструкцию — снос вперёд до ближайшего
+        # буднего дня надёжнее, чем полагаться только на промпт.
+        if recur == "weekdays":
+            while when.weekday() >= 5:
+                when += timedelta(days=1)
         return when.strftime("%Y-%m-%dT%H:%M:%S"), (data.get("text") or text).strip(), recur
     except Exception:
         return None
@@ -4836,9 +4860,11 @@ async def classify_free_text(text, now_dt):
                 "Определи, что он хочет, и верни СТРОГО один JSON-объект без пояснений и без markdown:\n"
                 '1) Просит поставить напоминание — разовое («напомни через 20 минут...», «завтра в 10 '
                 'позвонить...») или повторяющееся («каждый день в 9 пить воду», «каждый вторник звонить '
-                'маме»): {"intent": "reminder", "remind_at": "YYYY-MM-DDTHH:MM:SS", "text": "суть", "recur": '
-                '"daily"|"weekly"|""}. recur — "daily" для «каждый день»/«ежедневно», "weekly" для «каждый '
-                '<день недели>»/«по <дням недели>», иначе "". remind_at — момент первого срабатывания.\n'
+                'маме», «по будням в 9 пить таблетку»): {"intent": "reminder", "remind_at": '
+                '"YYYY-MM-DDTHH:MM:SS", "text": "суть", "recur": "daily"|"weekly"|"weekdays"|""}. recur — '
+                '"daily" для «каждый день»/«ежедневно» (вкл. выходные), "weekdays" для «по будням»/«каждый '
+                'рабочий день» (Пн-Пт, БЕЗ выходных), "weekly" для «каждый <день недели>»/«по <дням недели>», '
+                'иначе "". remind_at — момент первого срабатывания.\n'
                 '2) Просит добавить дело(-а) в общий список дел БЕЗ конкретного времени («добавь в список дел '
                 'купить молоко», «не забыть записаться к врачу») — в том числе сразу НЕСКОЛЬКО дел одним '
                 'сообщением (списком, по одному на строку, через запятую и т.п. — «добавь в список дел: '
@@ -4889,10 +4915,15 @@ async def classify_free_text(text, now_dt):
             when = datetime.fromisoformat(data["remind_at"])
             if when.replace(tzinfo=None) <= now_dt.replace(tzinfo=None):
                 return {"intent": "other"}
-            data["remind_at"] = when.strftime("%Y-%m-%dT%H:%M:%S")
             data.setdefault("text", text)
-            if data.get("recur") not in ("daily", "weekly"):
+            if data.get("recur") not in ("daily", "weekly", "weekdays"):
                 data["recur"] = ""
+            # Та же подстраховка, что и в parse_reminder_request — не
+            # полагаемся только на промпт для отсева дат выходного дня.
+            if data["recur"] == "weekdays":
+                while when.weekday() >= 5:
+                    when += timedelta(days=1)
+            data["remind_at"] = when.strftime("%Y-%m-%dT%H:%M:%S")
             return data
         if intent == "add_pool":
             # items — обычно список; на случай если модель вернула строку
