@@ -5517,6 +5517,13 @@ async def send_task_beacon(app, user):
         # ctx.user_data (см. Application.user_data в PTB) — доступен и из
         # фонового тика планировщика, без апдейта.
         if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return
+        # Реальный запрос (IDEAS.md 2026-09-05): фокус-таймер прямо обещает
+        # "не отвлекайся — я напишу когда время выйдет 🔕" (см. go_focus/
+        # focus_start_callback, ttl_seconds=0 у статуса таймера ради этого же
+        # обещания). Маячок, сработавший посреди раунда, нарушает это
+        # единственное явное обещание бота ровно тогда, когда прерывать
+        # сложнее всего — в фокусе/гиперфокусе.
+        if str(user.get("focus_active", "0")) == "1": return
 
         tz = get_user_tz(user)
         now = datetime.now(tz)
@@ -5673,6 +5680,10 @@ async def send_skill_beacon(app, user):
         if user.get("notif_snooze_skillbeacon") == datetime.now(get_user_tz(user)).date().isoformat(): return
         # Реальный фидбек (Виктория) — см. тот же комментарий в send_task_beacon.
         if (getattr(app, "user_data", None) or {}).get(uid, {}).get("task_walk"): return
+        # Реальный запрос (IDEAS.md 2026-09-05) — см. тот же комментарий в
+        # send_task_beacon: маячок не должен нарушать явное обещание фокус-
+        # таймера "не отвлекать" во время идущего раунда.
+        if str(user.get("focus_active", "0")) == "1": return
         tz = get_user_tz(user)
         now = datetime.now(tz)
         if not _in_beacon_hours(user, now): return
