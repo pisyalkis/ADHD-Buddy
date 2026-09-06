@@ -1937,7 +1937,7 @@ def _onboard_track(ctx, msg):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     init_db()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(uid)
 
     # Если уже зарегистрирован — сразу предложить нужный блок по времени суток
@@ -2178,7 +2178,7 @@ async def _onboard_prompt_city(q, ctx, update):
             InlineKeyboardButton("Пропустить", callback_data="onboard_done")
         ]])
     ))
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_city"] = True
 
 async def onboard_explain_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2682,7 +2682,7 @@ async def morning_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     if _evening_conv is not None:
         _evening_conv._conversations.pop((update.effective_chat.id, uid), None)
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     # Реальный запрос: "☀️ Заполнить утро" — это ответ на утреннее
     # уведомление (morning_notification) ИЛИ на "+2ч, утро ещё не закрыто"
     # (morning_reminder) — если пришли отсюда, само уведомление сейчас же
@@ -3231,7 +3231,7 @@ async def quick_toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # awaiting_*-сценарии сейчас пользователь — тап по ней вместо ответа
     # на уже открытый запрос (например смену города) оставлял флаг висеть.
     #
-    # Реальный баг: полная форма clear_awaiting_flags(ctx, update) заодно
+    # Реальный баг: полная форма clear_awaiting_and_cancel_ritual(ctx, update) заодно
     # отменяет активный morning/evening ConversationHandler (см. её
     # докстринг) — а эта кнопка лежит на закреплённом сообщении дня, видном
     # ВЕСЬ день, включая всё время прохождения утреннего/вечернего ритуала.
@@ -3251,7 +3251,7 @@ async def quick_toggle_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     # Реальный баг: та же ловушка, что у quick_toggle_beacon выше — эта
     # кнопка тоже на закреплённом сообщении дня, видном весь день. Полная
-    # форма clear_awaiting_flags(ctx, update) обрывала активный
+    # форма clear_awaiting_and_cancel_ritual(ctx, update) обрывала активный
     # morning/evening ConversationHandler при тапе поверх ритуала.
     clear_awaiting_flags(ctx)
     uid = q.from_user.id
@@ -3475,7 +3475,7 @@ async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
     await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     # Дата — чтобы флаг не выстрелил задним числом спустя дни, если сегодня
     # так ничего и не поставили, а следующая задача набирается уже в другой
     # день по совсем другому поводу (см. точки потребления флага ниже).
@@ -3598,7 +3598,7 @@ async def evening_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     if _morning_conv is not None:
         _morning_conv._conversations.pop((update.effective_chat.id, uid), None)
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     # Реальный запрос: "🌙 Закрыть день" — это ответ на вечернее
     # уведомление (evening_notification) — если пришли отсюда, само
     # уведомление сейчас же отредактируется в первое приветствие ритуала
@@ -4604,7 +4604,7 @@ MIDDAY_LABELS = {
 
 async def coach_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     write_self = g(gender, "сам", "сама")
     msg = await _edit_or_send(
@@ -4672,7 +4672,7 @@ async def _render_skills_screen(q, uid, page=0):
 
 async def show_skill(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await _render_skills_screen(q, q.from_user.id, page=0)
 
 async def skills_page_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -4771,7 +4771,7 @@ async def show_box_breathing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── STREAK ─────────────────────────────────────────────────────────────────
 async def show_streak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     if int(user.get("streak_hidden") or 0):
@@ -4962,7 +4962,7 @@ async def toggle_streak_visibility(update: Update, ctx: ContextTypes.DEFAULT_TYP
     его отовсюду — из меню и итоговых сообщений — а не просто разрешаем
     не смотреть: сам факт присутствия уже ощущается как давление."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     new_val = 0 if int(user.get("streak_hidden") or 0) else 1
@@ -4985,7 +4985,7 @@ def _edit_reports_kb(user):
 
 async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(q.from_user.id)
     await _settings_render(
         q, ctx,
@@ -4999,7 +4999,7 @@ async def edit_reports_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_field_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("toggle_field_", "")
     user = get_user(uid)
@@ -5024,7 +5024,7 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
     """Кнопка «Отключить этот вопрос» в подсказке после нескольких пропусков
     подряд (см. maybe_send_skip_nudge)."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("quickdisable_", "")
     user = get_user(uid)
@@ -5042,7 +5042,7 @@ async def quickdisable_field_callback(update: Update, ctx: ContextTypes.DEFAULT_
 
 async def dismiss_nudge_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await _edit_msg_or_send(q.message, "Окей, продолжаю спрашивать как раньше.")
 
 def _beacon_types_kb(user):
@@ -5056,7 +5056,7 @@ def _beacon_types_kb(user):
 
 async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(q.from_user.id)
     await _settings_render(
         q, ctx,
@@ -5070,7 +5070,7 @@ async def beacon_types_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_beacon_type_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     key = q.data.replace("toggle_beacontype_", "")
     user = get_user(uid)
@@ -5097,7 +5097,7 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     block = q.data.replace("set_", "")  # morning / midday / evening / beacon_start / beacon_end
     labels = {"morning": "☀️ утреннее", "midday": "☕ дневное", "evening": "🌙 вечернее"}
     beacon_labels = {"beacon_start": "🌅 начало", "beacon_end": "🌇 конец"}
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["setting_notif"] = block
     if block in beacon_labels:
         prompt = f"Введи {beacon_labels[block]} рабочих часов «Маячков внимания»"
@@ -5127,7 +5127,7 @@ async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Отмена", callback_data="go_settings")
         ]])
     )
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_name"] = True
 
 async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5143,13 +5143,13 @@ async def set_city_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("Отмена", callback_data="go_settings")
         ]])
     )
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_city"] = True
     ctx.user_data["city_from_settings"] = True
 
 async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     new_val = 0 if user.get("notif_enabled", 0) else 1
@@ -5159,27 +5159,27 @@ async def toggle_notif(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def go_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     text, kb = _settings_main_text_and_kb(get_user(uid))
     await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_settings_notifications(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     text, kb = _settings_notifications_text_and_kb(get_user(q.from_user.id))
     await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_settings_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     text, kb = _settings_beacon_text_and_kb(get_user(q.from_user.id))
     await _settings_render(q, ctx, text, parse_mode="Markdown", reply_markup=kb)
 
 async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Включить/выключить конкретный блок уведомлений (утро/день/вечер)."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     block = q.data.replace("toggle_", "")  # morning / midday / evening
     col = f"notif_{block}_on"
@@ -5192,7 +5192,7 @@ async def toggle_notif_block(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("beacon_enabled") or 0)
@@ -5202,7 +5202,7 @@ async def toggle_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def beacon_set_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     interval = int(q.data.split("_")[2])
     update_user(uid, beacon_interval=interval)
@@ -5213,7 +5213,7 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Вкл/выкл напоминаний с навыками — независимо от напоминаний по
     задачам (toggle_beacon), см. задачу «разделить настройки маячка»."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     cur = int(user.get("skill_beacon_enabled") or 0)
@@ -5228,7 +5228,7 @@ async def toggle_skill_beacon(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     mode = "random" if q.data == "skill_mode_random" else "interval"
     update_user(uid, skill_beacon_mode=mode)
@@ -5237,7 +5237,7 @@ async def set_skill_beacon_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     minutes = int(q.data.replace("skill_int_", ""))
     update_user(uid, skill_beacon_interval=minutes)
@@ -5246,7 +5246,7 @@ async def set_skill_beacon_interval(update: Update, ctx: ContextTypes.DEFAULT_TY
 
 async def set_skill_beacon_count(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     count = int(q.data.replace("skill_count_", ""))
     update_user(uid, skill_beacon_daily_count=count)
@@ -5303,7 +5303,7 @@ def disable_notif_row(kind):
 
 async def snooze_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     kind = q.data.replace("snooze_notif_", "")
     target = DISABLE_NOTIF_TARGETS.get(kind)
@@ -5317,7 +5317,7 @@ async def snooze_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYP
 
 async def disable_notification_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     kind = q.data.replace("disable_notif_", "")
     target = DISABLE_NOTIF_TARGETS.get(kind)
@@ -5417,13 +5417,13 @@ async def beacon_technique_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     постоянное меню — тап по "✅ Сделал(а)" вместо ответа на уже открытый
     awaiting_* оставлял флаг висеть.
 
-    Реальный баг №2: clear_awaiting_flags(ctx, update) — с update — заодно
+    Реальный баг №2: clear_awaiting_and_cancel_ritual(ctx, update) заодно
     безусловно отменяет активный morning/evening ConversationHandler
     (см. её же докстринг). Маячок приходит независимо от того, что сейчас
     делает пользователь — тап "✅ Сделал(а)" посреди, например, вечернего
     ритуала (E_ACH и т.п.) молча прерывал сам ритуал, хотя пользователь
     вовсе не пытался из него выйти, просто ответил на параллельно
-    пришедшее напоминание. Передаём ctx без update — сбрасываем только
+    пришедшее напоминание. Зовём только clear_awaiting_flags — сбрасываем
     ctx.user_data awaiting_*, не трогая активную беседу."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx)
@@ -5837,7 +5837,7 @@ async def show_tasks(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать все задачи на сегодня — с возможностью добавить или
     поменять любую из них прямо здесь, не проходя весь утренний ритуал."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     # "📋 Поставить задачи" на "+2ч, задачи не поставлены" ведёт прямо сюда
     # (а не в morning_start) — раз пришли отсюда, само напоминание сейчас
@@ -5890,7 +5890,7 @@ async def edit_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     Изменить» на конкретном слоте, чтобы они не переставали работать."""
     q = update.callback_query; await q.answer()
     key = q.data.replace("edit_task_", "")
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     await _offer_task_input(q.message, ctx, uid, key)
 
@@ -5899,7 +5899,7 @@ async def add_next_task_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     оставлена ради уже отправленных старых сообщений с кнопкой «➕
     Добавить задачу», чтобы они не переставали работать."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = get_diary(uid, "morning", today)
@@ -5981,7 +5981,7 @@ async def walk_clear_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     пулом (если задача была оттуда) и снимает отметку "выполнено", если
     была — иначе пустой слот остался бы висеть отмеченным."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     key = q.data[len("walk_clear_"):]
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
@@ -6011,7 +6011,7 @@ async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     шага — иначе он ушёл бы отдельным новым сообщением, а экран, с
     которого стартовали проход, остался бы висеть рядом нетронутым."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     ctx.user_data["walk_step_msg_id"] = q.message.message_id
     ctx.user_data["walk_step_chat_id"] = q.message.chat_id
@@ -6030,7 +6030,7 @@ async def walk_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # отправленном сообщении сколь угодно долго — повторный тап по ней
     # после того как где-то в другом месте открыли другой awaiting_*,
     # оставлял его перехватывать следующий текст.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     key = q.data[len("walk_skip_"):]
     uid = q.from_user.id
     await _walk_to_step(q.message, ctx, uid, _next_task_key(key))
@@ -6039,13 +6039,13 @@ async def walk_edit_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     key = q.data[len("walk_edit_"):]
     uid = q.from_user.id
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["task_walk"] = True
     await _offer_task_input(q.message, ctx, uid, key)
 
 async def walk_finish_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
@@ -6118,7 +6118,7 @@ async def pool_change_page(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # посреди прохода по задачам, следующий тап по пункту пула уже не
     # застанет task_walk=True.
     was_walk = ctx.user_data.get("task_walk", False)
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     if was_walk:
         ctx.user_data["task_walk"] = True
     key, offset_s = q.data[len("poolpage_"):].rsplit("_", 1)
@@ -6141,7 +6141,7 @@ async def pool_write_own(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # выбивало из прохода: ask_task_text ниже переставал видеть
     # task_walk=True и уходил в одиночный (не walk) экран правки.
     was_walk = ctx.user_data.get("task_walk", False)
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     if was_walk:
         ctx.user_data["task_walk"] = True
     key = q.data.replace("poolwrite_", "")
@@ -6396,7 +6396,7 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     последовательности молча уходил в одиночный (не walk) экран правки."""
     q = update.callback_query; await q.answer()
     was_walk = ctx.user_data.get("task_walk", False)
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     if was_walk:
         ctx.user_data["task_walk"] = True
     key, id_s = q.data[len("pooluse_"):].rsplit("_", 1)
@@ -6435,14 +6435,14 @@ def task_pool_text(pool):
 
 async def show_task_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     pool = get_pool_tasks(q.from_user.id)
     await _render_tracked(q.message, ctx, "task_pool", task_pool_text(pool),
                            ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown", reply_markup=task_pool_kb(pool))
 
 async def pool_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_pool_add"] = True
     ctx.user_data["awaiting_pool_add_set_at"] = datetime.now().isoformat()
     await _render_tracked(
@@ -6479,12 +6479,12 @@ async def send_pool_delete_menu(message, uid, items=None, prompt="Что уда�
 
 async def show_task_pool_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await send_pool_delete_menu(q.message, q.from_user.id)
 
 async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     task_id = int(q.data.replace("pooldel_", ""))
     delete_pool_task(q.from_user.id, task_id)
     await send_pool_delete_menu(q.message, q.from_user.id)
@@ -6494,13 +6494,13 @@ async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     отметку, если поставил(а) по ошибке), в отличие от прежней кнопки
     "Отметить", которая просто исчезала после первого тапа.
 
-    Реальный баг: clear_awaiting_flags(ctx, update) — с update — заодно
+    Реальный баг: clear_awaiting_and_cancel_ritual(ctx, update) заодно
     безусловно отменяет активный morning/evening ConversationHandler.
     Этот же чекбокс тапают и с маячка задач/дневного чекина/resume-check
     (см. комментарий про notif_channel ниже) — независимого от того, в
     каком ритуале сейчас находится пользователь. Отметка задачи с маячка
-    посреди вечернего ритуала молча его прерывала. Передаём ctx без
-    update — сбрасываем только ctx.user_data awaiting_*."""
+    посреди вечернего ритуала молча его прерывала. Зовём только
+    clear_awaiting_flags — сбрасываем только ctx.user_data awaiting_*."""
     q = update.callback_query; await q.answer()
     clear_awaiting_flags(ctx)
     uid = q.from_user.id
@@ -6641,14 +6641,14 @@ def reminders_text_and_kb(reminders):
 
 async def show_reminders(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     reminders = get_reminders(q.from_user.id)
     text, kb = reminders_text_and_kb(reminders)
     await _render_tracked(q.message, ctx, "reminders", text, ttl_seconds=INACTIVE_SCREEN_TTL_SEC, parse_mode="Markdown", reply_markup=kb)
 
 async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     if not ANTHROPIC_KEY:
         await _render_tracked(
             q.message, ctx, "reminders",
@@ -6671,7 +6671,7 @@ async def reminder_add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def reminder_cancel_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     rem_id = int(q.data.replace("remdel_", ""))
     cancel_reminder(q.from_user.id, rem_id)
     reminders = get_reminders(q.from_user.id)
@@ -6700,7 +6700,7 @@ async def ask_reminder_edit(message, ctx, rem):
 
 async def reminder_edit_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     rem_id = int(q.data.replace("remedit_", ""))
     rem = get_reminder(q.from_user.id, rem_id)
     if rem is None:
@@ -6850,7 +6850,7 @@ def day_card_kb(for_date, today):
 
 async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     tz = get_user_tz(get_user(uid))
     today = datetime.now(tz).date()
@@ -6867,7 +6867,7 @@ async def show_day_card(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     for_date = q.data.replace("daycard_", "")
     today = datetime.now(get_user_tz(get_user(uid))).date()
@@ -6879,7 +6879,7 @@ async def day_card_nav(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # всплывает видимой ошибкой через on_error.
     await _edit_msg_or_send(q.message, text, parse_mode="Markdown", reply_markup=day_card_kb(for_date, today))
 
-def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
+def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     """Сбрасывает все "awaiting_*"-флаги, которые направляют следующее
     свободное сообщение в конкретный обработчик. Без единой точки сброса
     легко забыть погасить один из флагов при явном переключении на другое
@@ -6887,14 +6887,18 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ответ коучу) по ошибке утекает в устаревший недоделанный сценарий
     (уже было реальным багом несколько раз: фидбек проглатывал город,
     имя бадди проглатывало ответ на research-вопрос и т.д.).
-    update (опционально) — если передан, дополнительно гасит research_awaiting
-    в БД (тот же класс флага, но не в ctx.user_data), а также отменяет
-    активный morning/evening ConversationHandler для этого пользователя —
-    иначе тот перехватывает следующий текст сам, ДО того как он вообще
-    доходит до awaiting_*-проверок в handle_text (реальный баг: человек
-    посреди вечернего ритуала открыл «Обратная связь» и написал «Бот топ» —
-    текст записался в поле Задача A, потому что вечерняя conversation всё
-    ещё была активна и первой забрала сообщение)."""
+
+    По просьбе (IDEAS.md 2026-08-29): раньше это была одна функция
+    clear_awaiting_flags(ctx, update=None), поведение которой незаметно
+    раздваивалось по необязательному update — без него чистила только
+    флаги, а с ним ЕЩЁ И безусловно отменяла активный morning/evening
+    ConversationHandler. Эта неявная развилка уже стала причиной минимум
+    трёх багов за одну эту сессию (buddy_ping/beacon_technique_done/
+    task_done_callback вызывали полную форму там, где она обрывала
+    диалог, хотя нужна была только очистка флагов). Теперь это два явно
+    по-разному названных хелпера — см. clear_awaiting_and_cancel_ritual
+    ниже для полной формы; свежий автор нового хендлера на персистентном
+    сообщении больше не выбирает сигнатуру наугад."""
     ctx.user_data["awaiting_time"] = False
     ctx.user_data["awaiting_name"] = False
     ctx.user_data["awaiting_buddy"] = False
@@ -6918,17 +6922,36 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE, update: Update = None):
     ctx.user_data.pop("coach_chat_id", None)
     ctx.user_data.pop("admin_msg_target", None)
     ctx.user_data.pop("admin_msg_name", None)
-    if update is not None and update.effective_user is not None:
-        uid = update.effective_user.id
-        user = get_user(uid)
-        if str(user.get("research_awaiting") or "0") != "0":
-            update_user(uid, research_awaiting=0)
-        if update.effective_chat is not None:
-            conv_key = (update.effective_chat.id, uid)
-            if _morning_conv is not None:
-                _morning_conv._conversations.pop(conv_key, None)
-            if _evening_conv is not None:
-                _evening_conv._conversations.pop(conv_key, None)
+
+def clear_awaiting_and_cancel_ritual(ctx: ContextTypes.DEFAULT_TYPE, update: Update):
+    """clear_awaiting_flags (см. выше) плюс отмена активного ритуала —
+    гасит research_awaiting в БД (тот же класс флага, но не в
+    ctx.user_data) и отменяет активный morning/evening ConversationHandler
+    для этого пользователя, иначе тот перехватывает следующий текст сам,
+    ДО того как он вообще доходит до awaiting_*-проверок в handle_text
+    (реальный баг: человек посреди вечернего ритуала открыл «Обратная
+    связь» и написал «Бот топ» — текст записался в поле Задача A, потому
+    что вечерняя conversation всё ещё была активна и первой забрала
+    сообщение).
+
+    Требует update, а не делает его опциональным — вызывай именно тогда,
+    когда пользователь явно переключился на другое ДЕЙСТВИЕ (открыл новый
+    экран из меню и т.п.), а не когда всего лишь ответил на что-то
+    параллельное поверх уже идущего ритуала (для этого — только
+    clear_awaiting_flags, без отмены)."""
+    clear_awaiting_flags(ctx)
+    if update.effective_user is None:
+        return
+    uid = update.effective_user.id
+    user = get_user(uid)
+    if str(user.get("research_awaiting") or "0") != "0":
+        update_user(uid, research_awaiting=0)
+    if update.effective_chat is not None:
+        conv_key = (update.effective_chat.id, uid)
+        if _morning_conv is not None:
+            _morning_conv._conversations.pop(conv_key, None)
+        if _evening_conv is not None:
+            _evening_conv._conversations.pop(conv_key, None)
 
 def _awaiting_flag_expired(ctx, flag):
     """True, если awaiting_*-флаг был выставлен больше INACTIVE_SCREEN_TTL_SEC
@@ -6962,7 +6985,7 @@ def _awaiting_flag_expired(ctx, flag):
 
 async def go_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await _render_tracked(q.message, ctx, "menu", "Главное меню",
                            ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=main_menu(get_user(q.from_user.id)))
 
@@ -6972,13 +6995,13 @@ async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     (Виктория): нативная кнопка "Menu" Telegram у поля ввода умеет только
     подставлять слэш-команду в поле ввода — сама открыть наш инлайн-экран
     не может, поэтому нужна именно команда, а не ещё один callback."""
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await _render_tracked(update.message, ctx, "menu", "Главное меню",
                            ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=main_menu(get_user(update.effective_user.id)))
 
 async def go_menu_more(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(q.from_user.id)
     await _render_tracked(q.message, ctx, "menu", "🧩 Инструменты",
                            ttl_seconds=INACTIVE_SCREEN_TTL_SEC, reply_markup=menu_tab_kb("tools", user))
@@ -7356,7 +7379,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FOCUS / POMODORO ───────────────────────────────────────────────────────
 async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
 
@@ -7423,7 +7446,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # кнопки запуска таймера не одноразовые (см. комментарий ниже) — старое
     # сообщение /go_focus может провисеть в чате долго и быть нажато уже
     # после того, как открыли какой-то другой awaiting_* сценарий.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     minutes = int(q.data.split("_")[2])
 
@@ -7481,7 +7504,7 @@ async def focus_start_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def focus_stop_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     tz = get_user_tz(user)
@@ -7702,7 +7725,7 @@ async def research_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # меню — можно нажать эту кнопку, не ответив на уже открытый awaiting_*
     # (например 💬 Обратная связь), и его флаг оставался висеть, молча
     # проглатывая следующее обычное сообщение.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     parts = q.data.split("_")  # research_DAY_VALUE
     day = int(parts[1])
@@ -7933,7 +7956,7 @@ async def go_about(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # чтобы ответить на уже открытый запрос awaiting_feedback (или любой
     # другой awaiting_*), флаг оставался висеть и молча проглатывал следующее
     # обычное сообщение пользователя.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     gender = get_user(q.from_user.id)["gender"]
     await send_about_section(q.message, "what", gender)
 
@@ -7958,7 +7981,7 @@ async def show_whats_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     же — переключатель "присылать анонсы обновлений" (по запросу): по
     умолчанию выключен, кто хочет получать анонсы — включает сам."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     user = get_user(q.from_user.id)
     if not CHANGELOG:
         await _edit_or_send(q, "Пока нечего показать — загляни попозже 🙂", reply_markup=_whats_new_kb(user))
@@ -7988,7 +8011,7 @@ async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     объяснения не было. Доступ только из «О боте» — не дублируем кнопку
     в Коуче, чтобы не перегружать экран быстрой помощи."""
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await _edit_or_send(
         q,
         "🔒 *А что с приватностью?*\n\n"
@@ -8010,7 +8033,7 @@ async def go_privacy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── FEEDBACK ───────────────────────────────────────────────────────────────
 async def go_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_feedback"] = True
     # access_gate (см. ниже) читает эту метку, чтобы отличить "только что
     # открыл экран отзыва" от давно висящего, никогда не отвеченного флага —
@@ -8074,20 +8097,20 @@ def _subscribe_text_and_kb(user):
 
 async def go_subscribe(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     log_event(q.from_user.id, "subscribe_opened")
     text, kb = _subscribe_text_and_kb(get_user(q.from_user.id))
     await _edit_or_send(q, text, parse_mode="Markdown", reply_markup=kb)
 
 async def subscribe_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     log_event(update.effective_user.id, "subscribe_opened")
     text, kb = _subscribe_text_and_kb(get_user(update.effective_user.id))
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def go_subscribe_pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await ctx.bot.send_invoice(
         chat_id=q.from_user.id,
         title="Подписка ADHD Buddy",
@@ -8108,7 +8131,7 @@ async def precheckout_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.pre_checkout_query.answer(ok=True)
 
 async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = update.effective_user.id
     user = get_user(uid)
     payment = update.message.successful_payment
@@ -8141,7 +8164,7 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
 
 async def go_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_promo_code"] = True
     await _render_tracked(
         q.message, ctx, "promo",
@@ -8154,7 +8177,7 @@ async def go_promo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not ctx.args:
-        clear_awaiting_flags(ctx, update)
+        clear_awaiting_and_cancel_ritual(ctx, update)
         ctx.user_data["awaiting_promo_code"] = True
         await _render_tracked(
             update.message, ctx, "promo", "🎁 Введи промокод текстом:",
@@ -8167,7 +8190,7 @@ async def promo_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # от ветки без аргумента. Нажатие "🎁 Промокод" (awaiting_promo_code)
     # с последующим вводом команды /promo CODE вместо голого текста
     # оставляло флаг висеть и подставляло под него следующее сообщение.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ok, msg = redeem_promo_code(uid, ctx.args[0].strip().upper())
     await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
 
@@ -8302,7 +8325,7 @@ async def grant30_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # следующее обычное сообщение админа (что угодно) молча уходило чужому
     # пользователю с "✅ Отправлено", без единого намёка, что что-то пошло
     # не так.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     target_uid = int(q.data.replace("grant30_", ""))
     # Реальный баг: в отличие от grant_command (обзавёлся try/except с явным
     # комментарием — on_error только пишет в логи, ничего не отвечает в
@@ -8418,7 +8441,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # пользователя ПОСЛЕ того, как он оформит подписку (например, ответ на
     # достижения из E_ACH молча съедает следующее сообщение уже после
     # оплаты, вместо того чтобы дойти до нужного экрана).
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     # Реальный баг: если блокируем нажатие инлайн-кнопки, а не отвечаем на
     # callback_query — Telegram-клиент оставляет кнопку в состоянии
     # "загрузка" (спиннер) до собственного таймаута, потому что обработчик,
@@ -8457,7 +8480,7 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── BUDDY ──────────────────────────────────────────────────────────────────
 async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     buddy = user.get("buddy_name","")
@@ -8486,13 +8509,13 @@ async def buddy_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def buddy_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     ctx.user_data["awaiting_buddy"] = True
     await _render_tracked(q.message, ctx, "buddy", "Напиши имя своего бадди:", ttl_seconds=INACTIVE_SCREEN_TTL_SEC)
 
 async def buddy_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     user = get_user(uid)
     buddy = md_escape(user.get("buddy_name","бадди"))
@@ -8584,7 +8607,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # уведомлением со своей клавиатурой — как и research_callback/
     # focus_start_callback, не через постоянное меню, так что мог быть
     # нажат уже после того, как открыли другой awaiting_*.
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     # Реальный запрос: маячок/уведомление исчезает, как только на него
     # ответили — эта клавиатура общая и для дневного чекина (channel
@@ -8834,7 +8857,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_coach":
-        clear_awaiting_flags(ctx, update)
+        clear_awaiting_and_cancel_ritual(ctx, update)
         ctx.user_data["coach_mode"] = True
         await _edit_or_send(q,
             f"🤖 *Коуч на связи, {name}.* Что происходит?",
@@ -9381,12 +9404,12 @@ GUIDE_SECTIONS = {
 
 async def guide_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     await send_guide_section(q.message, "what")
 
 async def guide_section(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     section_id = q.data.replace("guide_", "")
     await send_guide_section(q.message, section_id)
 
@@ -10071,7 +10094,7 @@ async def admin_msg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     admin_uid = q.from_user.id
     if admin_uid != NOTIFY_USER_ID:
         return
-    clear_awaiting_flags(ctx, update)
+    clear_awaiting_and_cancel_ritual(ctx, update)
     target_id = int(q.data.split("_")[2])
     # Найдём имя
     conn = sqlite3.connect(DB_PATH)
