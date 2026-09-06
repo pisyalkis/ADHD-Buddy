@@ -951,13 +951,23 @@ def add_pool_task(uid, text):
 def get_pool_tasks(uid):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT id, text FROM tasks WHERE user_id=? ORDER BY id", (uid,)).fetchall()
+    rows = conn.execute("SELECT id, text, created FROM tasks WHERE user_id=? ORDER BY id", (uid,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 def delete_pool_task(uid, task_id):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM tasks WHERE id=? AND user_id=?", (task_id, uid))
+    conn.commit(); conn.close()
+
+def clear_pool_tasks(uid):
+    """Реальный запрос (IDEAS.md 2026-08-28): список дел растёт в
+    нечитаемое "кладбище" пунктов без штатного способа его разобрать или
+    почистить — единственным способом было удалять по одному. Полная
+    очистка (см. pool_clear_confirm) — самый дешёвый выход, без отдельной
+    архивации/сортировки, которую эта же идея упоминает как альтернативу."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM tasks WHERE user_id=?", (uid,))
     conn.commit(); conn.close()
 
 def add_reminder(uid, text, remind_at_key, recur=""):
@@ -6507,11 +6517,18 @@ async def pool_use_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # выборе формулировки.
     await apply_task_edit(q.message, ctx, uid, key, item["text"], pool_item_id=item["id"])
 
+POOL_STALE_DAYS = 14  # см. task_pool_text — с какого возраста дело помечается как старое
+
 def task_pool_kb(pool):
     rows = []
     if pool:
         rows.append([InlineKeyboardButton("🗑 Удалить дело", callback_data="pool_del_menu")])
     rows.append([InlineKeyboardButton("✏️ Добавить дело", callback_data="pool_add")])
+    if pool:
+        # Реальный запрос (IDEAS.md 2026-08-28): единственным способом
+        # разобрать разросшийся список было удалять по одному — не хватало
+        # штатного способа его почистить целиком.
+        rows.append([InlineKeyboardButton("🧹 Очистить весь список", callback_data="pool_clear_menu")])
     rows.append([InlineKeyboardButton("◀️ К задачам", callback_data="go_tasks")])
     return InlineKeyboardMarkup(rows)
 
@@ -6525,7 +6542,23 @@ def task_pool_text(pool):
     if not pool:
         return (f"📥 *Список дел*\n\n_Пока пусто — сюда можно скидывать любые дела, "
                 f"не только на сегодня, а потом выбирать из них при постановке A/B/C._\n\n{hint}")
-    lines = [f"{i+1}. {md_escape(t['text'])}" for i, t in enumerate(pool)]
+    # Реальный запрос (IDEAS.md 2026-08-28): список дел растёт в нечитаемое
+    # "кладбище" пунктов без даты добавления — непонятно, что тут свежее, а
+    # что провисело месяцами. Помечаем пункты старше POOL_STALE_DAYS днями
+    # с момента добавления — минимальная видимость возраста без отдельной
+    # сортировки/архивации (та же идея упоминает их как альтернативу).
+    today = date.today()
+    lines = []
+    for i, t in enumerate(pool):
+        age_hint = ""
+        try:
+            added = datetime.fromisoformat(t["created"]).date()
+            age_days = (today - added).days
+            if age_days >= POOL_STALE_DAYS:
+                age_hint = f" _· {age_days} дн._"
+        except Exception:
+            pass
+        lines.append(f"{i+1}. {md_escape(t['text'])}{age_hint}")
     return "📥 *Список дел*\n\n" + "\n".join(lines) + f"\n\n{hint}"
 
 async def show_task_pool(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -6583,6 +6616,28 @@ async def pool_delete_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     task_id = int(q.data.replace("pooldel_", ""))
     delete_pool_task(q.from_user.id, task_id)
     await send_pool_delete_menu(q.message, q.from_user.id)
+
+async def pool_clear_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """"🧹 Очистить весь список" — необратимо, поэтому отдельный экран
+    подтверждения, а не мгновенное удаление одним тапом (тот же принцип,
+    что и у остальных необратимых действий в файле)."""
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    pool = get_pool_tasks(q.from_user.id)
+    text = (f"🧹 Удалить все {len(pool)} дел из списка? Это нельзя отменить."
+            if pool else "Список дел уже пуст.")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, очистить", callback_data="pool_clear_confirm")],
+        [InlineKeyboardButton("◀️ Отмена", callback_data="go_task_pool")],
+    ]) if pool else task_pool_kb(pool)
+    await _edit_msg_or_send(q.message, text, reply_markup=kb)
+
+async def pool_clear_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    clear_pool_tasks(q.from_user.id)
+    pool = get_pool_tasks(q.from_user.id)
+    await _edit_msg_or_send(q.message, task_pool_text(pool), parse_mode="Markdown", reply_markup=task_pool_kb(pool))
 
 async def task_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Чекбокс "▫️/✅" на задаче — тапается в обе стороны (можно снять
@@ -10620,6 +10675,8 @@ def main():
     app.add_handler(CallbackQueryHandler(pool_add_start,       pattern="^pool_add$"))
     app.add_handler(CallbackQueryHandler(show_task_pool_delete, pattern="^pool_del_menu$"))
     app.add_handler(CallbackQueryHandler(pool_delete_item,     pattern="^pooldel_"))
+    app.add_handler(CallbackQueryHandler(pool_clear_menu,      pattern="^pool_clear_menu$"))
+    app.add_handler(CallbackQueryHandler(pool_clear_confirm,   pattern="^pool_clear_confirm$"))
     app.add_handler(CallbackQueryHandler(pool_use_item,        pattern="^pooluse_"))
     app.add_handler(CallbackQueryHandler(pool_change_page,     pattern="^poolpage_"))
     app.add_handler(CallbackQueryHandler(pool_write_own,       pattern="^poolwrite_"))
