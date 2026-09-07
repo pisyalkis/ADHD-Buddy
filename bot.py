@@ -8044,15 +8044,25 @@ async def coworking_leave_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
 async def check_coworking_sessions(app):
     """Отдельная раз-в-минутную джоба (как и sweep_scheduled_deletions) —
     итерирует по СЕССИЯМ, а не по пользователям, поэтому не встроена в
-    check_notifications/_process_user_notifications."""
+    check_notifications/_process_user_notifications.
+
+    Реальный баг (IDEAS.md 2026-09-06): coworking_join_callback/
+    coworking_leave_callback шлют свой экран "кто в сессии" через
+    send_tracked_notification на канал coworking_{id} — тот САМОудаляется и
+    заменяется при повторной отправке. Старт/конец сессии здесь слались
+    обычным app.bot.send_message — не по каналу, поэтому не заменяли всё
+    ещё открытый экран "кто в сессии / 🚪 Не смогу", тот просто оставался в
+    чате рядом с новым сообщением, с уже бессмысленной к этому моменту
+    кнопкой выхода. Единый канал coworking_{id} для старта/конца чинит и
+    это, и убирает дублирование самого приёма рассылки."""
     try:
         for session in get_due_coworking_starts():
             participants = get_coworking_participants(session["id"])
             for pid in participants:
                 try:
-                    await app.bot.send_message(
-                        chat_id=pid,
-                        text=f"🧘 *Сессия началась!* {session['duration_minutes']} минут тишины.\n\nВас сегодня: *{len(participants)}*",
+                    await send_tracked_notification(
+                        app.bot, pid, f"coworking_{session['id']}",
+                        f"🧘 *Сессия началась!* {session['duration_minutes']} минут тишины.\n\nВас сегодня: *{len(participants)}*",
                         parse_mode="Markdown"
                     )
                 except Exception as e:
@@ -8062,9 +8072,9 @@ async def check_coworking_sessions(app):
             participants = get_coworking_participants(session["id"])
             for pid in participants:
                 try:
-                    await app.bot.send_message(
-                        chat_id=pid,
-                        text=f"✅ *Готово!* {session['duration_minutes']} минут тишины позади. Хорошая работа 👏",
+                    await send_tracked_notification(
+                        app.bot, pid, f"coworking_{session['id']}",
+                        f"✅ *Готово!* {session['duration_minutes']} минут тишины позади. Хорошая работа 👏",
                         parse_mode="Markdown",
                         reply_markup=menu_button_kb()
                     )
