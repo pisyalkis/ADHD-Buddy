@@ -7891,14 +7891,28 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    # Реальный баг (ночной скан, BUGS.md 2026-09-06): в отличие от похожих
+    # колбэков на фоновых/персистентных сообщениях (buddy_ping), этот не
+    # снимал открытые awaiting_*-флаги — тап "Присоединиться", пока у
+    # пользователя открыт другой экран, ожидающий ввод (например "✏️ Имя"),
+    # не гасил флаг, и следующее обычное сообщение молча утекало не туда.
+    clear_awaiting_and_cancel_ritual(ctx, update)
     uid = q.from_user.id
     session_id = int(q.data.replace("coworking_join_", ""))
     session = get_coworking_session(session_id)
     if session is None or session["start_at"] <= datetime.now(pytz.utc).isoformat():
         await q.answer("Эта сессия уже недоступна.")
         return
-    join_coworking_session(session_id, uid)
-    await q.answer("Готово, ты в сессии!")
+    # Реальный баг (ночной скан, BUGS.md 2026-09-06): возврат
+    # join_coworking_session (True=новое присоединение, False=уже был в
+    # сессии — см. её докстринг) никак не проверялся, и рассылка счётчика
+    # всем участникам уходила безусловно на КАЖДЫЙ тап, включая повторный/
+    # двойной тап тем же человеком (типичное поведение при СДВГ), для
+    # которого счётчик участников не изменился ни на единицу.
+    is_new_join = join_coworking_session(session_id, uid)
+    await q.answer("Готово, ты в сессии!" if is_new_join else "Ты уже в этой сессии.")
+    if not is_new_join:
+        return
     participants = get_coworking_participants(session_id)
     count = len(participants)
     # Обновляем счётчик участников у ВСЕХ, включая уже присоединившихся
