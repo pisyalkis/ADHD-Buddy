@@ -4073,18 +4073,31 @@ def _carry_unfinished_tasks_to_pool(uid, morning_today, done_set):
     потерялись (реальный запрос: "если задача из плана на день не
     выполнена — она должна попадать в список дел"). Пропускаем те, у
     которых ещё стоит связь _pool_link_{key} (см. apply_task_edit/
-    pool_use_item) — такой пункт и так всё ещё лежит в пуле нетронутым
-    (удаляется только при отметке ✅), повторное добавление создало бы
-    дубль. Сравниваем без учёта регистра — иначе "Позвонить маме" и
-    "позвонить маме" (та же задача, просто набрана иначе на следующий
-    день) считались бы разными и дублировались в пуле."""
+    pool_use_item) И связанный пункт пула РЕАЛЬНО ещё существует — такой
+    пункт и так всё ещё лежит в пуле нетронутым (обычно удаляется только
+    при отметке ✅), повторное добавление создало бы дубль.
+
+    Реальный баг (ночной скан): раньше пропускали по одному только факту
+    наличия _pool_link_{key}, не проверяя, жив ли ещё сам пункт пула —
+    pool_delete_item (🗑 в 📥 Списке дел) удаляет пункт по id безусловно,
+    никак не сверяясь со связями активных задач дня. Если пользователь
+    выбрал пункт пула для задачи, а затем вручную удалил тот же пункт
+    (посчитав дублем/лишним), саму задачу так и не выполнив — при закрытии
+    дня она молча пропадала: пункта в пуле уже нет, а перенос считал, что
+    он "и так там лежит", и не добавлял её обратно. Сравниваем текст без
+    учёта регистра — иначе "Позвонить маме" и "позвонить маме" (та же
+    задача, просто набрана иначе на следующий день) считались бы разными
+    и дублировались в пуле."""
     morning = get_diary(uid, "morning", morning_today)
-    existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
+    pool_tasks = get_pool_tasks(uid)
+    existing_pool_texts = {t["text"].lower() for t in pool_tasks}
+    existing_pool_ids = {t["id"] for t in pool_tasks}
     for key, _ in TASK_FIELDS:
         text = morning.get(key)
         if not text or key in done_set:
             continue
-        if morning.get(f"_pool_link_{key}"):
+        pool_link = morning.get(f"_pool_link_{key}")
+        if pool_link is not None and pool_link in existing_pool_ids:
             continue
         if text.lower() in existing_pool_texts:
             continue
@@ -10513,12 +10526,20 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # до одной A. Незавершённые B/C — в 📥 Список дел (та же логика, что и
         # у вечернего переноса, см. _carry_unfinished_tasks_to_pool), а не
         # молча стираются: уже выполненные слоты просто убираются с сегодня.
-        existing_pool_texts = {t["text"].lower() for t in get_pool_tasks(uid)}
+        # Тот же фикс (ночной скан 2026-09-06), что и в
+        # _carry_unfinished_tasks_to_pool: наличие _pool_link_{key} само по
+        # себе не значит, что связанный пункт пула ещё жив — pool_delete_item
+        # мог его удалить независимо. Проверяем реальное существование по id.
+        _pool_tasks_now = get_pool_tasks(uid)
+        existing_pool_texts = {t["text"].lower() for t in _pool_tasks_now}
+        existing_pool_ids = {t["id"] for t in _pool_tasks_now}
         for key in ("b1", "b2", "c1", "c2", "c3"):
             text = morning.get(key)
             if not text:
                 continue
-            if key not in done_set and not morning.get(f"_pool_link_{key}") and text.lower() not in existing_pool_texts:
+            pool_link = morning.get(f"_pool_link_{key}")
+            still_in_pool = pool_link is not None and pool_link in existing_pool_ids
+            if key not in done_set and not still_in_pool and text.lower() not in existing_pool_texts:
                 add_pool_task(uid, text)
                 existing_pool_texts.add(text.lower())
             morning.pop(key, None)
