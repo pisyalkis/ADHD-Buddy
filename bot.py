@@ -11347,9 +11347,34 @@ async def _process_user_notifications(app, user):
         # уведомлений; маячок/фокус-таймер/resume-check ниже от него
         # не зависят — у них своё собственное включение.
         notif_master_on = int(user.get("notif_enabled") or 0)
+
+        # Реальный баг (ночной скан, BUGS.md 2026-09-06): реактивация по
+        # REENGAGE_MILESTONES (см. ниже) и ветка "👋 С возвращением!" в
+        # morning_notification (is_returning, WELCOME_BACK_GAP_DAYS) — две
+        # независимые системы отсчёта "дней без активности", обе смотрят
+        # на утреннее окно. Ровно в день, когда разрыв ОБЕИХ впервые
+        # достигает одного порога (день 3, 7 или 14 — типичный случай для
+        # пользователя, который просто постепенно пропадает), они срабатывают
+        # в один и тот же тик — человек получает подряд два разных "ты давно
+        # не был(а)" сообщения. Вычисляем, наступила ли веха реактивации,
+        # ДО отправки утреннего уведомления — если да, откладываем обычное
+        # утреннее на следующий тик (morning_sent_date не проставляем), а
+        # реактивация отправляется одна. Полное объединение трёх параллельных
+        # систем "дней с X" (see IDEAS.md 2026-09-06) — отдельная, более
+        # крупная задача; это точечная защита от конкретного дублирования.
+        reengage_due_now = False
+        if not int(user.get("reengage_opt_out") or 0) and 9 <= now_dt.hour < 10:
+            gap_seen = _days_since_seen(uid)
+            if gap_seen is not None:
+                already_reengage_sent = int(user.get("reengage_max_milestone_sent") or 0)
+                reengage_due_now = any(
+                    m > already_reengage_sent and gap_seen >= m for m in REENGAGE_MILESTONES
+                )
+
         if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                 and user.get("morning_sent_date") != day_key
-                and user.get("notif_snooze_morning") != day_key):
+                and user.get("notif_snooze_morning") != day_key
+                and not reengage_due_now):
             # Помечаем "отправлено" только после реального успеха — иначе
             # временный сбой (таймаут телеграма, юзер заблокировал бота)
             # навсегда съедает уведомление на весь день без единой попытки.
@@ -11415,21 +11440,19 @@ async def _process_user_notifications(app, user):
         # слать посреди ночи из-за грубой UTC-границы суток в _days_since_seen,
         # и чтобы поймать "утро — естественная веха для свежего начала"
         # (Fresh Start Effect).
-        if not int(user.get("reengage_opt_out") or 0) and 9 <= now_dt.hour < 10:
-            gap_seen = _days_since_seen(uid)
-            if gap_seen is not None:
-                already_sent = int(user.get("reengage_max_milestone_sent") or 0)
-                # Наибольший порог, который уже пора отправить — так и для
-                # обычного постепенного роста разрыва (3 → 7 → 14 день за
-                # днём), и для "давно молчавшего" пользователя при первой же
-                # проверке после раскатки фичи (разрыв уже под 20+ дней) —
-                # в обоих случаях уходит РОВНО одно сообщение за тик, не
-                # накопленная очередь из трёх.
-                due = [m for m in REENGAGE_MILESTONES if m > already_sent and gap_seen >= m]
-                if due:
-                    target = due[-1]
-                    if await send_reengagement_message(app, uid):
-                        update_user(uid, reengage_max_milestone_sent=target)
+        if reengage_due_now:
+            already_sent = int(user.get("reengage_max_milestone_sent") or 0)
+            # Наибольший порог, который уже пора отправить — так и для
+            # обычного постепенного роста разрыва (3 → 7 → 14 день за
+            # днём), и для "давно молчавшего" пользователя при первой же
+            # проверке после раскатки фичи (разрыв уже под 20+ дней) —
+            # в обоих случаях уходит РОВНО одно сообщение за тик, не
+            # накопленная очередь из трёх.
+            due = [m for m in REENGAGE_MILESTONES if m > already_sent and gap_seen >= m]
+            if due:
+                target = due[-1]
+                if await send_reengagement_message(app, uid):
+                    update_user(uid, reengage_max_milestone_sent=target)
 
         # Напоминание если пропустил утро (+2 часа) — та же логика
         # "время прошло и сегодня ещё не отправлено", что и для
