@@ -1644,11 +1644,29 @@ def get_today_context(user):
 
 def mark_tasks_done(uid, keys, for_date):
     """Отмечает задачи (ключи TASK_FIELDS) выполненными в общем tasks_done —
-    том же хранилище, что использует меню 📋 Задачи и вечерний чек-лист."""
+    том же хранилище, что использует меню 📋 Задачи и вечерний чек-лист.
+
+    Реальный баг (ночной скан, BUGS.md 2026-09-06): калибровка фокус-таймера
+    "Думал(а) X — по факту Y" (см. focus_task_* в init_db) сбрасывалась
+    только внутри task_done_callback (обычный чекбокс "▫️/✅") — три быстрые
+    кнопки дневного чекина (mid_a_done_b/mid_ab_done_c/mid_all_done)
+    отмечают задачи через эту функцию, в обход того колбэка целиком, и
+    никогда не трогали focus_task_*. Если задача с тем же текстом в другой
+    день будет отмечена этим путём без свежего фокус-раунда над ней,
+    следующая РЕАЛЬНАЯ калибровка покажет бессмысленное время — прошедшее
+    с давно забытого focus_task_started_at, а не с настоящего начала
+    работы над задачей. Сброс — здесь, а не в каждом из трёх вызывающих
+    мест по отдельности."""
     done_data = get_diary(uid, "tasks_done", for_date)
     done = set(done_data.get("done", []))
     done.update(keys)
     save_diary(uid, "tasks_done", {"done": list(done)}, for_date=for_date)
+
+    tracked_text = (get_user(uid).get("focus_task_text") or "").strip().lower()
+    if tracked_text:
+        morning = get_diary(uid, "morning", for_date)
+        if any((morning.get(k) or "").strip().lower() == tracked_text for k in keys):
+            update_user(uid, focus_task_text="", focus_task_estimate_minutes=0, focus_task_started_at="")
 
 def midday_kb(morning=None, done_set=None, expanded=False):
     """Клавиатура дневного чекина — используется и в 13:00-уведомлении,
