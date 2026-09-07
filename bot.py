@@ -792,6 +792,15 @@ def init_db():
         ("work_start_sent_date", "''"),
         ("privacy_hint_shown", "''"),
         ("skills_trained", "''"),
+        # Реальный запрос (IDEAS.md 2026-09-07): о новой коворкинг-сессии
+        # раньше вообще никто не узнавал, кроме создателя — остальные видят
+        # её, только если сами зайдут в 🧘 Коворкинг именно в нужный момент.
+        # Оповещаем тех, кто уже хоть раз участвовал (создавал или
+        # присоединялся) — не всех подряд, это было бы спамом для тех, кто
+        # с фичей вообще не сталкивался. По умолчанию включено (1) — новая
+        # фича, а не что-то навязчивое повторяющееся, поэтому не тот
+        # случай, где нужен предварительный опрос согласия.
+        ("coworking_notif_on", "1"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1260,6 +1269,17 @@ def leave_coworking_session(session_id, user_id):
     removed = cur.rowcount > 0
     conn.close()
     return removed
+
+def get_coworking_alumni(exclude_uid=None):
+    """Все, кто хоть раз участвовал в коворкинге (создавал сессию или
+    присоединялся к чужой) — используется, чтобы оповестить о НОВОЙ сессии
+    именно тех, кому фича может быть интересна (см. coworking_notif_on), а
+    не всех пользователей бота подряд, для большинства это был бы спам про
+    незнакомую фичу."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT DISTINCT user_id FROM coworking_participants").fetchall()
+    conn.close()
+    return [r[0] for r in rows if exclude_uid is None or r[0] != exclude_uid]
 
 def get_coworking_participants(session_id):
     conn = sqlite3.connect(DB_PATH)
@@ -7968,6 +7988,45 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         ctx.bot, uid, f"coworking_{session_id}", text,
         parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
     )
+    await _notify_coworking_alumni(ctx.bot, session_id, start_utc, minutes, exclude_uid=uid)
+
+async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_uid):
+    """Реальный запрос (IDEAS.md 2026-09-07): раньше о новой сессии узнавал
+    только сам создатель — остальные видели её, только если сами заглянут
+    в 🧘 Коворкинг именно в нужный момент. Оповещаем тех, кто уже хоть раз
+    участвовал (см. get_coworking_alumni) — тем же каналом coworking_{id},
+    что и весь остальной жизненный цикл сессии: если получатель после
+    этого нажмёт "Присоединиться", coworking_join_callback обновит именно
+    это же сообщение, а не создаст рядом ещё одно."""
+    for pid in get_coworking_alumni(exclude_uid=exclude_uid):
+        p_user = get_user(pid)
+        if not p_user or not int(p_user.get("coworking_notif_on") or 1):
+            continue
+        p_tz = get_user_tz(p_user)
+        p_local_start = datetime.fromisoformat(start_utc).astimezone(p_tz)
+        p_day_note = _coworking_day_note(p_local_start, p_tz)
+        text = (
+            f"🧘 *Новая коворкинг-сессия*\n\n{p_local_start.strftime('%H:%M')}{p_day_note}, {minutes} мин\n\n"
+            "Кто-то ищет компанию для тихой совместной работы."
+        )
+        try:
+            await send_tracked_notification(
+                bot, pid, f"coworking_{session_id}", text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Присоединиться", callback_data=f"coworking_join_{session_id}")],
+                    [InlineKeyboardButton("🔕 Не присылать такие", callback_data="coworking_notif_off")],
+                ])
+            )
+        except Exception as e:
+            print(f"Ошибка оповещения о новой коворкинг-сессии uid={pid}: {e}")
+
+async def coworking_notif_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    update_user(uid, coworking_notif_on=0)
+    await q.answer("Больше не будем присылать.")
+    await _edit_or_send(q, "🔕 Оповещения о новых коворкинг-сессиях выключены.", reply_markup=menu_button_kb())
 
 async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -12611,6 +12670,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coworking_set_duration,  pattern="^coworking_dur_\\d+$"))
     app.add_handler(CallbackQueryHandler(coworking_join_callback, pattern="^coworking_join_\\d+$"))
     app.add_handler(CallbackQueryHandler(coworking_leave_callback, pattern="^coworking_leave_\\d+$"))
+    app.add_handler(CallbackQueryHandler(coworking_notif_off, pattern="^coworking_notif_off$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
