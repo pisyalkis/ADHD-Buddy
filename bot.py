@@ -1967,6 +1967,37 @@ async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kw
     elif await _edit_tracked_msg(ctx, track_key, text, ttl_seconds=ttl_seconds, **kwargs):
         ctx.user_data[f"{track_key}_msg_ts"] = datetime.now().isoformat()
         return
+
+    # Реальный запрос: возобновление прерванного ритуала (☀️/🌙) после
+    # перерыва редактирует message, пришедшее вместе с нажатой кнопкой —
+    # а это может оказаться СТАРОЕ сообщение (например вчерашнее вечернее
+    # уведомление или давно открытый экран меню), если между шагами
+    # процесс бота перезапускался и ctx.user_data опустел: is_stale выше
+    # не срабатывает за неимением памяти о прошлом рендере этого шага, а
+    # _edit_tracked_msg тоже не находит отслеживаемый id. Правка такого
+    # сообщения "на месте" оставляет продолженный ритуал висеть там же,
+    # где он был — Telegram не прокручивает чат к месту правки, а всё,
+    # что бот успел отправить в этот чат тем временем (напоминания,
+    # бэкапы, что угодно) остаётся ниже, хороня открытый вопрос. Дата
+    # самого message — второй, независимый сигнал "протухания" на случай,
+    # когда ctx.user_data ничего не помнит: старое message не редактируем,
+    # а удаляем — _edit_msg_or_send ниже упадёт в reply_text (в личных
+    # чатах он и так шлёт БЕЗ цитирования удалённого — см. PTB Message.
+    # reply_text: quote по умолчанию False в личке) и пришлёт тот же
+    # вопрос заново, уже внизу, у поля ввода.
+    if not is_stale:
+        msg_date = getattr(message, "date", None)
+        if msg_date is not None:
+            try:
+                msg_is_stale = (datetime.now(msg_date.tzinfo) - msg_date).total_seconds() > STEP_MSG_STALE_SEC
+            except Exception:
+                msg_is_stale = False
+            if msg_is_stale:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+
     sent = await _edit_msg_or_send(message, text, **kwargs)
     chat_id = getattr(sent, "chat_id", None)
     mid = getattr(sent, "message_id", None)
