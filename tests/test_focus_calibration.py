@@ -152,6 +152,50 @@ async def main():
     assert not any("Думал" in r for r in done_msg4.replies), done_msg4.replies
     print("5. Completing a task that was never tracked by a focus round shows no calibration note")
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Real bug (nightly scan, BUGS.md 2026-09-06): the calibration reset
+    # above (checks 3-4) only happens inside task_done_callback -- the
+    # ordinary "▫️/✅" checkbox. The daily check-in's quick-completion
+    # buttons ("🎉 А сделана", "🎉 А и Б сделаны", "🎉 Все задачи сделаны") mark
+    # tasks done via mark_tasks_done, bypassing that callback entirely. If a
+    # task with the SAME text is completed this way on a LATER day, without
+    # a fresh focus round tracking it, the next REAL calibration would
+    # compute elapsed time from a long-forgotten focus_task_started_at
+    # instead of the actual round.
+    # ══════════════════════════════════════════════════════════════════════
+
+    # 6. mark_tasks_done resets stale focus_task_* fields when a completed
+    #    key's text matches the tracked one (the bug fix).
+    uid3 = 3
+    make_user(uid3, "Игорь")
+    bot.save_diary(uid3, "morning", {"focus": "Ответить на почту"}, for_date=today)
+    stale_started = (datetime.now(TBILISI) - timedelta(days=3)).isoformat()
+    bot.update_user(
+        uid3, focus_task_text="Ответить на почту",
+        focus_task_estimate_minutes=15, focus_task_started_at=stale_started,
+    )
+    bot.mark_tasks_done(uid3, ["focus"], today)
+    user6 = bot.get_user(uid3)
+    assert user6.get("focus_task_text") == "", user6
+    assert int(user6.get("focus_task_estimate_minutes") or 0) == 0, user6
+    assert user6.get("focus_task_started_at") == "", user6
+    print("6. mark_tasks_done resets stale focus_task_* fields when a matching task is marked done (bug fix)")
+
+    # 7. Completing a DIFFERENT (non-matching) task via mark_tasks_done must
+    #    NOT touch calibration fields still tracking a real, separate round.
+    uid4 = 4
+    make_user(uid4, "Соня")
+    bot.save_diary(uid4, "morning", {"focus": "Сделать отчёт", "b1": "Купить молоко"}, for_date=today)
+    bot.update_user(
+        uid4, focus_task_text="Сделать отчёт",
+        focus_task_estimate_minutes=30, focus_task_started_at=datetime.now(TBILISI).isoformat(),
+    )
+    bot.mark_tasks_done(uid4, ["b1"], today)
+    user7 = bot.get_user(uid4)
+    assert user7.get("focus_task_text") == "Сделать отчёт", \
+        "completing an unrelated task via mark_tasks_done must not touch calibration for the actually-tracked one"
+    print("7. mark_tasks_done leaves calibration fields untouched when the completed task doesn't match")
+
     print("\nALL FOCUS CALIBRATION TESTS PASSED")
 
 
