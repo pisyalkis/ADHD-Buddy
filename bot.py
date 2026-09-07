@@ -7853,11 +7853,22 @@ async def remind_snooze_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
 # никакого общего чата, никакого раскрытия личности.
 COWORKING_DURATIONS = (25, 45, 60)
 
+def _coworking_day_note(local_start, viewer_tz):
+    """"(завтра)" рядом со временем сессии, если её локальная дата у
+    зрителя не совпадает с сегодня — иначе, теперь когда сессию можно
+    создать и на завтра (IDEAS.md 2026-09-06), голое "09:00" в списке
+    открытых сессий было бы неоднозначно (какое именно "09:00"?)."""
+    if local_start.date() != datetime.now(viewer_tz).date():
+        return " (завтра)"
+    return ""
+
 def _coworking_session_text(session, viewer_uid, count):
     viewer = get_user(viewer_uid)
-    local_start = datetime.fromisoformat(session["start_at"]).astimezone(get_user_tz(viewer))
+    viewer_tz = get_user_tz(viewer)
+    local_start = datetime.fromisoformat(session["start_at"]).astimezone(viewer_tz)
+    day_note = _coworking_day_note(local_start, viewer_tz)
     return (
-        f"🧘 Сессия на *{local_start.strftime('%H:%M')}*, {session['duration_minutes']} мин\n\n"
+        f"🧘 Сессия на *{local_start.strftime('%H:%M')}*{day_note}, {session['duration_minutes']} мин\n\n"
         f"Участников: *{count}*"
     )
 
@@ -7867,15 +7878,17 @@ async def go_coworking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     user = get_user(uid)
     sessions = get_open_coworking_sessions()
+    user_tz = get_user_tz(user)
     if sessions:
         lines = []
         rows = []
         for s in sessions:
-            local_start = datetime.fromisoformat(s["start_at"]).astimezone(get_user_tz(user))
+            local_start = datetime.fromisoformat(s["start_at"]).astimezone(user_tz)
+            day_note = _coworking_day_note(local_start, user_tz)
             count = len(get_coworking_participants(s["id"]))
-            lines.append(f"🧘 {local_start.strftime('%H:%M')} · {s['duration_minutes']} мин · {count} присоединились")
+            lines.append(f"🧘 {local_start.strftime('%H:%M')}{day_note} · {s['duration_minutes']} мин · {count} присоединились")
             rows.append([InlineKeyboardButton(
-                f"Присоединиться — {local_start.strftime('%H:%M')}", callback_data=f"coworking_join_{s['id']}"
+                f"Присоединиться — {local_start.strftime('%H:%M')}{day_note}", callback_data=f"coworking_join_{s['id']}"
             )])
         text = "🧘 *Коворкинг — открытые сессии*\n\n" + "\n".join(lines)
     else:
@@ -7895,7 +7908,8 @@ async def coworking_create_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     ctx.user_data["awaiting_coworking_time_set_at"] = datetime.now().isoformat()
     await _render_tracked(
         q.message, ctx, "coworking",
-        "🧘 Во сколько начинаем? Напиши время в формате *ЧЧ:ММ* (сегодня), например `18:00`.",
+        "🧘 Во сколько начинаем? Напиши время в формате *ЧЧ:ММ* (сегодня), например `18:00` — "
+        "или на завтра: `завтра 09:00`.",
         ttl_seconds=INACTIVE_SCREEN_TTL_SEC,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data="go_coworking")]])
@@ -7911,9 +7925,11 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     minutes = int(q.data.replace("coworking_dur_", ""))
     session_id = create_coworking_session(uid, start_utc, minutes)
     user = get_user(uid)
-    local_start = datetime.fromisoformat(start_utc).astimezone(get_user_tz(user))
+    user_tz = get_user_tz(user)
+    local_start = datetime.fromisoformat(start_utc).astimezone(user_tz)
+    day_note = _coworking_day_note(local_start, user_tz)
     text = (
-        f"✅ *Сессия создана*\n\n🧘 {local_start.strftime('%H:%M')}, {minutes} мин\n\n"
+        f"✅ *Сессия создана*\n\n🧘 {local_start.strftime('%H:%M')}{day_note}, {minutes} мин\n\n"
         "Как только кто-то присоединится — увидишь здесь же. Начнём точно вовремя."
     )
     await send_tracked_notification(
@@ -8449,28 +8465,36 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting_coworking_time"] = False
         ctx.user_data.pop("awaiting_coworking_time_set_at", None)
         text = update.message.text.strip()
-        # Та же регулярка, что и у awaiting_time (настройки уведомлений) —
-        # ЧЧ:ММ, час без ведущего нуля разрешён и сразу нормализуется.
-        if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", text):
-            h, m = map(int, text.split(":"))
+        # Реальный запрос (IDEAS.md 2026-09-06): раньше сессию можно было
+        # создать только на сегодня — а тело-даблинг как раз то, что
+        # естественно готовить заранее, "с вечера на завтра в 9 утра".
+        # Тот же формат ЧЧ:ММ, что и у awaiting_time, плюс необязательный
+        # префикс "завтра" — явный выбор дня, а не гадание бота.
+        m_match = re.match(r"^(завтра\s+)?((?:[01]?\d|2[0-3]):[0-5]\d)$", text, re.IGNORECASE)
+        if m_match:
+            explicit_tomorrow = bool(m_match.group(1))
+            hh_mm = m_match.group(2)
+            h, mi = map(int, hh_mm.split(":"))
             user_tz = get_user_tz(get_user(uid))
             now_local = datetime.now(user_tz)
-            start_local = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
-            if start_local <= now_local:
-                retry_text = "Это время уже прошло сегодня. Напиши время попозже, в формате ЧЧ:ММ."
-                if not await _edit_tracked_msg(ctx, "coworking", retry_text, reply_markup=menu_button_kb()):
-                    await update.message.reply_text(retry_text, reply_markup=menu_button_kb())
-                ctx.user_data["awaiting_coworking_time"] = True
-            else:
-                ctx.user_data["coworking_pending_start_utc"] = start_local.astimezone(pytz.utc).isoformat()
-                dur_row = [InlineKeyboardButton(f"{m} мин", callback_data=f"coworking_dur_{m}") for m in COWORKING_DURATIONS]
-                confirm_text = f"На сколько минут? Начало в *{text}*."
-                if not await _edit_tracked_msg(ctx, "coworking", confirm_text, parse_mode="Markdown",
-                                                reply_markup=InlineKeyboardMarkup([dur_row])):
-                    await update.message.reply_text(confirm_text, parse_mode="Markdown",
-                                                     reply_markup=InlineKeyboardMarkup([dur_row]))
+            start_local = now_local.replace(hour=h, minute=mi, second=0, microsecond=0)
+            # Явное "завтра" — всегда следующий день, независимо от того,
+            # прошло ли уже это время сегодня. Без префикса и время сегодня
+            # уже прошло — переносим на завтра сами, а не отклоняем: другого
+            # разумного толкования "18:00", когда уже 20:00, всё равно нет.
+            is_tomorrow = explicit_tomorrow or start_local <= now_local
+            if is_tomorrow:
+                start_local += timedelta(days=1)
+            ctx.user_data["coworking_pending_start_utc"] = start_local.astimezone(pytz.utc).isoformat()
+            day_note = " (завтра)" if is_tomorrow else ""
+            dur_row = [InlineKeyboardButton(f"{m} мин", callback_data=f"coworking_dur_{m}") for m in COWORKING_DURATIONS]
+            confirm_text = f"На сколько минут? Начало в *{hh_mm}*{day_note}."
+            if not await _edit_tracked_msg(ctx, "coworking", confirm_text, parse_mode="Markdown",
+                                            reply_markup=InlineKeyboardMarkup([dur_row])):
+                await update.message.reply_text(confirm_text, parse_mode="Markdown",
+                                                 reply_markup=InlineKeyboardMarkup([dur_row]))
         else:
-            retry_text = "Неверный формат. Напиши время в формате ЧЧ:ММ, например `18:00`."
+            retry_text = "Неверный формат. Напиши время в формате ЧЧ:ММ, например `18:00` или `завтра 09:00`."
             if not await _edit_tracked_msg(ctx, "coworking", retry_text, parse_mode="Markdown", reply_markup=menu_button_kb()):
                 await update.message.reply_text(retry_text, parse_mode="Markdown", reply_markup=menu_button_kb())
             ctx.user_data["awaiting_coworking_time"] = True
