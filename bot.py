@@ -801,6 +801,16 @@ def init_db():
         # фича, а не что-то навязчивое повторяющееся, поэтому не тот
         # случай, где нужен предварительный опрос согласия.
         ("coworking_notif_on", "1"),
+        # Реальный запрос (IDEAS.md 2026-09-06 — "архивация/очистка таблиц
+        # коворкинга"): coworking_sessions/coworking_participants растут
+        # неограниченно, а get_coworking_alumni (см. _notify_coworking_alumni)
+        # читал именно coworking_participants как источник "алумни"-статуса —
+        # чистить старые сессии напрямую значило бы тихо забывать давних
+        # участников и переставать слать им оповещения о новых сессиях.
+        # Разносим: статус "хоть раз участвовал" теперь отдельным флагом на
+        # users (не зависит от истории конкретных сессий), поэтому саму
+        # историю можно спокойно чистить (см. cleanup_old_coworking_sessions).
+        ("coworking_ever_joined", "0"),
     ]:
         try:
             c.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -1219,6 +1229,7 @@ def create_coworking_session(creator_id, start_at_utc_iso, duration_minutes):
         "INSERT OR IGNORE INTO coworking_participants(session_id, user_id, joined_at) VALUES (?, ?, ?)",
         (session_id, creator_id, datetime.now(pytz.utc).isoformat())
     )
+    conn.execute("UPDATE users SET coworking_ever_joined='1' WHERE user_id=?", (creator_id,))
     conn.commit(); conn.close()
     return session_id
 
@@ -1254,6 +1265,7 @@ def join_coworking_session(session_id, user_id):
         "INSERT INTO coworking_participants(session_id, user_id, joined_at) VALUES (?, ?, ?)",
         (session_id, user_id, datetime.now(pytz.utc).isoformat())
     )
+    conn.execute("UPDATE users SET coworking_ever_joined='1' WHERE user_id=?", (user_id,))
     conn.commit(); conn.close()
     return True
 
@@ -1275,9 +1287,14 @@ def get_coworking_alumni(exclude_uid=None):
     присоединялся к чужой) — используется, чтобы оповестить о НОВОЙ сессии
     именно тех, кому фича может быть интересна (см. coworking_notif_on), а
     не всех пользователей бота подряд, для большинства это был бы спам про
-    незнакомую фичу."""
+    незнакомую фичу.
+
+    Источник — users.coworking_ever_joined, а НЕ сама таблица
+    coworking_participants: та регулярно чистится от старых сессий (см.
+    cleanup_old_coworking_sessions), и статус "алумни" не должен зависеть
+    от того, дожила ли конкретная старая запись об участии до сегодня."""
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT DISTINCT user_id FROM coworking_participants").fetchall()
+    rows = conn.execute("SELECT user_id FROM users WHERE coworking_ever_joined='1'").fetchall()
     conn.close()
     return [r[0] for r in rows if exclude_uid is None or r[0] != exclude_uid]
 
@@ -8143,6 +8160,32 @@ async def check_coworking_sessions(app):
     except Exception as e:
         print(f"Ошибка check_coworking_sessions: {e}")
 
+COWORKING_RETENTION_DAYS = 60  # сколько дней хранить завершённые сессии перед очисткой
+
+async def cleanup_old_coworking_sessions(app):
+    """Раз в сутки (см. scheduler.add_job) — coworking_sessions/
+    coworking_participants растут неограниченно (каждая сессия и каждое
+    участие остаются в БД навсегда), а экраны используют только ОТКРЫТЫЕ
+    сессии (get_open_coworking_sessions: start_at > сейчас). Статус
+    "алумни" для рассылки о новых сессиях (get_coworking_alumni) теперь
+    живёт отдельным флагом users.coworking_ever_joined, а не самой
+    историей участий — поэтому старые завершённые сессии можно спокойно
+    чистить, не теряя оповещения для давних участников."""
+    try:
+        cutoff = (datetime.now(pytz.utc) - timedelta(days=COWORKING_RETENTION_DAYS)).isoformat()
+        conn = sqlite3.connect(DB_PATH)
+        old_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM coworking_sessions WHERE end_at <= ?", (cutoff,)
+        ).fetchall()]
+        if old_ids:
+            placeholders = ",".join("?" * len(old_ids))
+            conn.execute(f"DELETE FROM coworking_participants WHERE session_id IN ({placeholders})", old_ids)
+            conn.execute(f"DELETE FROM coworking_sessions WHERE id IN ({placeholders})", old_ids)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Ошибка очистки старых коворкинг-сессий: {e}")
+
 
 # ── DAY CARD ───────────────────────────────────────────────────────────────
 def build_day_card_text(uid, for_date):
@@ -12742,6 +12785,7 @@ def main():
     scheduler.add_job(check_coworking_sessions, 'cron', minute='*', args=[app])
     # Раз в сутки, в наименее людное время по UTC — см. backup_database.
     scheduler.add_job(backup_database, 'cron', hour=3, minute=0, args=[app])
+    scheduler.add_job(cleanup_old_coworking_sessions, 'cron', hour=3, minute=30, args=[app])
     scheduler.start()
 
     threading.Thread(target=_watchdog_loop, daemon=True).start()
