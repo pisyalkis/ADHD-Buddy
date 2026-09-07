@@ -10813,6 +10813,26 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await _edit_or_send(q, "👥 Бадди не задан. Нажми «Бадди» в меню.", reply_markup=menu_button_kb())
 
 # ── SCHEDULED NOTIFICATIONS ────────────────────────────────────────────────
+# В файле три отдельных системы "дней без активности" (task #43, IDEAS.md
+# 2026-09-06 — "объединить"). Разобрались: полное слияние в одну — не
+# правка, а продуктовое решение (три РАЗНЫЕ точки отсчёта для трёх разных
+# целей, не одна и та же логика, повторённая трижды по недосмотру):
+#   • _days_since_last_activity/WELCOME_BACK_GAP_DAYS (ниже) — от streak,
+#     только ЗАВЕРШЁННЫЕ ритуалы, местное время (evening_day) — держит
+#     "давно не был(а)" мягким, не про голое открытие бота.
+#   • _days_since_seen/REENGAGE_MILESTONES (send_reengagement_message) —
+#     от last_seen_at, ЛЮБОЙ реальный апдейт, UTC-сутки — шире первой,
+#     это единственная про "настоящую тишину", а не пропущенный ритуал.
+#   • RESEARCH_MILESTONES (send_research_question) — от created_at, дата
+#     регистрации, местное время через now_dt — про день в проекте, а не
+#     про недавнюю активность вообще.
+# Единственное, что было реальным недосмотром, а не дизайном — коллизия
+# между первыми двумя в один день (см. PR #296, reengage_due_now
+# считается ДО morning_notification) и то, что RESEARCH_MILESTONES-
+# константа годами не использовалась самим планировщиком (см. дубликат
+# списка чуть ниже по файлу, теперь исправлено). Общая шапка вместо трёх
+# разрозненных — чтобы следующий, кто найдёт "3 системы дней", не тратил
+# время на то же самое расследование заново.
 WELCOME_BACK_GAP_DAYS = 3  # дней без реальной активности, чтобы считать это "давним перерывом"
 
 def _days_since_last_activity(uid):
@@ -11780,7 +11800,15 @@ async def _process_user_notifications(app, user):
                 created_at = user.get("created_at") or now_dt.date().isoformat()
                 days_since = (now_dt.date() - date.fromisoformat(str(created_at)[:10])).days
                 done_days = [x for x in (user.get("research_done") or "").split(",") if x]
-                for milestone in [3, 7, 14, 30, 60, 90]:
+                # Реальный баг (найден при разборе task #43, IDEAS.md
+                # 2026-09-06 — "объединить системы «дней без активности»"):
+                # RESEARCH_MILESTONES объявлена как единый источник правды
+                # для вех research-опроса (используется в admin_research/
+                # тестах), но сам планировщик тут годами читал отдельный
+                # захардкоженный дубликат того же списка. Правка
+                # RESEARCH_MILESTONES молча ничего не меняла бы в реальной
+                # рассылке — константа существовала только на бумаге.
+                for milestone in RESEARCH_MILESTONES:
                     if days_since >= milestone and str(milestone) not in done_days:
                         if 10 <= now_dt.hour <= 12:
                             await send_research_question(app, uid, milestone)
