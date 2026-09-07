@@ -100,11 +100,13 @@ async def main():
     print("3. Navigating back to page 0 shows the first half again")
 
     # The daily-skill header and the non-paged footer buttons stay intact.
+    # Бадди/Коворкинг переехали на вкладку 🧰 (см. menu_tab_kb) и больше не
+    # часть этого экрана — footer тут теперь только go_menu/reroll_skill.
     text = upd1.callback_query.message.edited[-1][0]
     assert "Навык дня" in text, text
     flat3 = [cb for row in rows3 for _, cb in row]
-    assert "go_buddy" in flat3 and "go_menu" in flat3 and "reroll_skill" in flat3, flat3
-    print("4. The daily-skill header and footer buttons (buddy/menu/reroll) are unaffected by paging")
+    assert "go_menu" in flat3 and "reroll_skill" in flat3, flat3
+    print("4. The daily-skill header and footer buttons (menu/reroll) are unaffected by paging")
 
     print("\nALL SKILLS-PAGINATION TESTS PASSED")
 

@@ -2145,6 +2145,11 @@ def menu_tab_kb(tab, user=None):
             [InlineKeyboardButton("⏰ Напоминания", callback_data="go_reminders")],
             [InlineKeyboardButton("🧠 Навыки", callback_data="go_skill")],
             [InlineKeyboardButton("📖 О СДВГ", callback_data="go_guide")],
+            # Соцфичи — раньше были в самом низу списка навыков (см.
+            # skills_list_kb), здесь на своём месте: рядом с остальными
+            # инструментами, а не спрятаны внутри другого экрана.
+            [InlineKeyboardButton("👥 Бадди", callback_data="go_buddy"),
+             InlineKeyboardButton("🧘 Коворкинг", callback_data="go_coworking")],
         ]
     else:  # "me"
         rows += [
@@ -5365,8 +5370,10 @@ def skills_list_kb(page=0):
             InlineKeyboardButton("●" if p == page else "○", callback_data=f"skills_page_{p}")
             for p in range(page_count)
         ])
-    rows.append([InlineKeyboardButton("👥 Бадди — совместная работа рядом", callback_data="go_buddy")])
-    rows.append([InlineKeyboardButton("🧘 Коворкинг — открытые сессии тишины", callback_data="go_coworking")])
+    # Реальный запрос (обсуждение с пользователем 2026-09-07): Бадди и
+    # Коворкинг — соцфичи, а не техники самопомощи, им не место в самом
+    # низу списка навыков "на всякий случай". Перенесены на вкладку 🧰
+    # рядом с остальными вспомогательными инструментами (см. menu_tab_kb).
     rows.append([InlineKeyboardButton("◀️ Меню", callback_data="go_menu")])
     return InlineKeyboardMarkup(rows)
 

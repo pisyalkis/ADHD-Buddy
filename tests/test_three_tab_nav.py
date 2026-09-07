@@ -95,9 +95,17 @@ async def main():
     assert ("⏰ Напоминания", "go_reminders") in tools_buttons
     assert ("🧠 Навыки", "go_skill") in tools_buttons
     assert ("📖 О СДВГ", "go_guide") in tools_buttons
-    # ≤5 real items per tab (excluding the tab-switcher row itself).
-    assert len(tools_buttons) - 3 <= 5, tools_buttons
-    print("2. menu_tab_kb('tools') groups the occasional-use items, capped at 5")
+    # Бадди/Коворкинг (обсуждение с пользователем 2026-09-07) переехали
+    # сюда из самого низа списка навыков — соцфичи, а не техники
+    # самопомощи, делят одну строку с остальными, чтобы вкладка
+    # оставалась визуально компактной даже с двумя новыми пунктами.
+    assert ("👥 Бадди", "go_buddy") in tools_buttons, tools_buttons
+    assert ("🧘 Коворкинг", "go_coworking") in tools_buttons, tools_buttons
+    # ≤6 реальных строк на вкладку (исключая строку-переключатель вкладок) —
+    # было ≤5 пунктов, но Бадди+Коворкинг делят одну строку на двоих, так
+    # что визуальная компактность (не голый счётчик кнопок) не пострадала.
+    assert len(kb_tools.inline_keyboard) - 1 <= 6, kb_tools.inline_keyboard
+    print("2. menu_tab_kb('tools') groups the occasional-use items (now incl. Бадди/Коворкинг), still compact")
 
     kb_me = bot.menu_tab_kb("me", user)
     me_buttons = buttons_of(kb_me)
