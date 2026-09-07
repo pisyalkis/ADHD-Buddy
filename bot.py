@@ -8940,6 +8940,10 @@ async def go_focus(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("45 мин", callback_data="focus_start_45")],
             [InlineKeyboardButton("60 мин", callback_data="focus_start_60"),
              InlineKeyboardButton("90 мин", callback_data="focus_start_90")],
+            # Реальный запрос (обсуждение с пользователем 2026-09-07):
+            # коворкинг — это по сути "фокус вместе", естественная
+            # альтернатива соло-таймеру прямо на экране его запуска.
+            [InlineKeyboardButton("🧘 Или коворкинг — не одному", callback_data="go_coworking")],
             [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
         ])
     )
@@ -10677,6 +10681,13 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "mid_scary":
+        # Реальный запрос (обсуждение с пользователем 2026-09-07): "слишком
+        # много в голове" (overload) роутится сюда же через PROBLEM_TO_MID —
+        # бодидаблинг реально помогает при подавленности задачей, добавлена
+        # прямая кнопка на 🧘 Коворкинг, а не только текстовое упоминание
+        # "поговори с бадди" выше.
+        scary_kb_rows = [[InlineKeyboardButton("🧘 Коворкинг — поработать не одному", callback_data="go_coworking")]]
+        scary_kb = InlineKeyboardMarkup(scary_kb_rows + list(back_kb_with_skill("mid_scary").inline_keyboard))
         await _edit_or_send(q,
             f"😰 *Задача подавляет — это исполнительная дисфункция, не лень*\n\nЗадача: _{focus}_\n\n"
             "👣 *Найди шаг, который не фрустрирует* — уменьшай пока не исчезнет желание отложить\n\n"
@@ -10686,7 +10697,7 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "💧 *Успокой себя* — холодная вода, дыхание, аптечка самоуспокоения\n\n"
             "👥 *Поговори с бадди* — совместная работа рядом работает даже без слов\n\n"
             "⏱ *Таймер на 2 минуты* — только начать. После старта обычно легче.",
-            parse_mode="Markdown", reply_markup=back_kb_with_skill("mid_scary")
+            parse_mode="Markdown", reply_markup=scary_kb
         )
 
     elif action == "mid_waiting":
@@ -10746,6 +10757,10 @@ async def midday_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb_rows = []
         if morning.get("focus") and "focus" not in done_set and has_extra:
             kb_rows.append([InlineKeyboardButton("🎯 Оставить только А на сегодня", callback_data="mid_energy_only_a")])
+        # Реальный запрос (обсуждение с пользователем 2026-09-07): бодидаблинг
+        # реально помогает именно при низкой энергии — прямая кнопка на 🧘
+        # Коворкинг, а не только общий "Нужен бадди" из back_kb_with_skill.
+        kb_rows.append([InlineKeyboardButton("🧘 Коворкинг — поработать не одному", callback_data="go_coworking")])
         base_kb = back_kb_with_skill("mid_energy")
         kb = InlineKeyboardMarkup(kb_rows + list(base_kb.inline_keyboard)) if kb_rows else base_kb
         await _edit_or_send(q,
