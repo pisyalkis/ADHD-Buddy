@@ -11588,6 +11588,16 @@ async def _process_user_notifications(app, user):
             # утро" ведёт на entry point с allow_reentry=True и перезапускает
             # morning_start с нуля, стирая уже введённый прогресс (реальный баг).
             morning_conv_active = _morning_conv is not None and (uid, uid) in _morning_conv._conversations
+            # Реальный баг (живой репорт): постановка задач больше НЕ
+            # встроенный шаг утреннего ConversationHandler (см. RESUME_FIELDS
+            # выше — "ритуалы отдельно, задачки отдельно"), поэтому
+            # morning_conv_active становится False, как только человек дошёл
+            # до экрана "📋 Поставить задачи?" — именно там, где напоминание
+            # "задачи ещё не поставлены" рвётся прямо посреди ответа на
+            # "Задача A", пока сам текст ещё не сохранён в дневник. Тот же
+            # приём, что уже есть у send_task_beacon для task_walk —
+            # app.user_data доступен и из фонового тика без апдейта.
+            task_input_active = bool((getattr(app, "user_data", None) or {}).get(uid, {}).get("awaiting_task_edit"))
             # Сравниваем полными datetime, а не строками "HH:MM" — если
             # notif_morning стоит в пределах 2 часов до полуночи (напр.
             # 22:30), reminder_time уходит на следующий календарный день
@@ -11609,7 +11619,8 @@ async def _process_user_notifications(app, user):
             if (notif_master_on and now_dt >= reminder_time and int(user.get("notif_morning_on") or 1)
                     and user.get("morning_reminder_sent_date") != day_key
                     and not any(morning_for_reminder.get(k) for k, _ in TASK_FIELDS)
-                    and not morning_conv_active):
+                    and not morning_conv_active
+                    and not task_input_active):
                 # Как и остальные уведомления в этом тике — помечаем
                 # "отправлено" только после реального успеха, а не до
                 # (раньше было наоборот: временный сбой отправки навсегда
