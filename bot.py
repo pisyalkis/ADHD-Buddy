@@ -1241,6 +1241,19 @@ def join_coworking_session(session_id, user_id):
     conn.commit(); conn.close()
     return True
 
+def leave_coworking_session(session_id, user_id):
+    """True, если участие реально было отменено (была строка в таблице) —
+    False, если пользователя и так не было среди участников (повторный/
+    двойной тап тем же человеком по "🚪 Не смогу")."""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.execute(
+        "DELETE FROM coworking_participants WHERE session_id=? AND user_id=?", (session_id, user_id)
+    )
+    conn.commit()
+    removed = cur.rowcount > 0
+    conn.close()
+    return removed
+
 def get_coworking_participants(session_id):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -7872,6 +7885,12 @@ def _coworking_session_text(session, viewer_uid, count):
         f"Участников: *{count}*"
     )
 
+def _coworking_session_kb(session_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚪 Не смогу", callback_data=f"coworking_leave_{session_id}")],
+        [InlineKeyboardButton("◀️ Меню", callback_data="go_menu")],
+    ])
+
 async def go_coworking(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     clear_awaiting_and_cancel_ritual(ctx, update)
@@ -7934,7 +7953,7 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
     )
     await send_tracked_notification(
         ctx.bot, uid, f"coworking_{session_id}", text,
-        parse_mode="Markdown", reply_markup=menu_button_kb()
+        parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
     )
 
 async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -7972,7 +7991,39 @@ async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         try:
             await send_tracked_notification(
                 ctx.bot, pid, f"coworking_{session_id}", text,
-                parse_mode="Markdown", reply_markup=menu_button_kb()
+                parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
+            )
+        except Exception as e:
+            print(f"Ошибка обновления счётчика коворкинга uid={pid}: {e}")
+
+async def coworking_leave_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Симметрична coworking_join_callback: убирает из участников и
+    рассылает обновлённый счётчик оставшимся. creator_id нигде в бизнес-
+    логике не выделяется особо (проверено по всему файлу) — выход
+    создателя обрабатывается так же, как и любого другого участника,
+    сессия просто продолжается с оставшимися (или молча истечёт для
+    check_coworking_sessions, если участников не осталось)."""
+    q = update.callback_query
+    clear_awaiting_and_cancel_ritual(ctx, update)
+    uid = q.from_user.id
+    session_id = int(q.data.replace("coworking_leave_", ""))
+    session = get_coworking_session(session_id)
+    if session is None or session["start_at"] <= datetime.now(pytz.utc).isoformat():
+        await q.answer("Эта сессия уже недоступна.")
+        return
+    removed = leave_coworking_session(session_id, uid)
+    await q.answer("Ты вышел(ла) из сессии." if removed else "Ты уже не в этой сессии.")
+    if not removed:
+        return
+    await _edit_or_send(q, "🚪 Ты вышел(ла) из сессии.", reply_markup=menu_button_kb())
+    participants = get_coworking_participants(session_id)
+    count = len(participants)
+    for pid in participants:
+        text = _coworking_session_text(session, pid, count)
+        try:
+            await send_tracked_notification(
+                ctx.bot, pid, f"coworking_{session_id}", text,
+                parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
             )
         except Exception as e:
             print(f"Ошибка обновления счётчика коворкинга uid={pid}: {e}")
@@ -12524,6 +12575,7 @@ def main():
     app.add_handler(CallbackQueryHandler(coworking_create_start,  pattern="^coworking_create_start$"))
     app.add_handler(CallbackQueryHandler(coworking_set_duration,  pattern="^coworking_dur_\\d+$"))
     app.add_handler(CallbackQueryHandler(coworking_join_callback, pattern="^coworking_join_\\d+$"))
+    app.add_handler(CallbackQueryHandler(coworking_leave_callback, pattern="^coworking_leave_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_day_card,    pattern="^go_daycard$"))
     app.add_handler(CallbackQueryHandler(day_card_nav,     pattern="^daycard_"))
     app.add_handler(CallbackQueryHandler(go_feedback,      pattern="^go_feedback$"))
