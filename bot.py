@@ -442,6 +442,13 @@ def problem_group_kb(group_idx, selected):
     for key in keys:
         mark = "✅ " if key in selected else "▫️ "
         rows.append([InlineKeyboardButton(mark + PROBLEM_LABELS[key], callback_data=f"pt_{group_idx}_{key}")])
+    # Реальный запрос (IDEAS.md 2026-09-06): чек-лист трудностей — 6 групп
+    # подряд, только "Дальше" — случайно отмеченное не в той теме (или
+    # передумал) поправить было нельзя, кроме как долистать весь чек-лист
+    # до конца и потом всё переделывать через настройки. На первой группе
+    # "Назад" не нужен — до неё в чек-листе ничего нет.
+    if group_idx > 0:
+        rows.append([InlineKeyboardButton("◀️ Назад", callback_data=f"pb_{group_idx}")])
     if is_last:
         rows.append([InlineKeyboardButton("Готово ✅", callback_data="prob_done")])
     else:
@@ -2569,6 +2576,12 @@ async def problem_group_next(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     next_idx = int(q.data.replace("pn_", "")) + 1
     await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
     await send_problem_group(q.message, ctx, next_idx)
+
+async def problem_group_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    prev_idx = int(q.data.replace("pb_", "")) - 1
+    await _onboard_clear_prev(ctx, ctx.bot, q.message.chat_id)
+    await send_problem_group(q.message, ctx, prev_idx)
 
 async def problems_done(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -12477,6 +12490,7 @@ def main():
     app.add_handler(CallbackQueryHandler(problems_done,       pattern="^prob_done$"))
     app.add_handler(CallbackQueryHandler(toggle_problem,      pattern="^pt_"))
     app.add_handler(CallbackQueryHandler(problem_group_next,  pattern="^pn_"))
+    app.add_handler(CallbackQueryHandler(problem_group_back,  pattern="^pb_"))
     app.add_handler(CallbackQueryHandler(onboard_notif_on,   pattern="^onboard_notif_on$"))
     app.add_handler(CallbackQueryHandler(onboard_notif_skip, pattern="^onboard_notif_skip$"))
     app.add_handler(CallbackQueryHandler(coach_menu,    pattern="^go_coach$"))
