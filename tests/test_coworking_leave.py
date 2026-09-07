@@ -188,7 +188,11 @@ async def main():
     ctx7.user_data["coworking_pending_start_utc"] = (datetime.now(bot.pytz.utc) + timedelta(minutes=30)).isoformat()
     upd_dur7 = FakeUpdate(uid7, data="coworking_dur_25", message=FakeMsg(uid7))
     await bot.coworking_set_duration(upd_dur7, ctx7)
-    _, _, kb7 = ctx7.bot.sent[-1]
+    # Since PR "уведомление о новой коворкинг-сессии" (IDEAS.md 2026-09-07),
+    # coworking_set_duration may also broadcast to alumni after the
+    # creator's own confirmation -- pick out the creator's own message by
+    # chat_id rather than assuming it's the last one sent.
+    _, _, kb7 = next(m for m in ctx7.bot.sent if m[0] == uid7)
     leave_buttons7 = [b.callback_data for row in kb7.inline_keyboard for b in row if "coworking_leave_" in (b.callback_data or "")]
     assert leave_buttons7, "the session-creation confirmation must offer a leave button"
     print("7. The session-creation confirmation offers a '🚪 Не смогу' leave button")
