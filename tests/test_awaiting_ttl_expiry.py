@@ -132,6 +132,36 @@ async def main():
         f"the fresh awaiting_pool_add case must still actually add the pool item, got: {pool}"
     print("5. A fresh, in-window awaiting_pool_add is still honored normally (no regression)")
 
+    # 6. awaiting_time (settings screen -- "Введи время для ... уведомления"):
+    #    the one remaining old awaiting-flag from settings that never got TTL
+    #    protection (BUGS.md 2026-09-06, nightly scan) -- its prompt
+    #    self-deletes via SETTINGS_MENU_TTL_SEC, but the flag itself stayed
+    #    armed forever. A stray HH:MM-shaped message sent hours/days later,
+    #    for a completely unrelated reason, would silently overwrite
+    #    whichever notification time was left pending in "setting_notif".
+    bot.update_user(uid, notif_morning="09:00")
+    ctx6 = FakeCtx()
+    ctx6.user_data["awaiting_time"] = True
+    ctx6.user_data["awaiting_time_set_at"] = long_ago_iso()
+    ctx6.user_data["setting_notif"] = "morning"
+    upd6 = FakeUpdate(uid, "18:30")  # HH:MM-shaped, but unrelated -- sent long after the prompt was shown
+    await bot.handle_text(upd6, ctx6)
+    assert bot.get_user(uid).get("notif_morning") == "09:00", \
+        "an expired awaiting_time must not overwrite the notification time with an unrelated HH:MM-shaped message"
+    print("6. Expired awaiting_time does not swallow an unrelated HH:MM message into a notification time")
+
+    # 7. Sanity: a FRESH (not expired) awaiting_time is still honored
+    #    normally -- this fix must not break the ordinary settings flow.
+    ctx7 = FakeCtx()
+    ctx7.user_data["awaiting_time"] = True
+    ctx7.user_data["awaiting_time_set_at"] = datetime.now().isoformat()
+    ctx7.user_data["setting_notif"] = "morning"
+    upd7 = FakeUpdate(uid, "07:15")
+    await bot.handle_text(upd7, ctx7)
+    assert bot.get_user(uid).get("notif_morning") == "07:15", \
+        "a fresh, in-window awaiting_time must still set the notification time normally (no regression)"
+    print("7. A fresh, in-window awaiting_time is still honored normally (no regression)")
+
     print("\nALL AWAITING-TTL-EXPIRY TESTS PASSED")
 
 

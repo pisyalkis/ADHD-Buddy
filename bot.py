@@ -5784,6 +5784,7 @@ async def set_time_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]])
     )
     ctx.user_data["awaiting_time"] = True
+    ctx.user_data["awaiting_time_set_at"] = datetime.now().isoformat()
 
 async def set_name_prompt(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
@@ -8074,6 +8075,7 @@ def clear_awaiting_flags(ctx: ContextTypes.DEFAULT_TYPE):
     ниже для полной формы; свежий автор нового хендлера на персистентном
     сообщении больше не выбирает сигнатуру наугад."""
     ctx.user_data["awaiting_time"] = False
+    ctx.user_data.pop("awaiting_time_set_at", None)
     ctx.user_data["awaiting_name"] = False
     ctx.user_data["awaiting_buddy"] = False
     ctx.user_data["awaiting_city"] = False
@@ -8202,8 +8204,9 @@ async def go_tab(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if ctx.user_data.get("awaiting_time"):
+    if ctx.user_data.get("awaiting_time") and not _awaiting_flag_expired(ctx, "awaiting_time"):
         ctx.user_data["awaiting_time"] = False
+        ctx.user_data.pop("awaiting_time_set_at", None)
         block = ctx.user_data.get("setting_notif", "")
         text = update.message.text.strip()
         # Validate HH:MM format
