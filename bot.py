@@ -9,8 +9,12 @@ ADHD Focus Bot v5
 - Уведомления: 9:00 и 21:00 по Тбилиси (UTC+4)
 """
 
-import os, json, sqlite3, asyncio, random, threading, time, hashlib, re
+import os, json, sqlite3, asyncio, random, threading, time, hashlib, re, smtplib
 from datetime import datetime, date, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, BotCommand
 from telegram.ext import (
@@ -12119,10 +12123,40 @@ async def admin_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 BACKUP_TARGET_UID = NOTIFY_USER_ID  # получатель бэкапа в Telegram — тот же админ, что и остальные admin_*
 
+# Реальный запрос: копия бэкапа ещё и на почту — независимый от Telegram
+# канал (Gmail SMTP, app password — НЕ обычный пароль аккаунта, создаётся
+# отдельно в настройках Google-аккаунта при включённой 2FA). Фича
+# опциональна: если SMTP_USER/SMTP_APP_PASSWORD не заданы в окружении
+# деплоя, email-часть backup_database просто пропускается без ошибки —
+# Telegram-копия остаётся единственным каналом, как и раньше.
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
+BACKUP_EMAIL_TO = os.getenv("BACKUP_EMAIL_TO", SMTP_USER)  # по умолчанию — тот же адрес, что и отправитель
+
+
+def _send_backup_email_sync(tmp_path, ts):
+    """Блокирующая отправка (smtplib) — вызывается через asyncio.to_thread,
+    тем же приёмом, что и sqlite3 Connection.backup() в backup_database."""
+    msg = MIMEMultipart()
+    msg["From"] = SMTP_USER
+    msg["To"] = BACKUP_EMAIL_TO
+    msg["Subject"] = f"💾 ADHD Buddy — бэкап БД от {ts} UTC"
+    msg.attach(MIMEText(f"Бэкап базы данных бота от {ts} UTC — во вложении.", "plain"))
+    with open(tmp_path, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f'attachment; filename="adhd_backup_{ts}.db"')
+    msg.attach(part)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(SMTP_USER, SMTP_APP_PASSWORD)
+        server.send_message(msg)
+
 
 async def backup_database(app):
     """Раз в сутки (см. scheduler.add_job ниже) и по команде /backup —
-    делает снимок БД и отправляет файлом администратору в Telegram.
+    делает снимок БД и отправляет файлом администратору в Telegram (и,
+    если настроено, дублирует на почту — см. _send_backup_email_sync).
 
     Реальный запрос (IDEAS.md 2026-09-02): бэкапа БД не было вообще — вся
     история пользователей жила в одном sqlite-файле без единой копии.
@@ -12140,9 +12174,14 @@ async def backup_database(app):
     Блокирующий вызов — оборачиваем в asyncio.to_thread, тем же приёмом,
     что уже применён к синхронным вызовам Anthropic в этом файле.
 
+    Сбой email-канала (например неверный app password) не должен ронять
+    уже успешно отправленную Telegram-копию — отдельный try/except, ошибка
+    только логируется и репортится тем же способом, что и общий сбой
+    бэкапа, но не меняет итоговый True/False всей функции.
+
     Временный файл удаляется сразу после отправки (успешной или нет) —
-    сам бэкап живёт в чате с администратором, копить локальные версии
-    рядом с БД незачем и только тратит место на диске."""
+    сам бэкап живёт в чате с администратором (и в почте), копить локальные
+    версии рядом с БД незачем и только тратит место на диске."""
     ts = datetime.now(pytz.utc).strftime("%Y-%m-%d_%H-%M-%S")
     tmp_path = f"{DB_PATH}.backup_{ts}.tmp"
     try:
@@ -12162,6 +12201,15 @@ async def backup_database(app):
                 filename=f"adhd_backup_{ts}.db",
                 caption=f"💾 Бэкап БД от {ts} UTC"
             )
+        if SMTP_USER and SMTP_APP_PASSWORD and BACKUP_EMAIL_TO:
+            try:
+                await asyncio.to_thread(_send_backup_email_sync, tmp_path, ts)
+            except Exception as e:
+                print(f"⚠️ Ошибка бэкапа на почту: {e}", flush=True)
+                try:
+                    await app.bot.send_message(chat_id=BACKUP_TARGET_UID, text=f"⚠️ Бэкап на почту не отправился: {e}")
+                except Exception:
+                    pass
         return True
     except Exception as e:
         print(f"⚠️ Ошибка бэкапа БД: {e}", flush=True)
