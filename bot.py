@@ -4071,26 +4071,29 @@ async def _ask_work_start(message, ctx, uid):
     schedule_message_deletion(prompt_msg.chat_id, prompt_msg.message_id, INACTIVE_SCREEN_TTL_SEC)
 
 async def morning_task_offer_yes(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Открывает 📋 Задачи (уже готовый экран добавления/правки — не новый
-    сценарий). Реальный запрос: раньше следом сразу же спрашивали время
-    начала работы — рядом с ещё ПУСТЫМ списком задач, до того как что-то
-    реально поставили. Вопрос откладывается до момента, когда задача
-    реально появится (см. ask_work_start_after_tasks — снимается и
-    задаётся в apply_task_edit/_walk_to_step/walk_finish_callback,
-    смотря какой дорожкой человек в итоге поставил задачи)."""
-    q = update.callback_query; await q.answer()
-    uid = q.from_user.id
-    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-    morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
-    done_set = set(get_diary(uid, "tasks_done", today).get("done", []))
-    text, kb = _tasks_text_and_kb(morning, done_set, get_user(uid)["gender"])
-    await q.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    """Реальный баг (живой репорт): "Да, поставить" вело на общий обзорный
+    экран 📋 Задачи ("задачи ещё не заданы — можно поставить здесь"),
+    требуя ЕЩЁ один тап ("✏️ Поставить/изменить задачи"), хотя человек уже
+    явно ответил "да" на прямой вопрос "поставить задачи?". Ведём сразу в
+    тот же последовательный проход, что и с той кнопки (walk_tasks_start,
+    начинает с первого незаполненного слота — здесь это всегда A, см.
+    _morning_task_offer_text_and_kb: предложение показывается только когда
+    ВСЕ слоты ещё пустые) — "Задача A" открывается сразу, тем же
+    сообщением, где были "Да, поставить"/"Не сейчас".
 
-    clear_awaiting_and_cancel_ritual(ctx, update)
+    Реальный запрос: раньше следом сразу же спрашивали время начала
+    работы — рядом с ещё ПУСТЫМ списком задач, до того как что-то реально
+    поставили. Вопрос откладывается до момента, когда задача реально
+    появится (см. ask_work_start_after_tasks — снимается и задаётся в
+    apply_task_edit/_walk_to_step/walk_finish_callback, смотря какой
+    дорожкой человек в итоге поставил задачи)."""
+    uid = update.callback_query.from_user.id
+    today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
     # Дата — чтобы флаг не выстрелил задним числом спустя дни, если сегодня
     # так ничего и не поставили, а следующая задача набирается уже в другой
     # день по совсем другому поводу (см. точки потребления флага ниже).
     ctx.user_data["ask_work_start_after_tasks"] = today
+    await walk_tasks_start(update, ctx)
 
 async def morning_task_offer_no(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()

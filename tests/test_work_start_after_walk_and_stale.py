@@ -59,16 +59,20 @@ async def main():
     bot.update_user(uid, timezone="Asia/Tbilisi")
 
     # ══════════════════════════════════════════════════════════════════════
-    # Walking through slots (✏️ Поставить/изменить задачи) and finishing
-    # early via "✅ Готово" must also trigger the deferred work-start prompt
-    # -- not just the single-edit/free-text path.
+    # Walking through slots and finishing early via "✅ Готово" must also
+    # trigger the deferred work-start prompt -- not just the single-edit/
+    # free-text path.
+    #
+    # morning_task_offer_yes now jumps straight into the walk on the
+    # tapped message itself (see test_morning_tasks_yes_direct.py for that
+    # fix) -- no separate task-overview screen/tap needed any more, so the
+    # walk continues directly on finale_msg.
     # ══════════════════════════════════════════════════════════════════════
     finale_msg = FakeMsg(chat_id=uid)
     ctx = FakeCtx()
     await bot.morning_task_offer_yes(FakeUpdate(uid, "morning_tasks_yes", finale_msg), ctx)
-    task_screen_msg = finale_msg.reply_calls[0][2]
+    task_screen_msg = finale_msg
 
-    await bot.walk_tasks_start(FakeUpdate(uid, "walk_tasks", task_screen_msg), ctx)
     await bot.apply_task_edit(task_screen_msg, ctx, uid, "focus", "Сделать план")
     # Still mid-walk -- the prompt must NOT have fired yet (would interrupt
     # the walk, which continues to the next empty slot).
