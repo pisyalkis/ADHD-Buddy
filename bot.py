@@ -2064,18 +2064,30 @@ async def _render_step_msg(message, ctx, track_key, text, ttl_seconds=None, **kw
     # чатах он и так шлёт БЕЗ цитирования удалённого — см. PTB Message.
     # reply_text: quote по умолчанию False в личке) и пришлёт тот же
     # вопрос заново, уже внизу, у поля ввода.
-    if not is_stale:
-        msg_date = getattr(message, "date", None)
-        if msg_date is not None:
+    #
+    # Реальный баг (живой репорт): эта проверка стояла под "if not
+    # is_stale" — а is_stale выше про СОВСЕМ ДРУГОЕ сообщение (то, что
+    # запомнено в ctx.user_data с прошлого рендера ЭТОГО ЖЕ шага). Когда
+    # ЗАПОМНЕННОЕ сообщение оказывалось протухшим (is_stale=True) и уже
+    # удалялось выше, код молча пропускал проверку самого message — а это
+    # НЕЗАВИСИМОЕ, зачастую тоже старое сообщение (например кнопка "☀️
+    # Заполнить утро" на давно пришедшем напоминании/маячке, на которую
+    # только что нажал пользователь). В результате правка "на месте"
+    # происходила именно в том сценарии, для защиты от которого этот код и
+    # писался — ритуал продолжал редактировать погребённое вверху
+    # сообщение вместо того чтобы переехать вниз. Обе проверки независимы
+    # и должны выполняться обе, а не как ветки одного if/else.
+    msg_date = getattr(message, "date", None)
+    if msg_date is not None:
+        try:
+            msg_is_stale = (datetime.now(msg_date.tzinfo) - msg_date).total_seconds() > STEP_MSG_STALE_SEC
+        except Exception:
+            msg_is_stale = False
+        if msg_is_stale:
             try:
-                msg_is_stale = (datetime.now(msg_date.tzinfo) - msg_date).total_seconds() > STEP_MSG_STALE_SEC
+                await message.delete()
             except Exception:
-                msg_is_stale = False
-            if msg_is_stale:
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
+                pass
 
     sent = await _edit_msg_or_send(message, text, **kwargs)
     chat_id = getattr(sent, "chat_id", None)

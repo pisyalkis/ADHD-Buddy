@@ -118,6 +118,41 @@ async def main():
     assert fresh_button_msg.edit_calls == ["Следующий вопрос"], fresh_button_msg.edit_calls
     print("4. The pre-existing ctx.user_data-based staleness path (different track) still works unchanged")
 
+    # 5. Real live bug report: BOTH signals fire at once -- the ctx.user_data-
+    #    tracked ritual-step message (from an earlier, abandoned attempt at
+    #    the SAME step) is stale by its own timestamp, AND the `message`
+    #    passed on THIS call (e.g. the button on an old reminder/beacon the
+    #    user tapped to resume) is ALSO old by its own .date. The two checks
+    #    used to be wired as if/elif alternatives sharing one `is_stale`
+    #    flag -- once the tracked message's staleness fired (and it got
+    #    deleted), the code skipped checking `message`'s own date entirely,
+    #    and edited that old `message` in place instead of replacing it.
+    #    Both signals are independent and must both be honored.
+    ctx5 = FakeCtx()
+    stale_ts5 = (datetime.now() - timedelta(seconds=bot.STEP_MSG_STALE_SEC + 60)).isoformat()
+    ctx5.user_data["ritual_step_msg_id"] = 500
+    ctx5.user_data["ritual_step_chat_id"] = 5
+    ctx5.user_data["ritual_step_msg_ts"] = stale_ts5
+
+    class FakeBot5:
+        def __init__(self):
+            self.deleted_ids = []
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted_ids.append((chat_id, message_id))
+
+    ctx5.bot = FakeBot5()
+    old_button_msg = FakeMsg(chat_id=5, message_id=501, date=old_date)
+    await bot._render_ritual_step(old_button_msg, ctx5, "↩️ Продолжаем с того места, где остановился сегодня утром:")
+    assert (5, 500) in ctx5.bot.deleted_ids, \
+        "the old TRACKED ritual_step message must still be deleted via ctx.user_data staleness"
+    assert old_button_msg.deleted, \
+        "the OLD message the button was tapped on must ALSO be deleted -- both staleness checks are independent (bug fix)"
+    assert not old_button_msg.edit_calls, \
+        f"must NOT edit the old tapped message in place, got: {old_button_msg.edit_calls}"
+    assert old_button_msg.reply_calls, "a fresh message must be sent at the bottom instead"
+    print("5. Both an old TRACKED message and an old TAPPED message are handled independently (live bug fix)")
+
     print("\nALL RITUAL-STALE-MESSAGE-DATE TESTS PASSED")
 
 
