@@ -8027,9 +8027,18 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         f"✅ *Сессия создана*\n\n🧘 {local_start.strftime('%H:%M')}{day_note}, {minutes} мин\n\n"
         "Как только кто-то присоединится — увидишь здесь же. Начнём точно вовремя."
     )
+    # Реальный баг (ночной скан 2026-09-08): без ttl_seconds=0 это
+    # единственное сообщение с кнопкой "🚪 Не смогу" самоудаляется через
+    # INACTIVE_SCREEN_TTL_SEC (15 мин тишины) — тот же класс, что уже
+    # чинили для focus_timer (BUGS.md 2026-08-27), только там раунд длится
+    # 25-90 минут, а сессию коворкинга теперь (#300) можно запланировать
+    # на завтра — создатель обычно просто закрывает бота до утра, и через
+    # 15 минут кнопка выхода пропадает на много часов раньше начала самой
+    # сессии, восстановить её неоткуда (go_coworking для уже
+    # присоединённой сессии всё равно показывает "Присоединиться").
     await send_tracked_notification(
         ctx.bot, uid, f"coworking_{session_id}", text,
-        parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
+        ttl_seconds=0, parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
     )
     await _notify_coworking_alumni(ctx.bot, session_id, start_utc, minutes, exclude_uid=uid)
 
@@ -8055,7 +8064,7 @@ async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_
         try:
             await send_tracked_notification(
                 bot, pid, f"coworking_{session_id}", text,
-                parse_mode="Markdown",
+                ttl_seconds=0, parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Присоединиться", callback_data=f"coworking_join_{session_id}")],
                     [InlineKeyboardButton("🔕 Не присылать такие", callback_data="coworking_notif_off")],
@@ -8106,7 +8115,7 @@ async def coworking_join_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE
         try:
             await send_tracked_notification(
                 ctx.bot, pid, f"coworking_{session_id}", text,
-                parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
+                ttl_seconds=0, parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
             )
         except Exception as e:
             print(f"Ошибка обновления счётчика коворкинга uid={pid}: {e}")
@@ -8138,7 +8147,7 @@ async def coworking_leave_callback(update: Update, ctx: ContextTypes.DEFAULT_TYP
         try:
             await send_tracked_notification(
                 ctx.bot, pid, f"coworking_{session_id}", text,
-                parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
+                ttl_seconds=0, parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
             )
         except Exception as e:
             print(f"Ошибка обновления счётчика коворкинга uid={pid}: {e}")
