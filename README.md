@@ -55,6 +55,9 @@ python3 bot.py
 | `BOT_TOKEN` | ✅ | Токен от [@BotFather](https://t.me/BotFather) (`/newbot`) |
 | `NOTIFY_USER_ID` | нужна для проактивных уведомлений | Твой Telegram ID, узнать у [@userinfobot](https://t.me/userinfobot) |
 | `ANTHROPIC_KEY` | ❌ | Ключ [Anthropic API](https://console.anthropic.com/) (`sk-ant-...`). Без него бот работает, но без AI-коуча, утренней мотивации и вечернего анализа |
+| `SMTP_USER` | ❌ | Gmail-адрес для отправки бэкапа БД на почту (дублирует существующий бэкап в Telegram). Без него email-бэкап просто не пытается отправиться — остальное работает как раньше |
+| `SMTP_APP_PASSWORD` | ❌ | **App password** Gmail (НЕ обычный пароль от аккаунта) — требует включённой двухфакторной аутентификации. Создать: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) |
+| `BACKUP_EMAIL_TO` | ❌ | Куда слать бэкап; по умолчанию совпадает с `SMTP_USER` (шлёшь сам себе) |
 
 Время уведомлений (утро/день/вечер) настраивается **внутри бота** через `⚙️ Настройки уведомлений`, хранится в БД и сравнивается с локальным временем сервера — учитывай часовой пояс хостинга (например, задай `TZ=Asia/Tbilisi` в окружении деплоя, если нужно время по Тбилиси).
 
@@ -63,7 +66,7 @@ python3 bot.py
 1. Создай бота у [@BotFather](https://t.me/BotFather) → `/newbot` → скопируй токен.
 2. Залей репозиторий на GitHub (`bot.py`, `requirements.txt`).
 3. [railway.app](https://railway.app) → New Project → Deploy from GitHub repo.
-4. В Variables добавь `BOT_TOKEN` и (по желанию) `NOTIFY_USER_ID`, `ANTHROPIC_KEY`.
+4. В Variables добавь `BOT_TOKEN` и (по желанию) `NOTIFY_USER_ID`, `ANTHROPIC_KEY`, `SMTP_USER`/`SMTP_APP_PASSWORD`/`BACKUP_EMAIL_TO`.
 5. Railway сам поставит зависимости из `requirements.txt` и запустит `python bot.py`.
 
 ## Стек
