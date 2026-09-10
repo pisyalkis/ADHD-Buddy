@@ -6936,7 +6936,18 @@ async def walk_tasks_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["walk_step_msg_id"] = q.message.message_id
     ctx.user_data["walk_step_chat_id"] = q.message.chat_id
     today = datetime.now(get_user_tz(get_user(uid))).date().isoformat()
-    morning = get_diary(uid, "morning", today)
+    # Реальный баг (живой репорт, регрессия из #310 "Да, поставить" ведёт
+    # сразу в Задачу A): раньше сюда попадали только через show_tasks,
+    # которая уже сама вызывает apply_yesterday_plan_if_empty перед показом
+    # кнопки "✏️ Поставить/изменить задачи" — поэтому здесь отсутствие
+    # собственного вызова было незаметно. #310 добавил ВТОРОЙ путь сюда
+    # (morning_task_offer_yes → walk_tasks_start напрямую, минуя show_tasks)
+    # — вчерашний вечерний план ("Планы на завтра") в этом пути вообще не
+    # подставлялся, и проход стартовал с пустой Задачи A, даже если план на
+    # сегодня уже был. Вызываем здесь же — идемпотентно (если хоть один
+    # слот уже заполнен, функция ничего не делает), безопасно для всех
+    # входов, не только для нового.
+    morning = apply_yesterday_plan_if_empty(uid, today, get_diary(uid, "morning", today))
     start_key = next((k for k, _ in TASK_FIELDS if not morning.get(k)), TASK_FIELDS[0][0])
     await _walk_to_step(q.message, ctx, uid, start_key)
 
