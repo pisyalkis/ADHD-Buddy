@@ -8060,7 +8060,24 @@ async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_
     участвовал (см. get_coworking_alumni) — тем же каналом coworking_{id},
     что и весь остальной жизненный цикл сессии: если получатель после
     этого нажмёт "Присоединиться", coworking_join_callback обновит именно
-    это же сообщение, а не создаст рядом ещё одно."""
+    это же сообщение, а не создаст рядом ещё одно.
+
+    Реальный баг (ночной скан 2026-09-09, follow-up #313): в отличие от
+    подтверждения создателю/участникам, которое позже переписывается
+    стартом/концом сессии (check_coworking_sessions шлёт только реальным
+    participants), это приглашение для НЕ откликнувшегося алумни никогда
+    и никем не перезаписывается — с ttl_seconds=0 (как у остальных вызовов
+    после #313) кнопка "Присоединиться" осталась бы в чате неактивного
+    человека НАВСЕГДА, копясь с каждой новой сессией. Но и дефолтный
+    15-минутный TTL тоже неверен — сессию можно запланировать на завтра
+    (#300), и приглашение исчезло бы за много часов до старта. Правильный
+    момент истечения — сам старт сессии: после него "Присоединиться"
+    всё равно ничего не даст (coworking_join_callback отклоняет по
+    start_at), так что самоудаление ровно к этому моменту ничего не
+    теряет и не оставляет мёртвых кнопок."""
+    now_utc = datetime.now(pytz.utc)
+    start_dt = datetime.fromisoformat(start_utc)
+    invite_ttl_seconds = max(1, int((start_dt - now_utc).total_seconds()))
     for pid in get_coworking_alumni(exclude_uid=exclude_uid):
         p_user = get_user(pid)
         if not p_user or not int(p_user.get("coworking_notif_on") or 1):
@@ -8075,7 +8092,7 @@ async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_
         try:
             await send_tracked_notification(
                 bot, pid, f"coworking_{session_id}", text,
-                ttl_seconds=0, parse_mode="Markdown",
+                ttl_seconds=invite_ttl_seconds, parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Присоединиться", callback_data=f"coworking_join_{session_id}")],
                     [InlineKeyboardButton("🔕 Не присылать такие", callback_data="coworking_notif_off")],

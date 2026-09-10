@@ -113,32 +113,39 @@ async def main():
     conn.execute("UPDATE users SET coworking_ever_joined='1' WHERE user_id=?", (alumnus,))
     conn.commit(); conn.close()
 
-    # 1. Creating a session (coworking_set_duration): neither the creator's
-    #    own confirmation NOR the alumni notification schedules a self-
-    #    deletion.
+    # 1. Creating a session (coworking_set_duration): the creator's own
+    #    confirmation never self-deletes. The alumni notification is a
+    #    separate case (see test_coworking_alumni_invite_ttl.py) -- unlike
+    #    the creator/participant screens, it's never overwritten for someone
+    #    who doesn't respond, so ttl_seconds=0 there would leave a dead
+    #    button forever (follow-up bug, nightly scan 2026-09-09); it
+    #    schedules exactly ONE deletion, timed to the session's own start.
     fake_bot = FakeBot()
     ctx = FakeCtx(fake_bot)
     ctx.user_data["coworking_pending_start_utc"] = (datetime.now(bot.pytz.utc) + timedelta(hours=20)).isoformat()
     upd = FakeUpdate(creator, data="coworking_dur_25", message=FakeMsg(creator))
     await bot.coworking_set_duration(upd, ctx)
     assert len(fake_bot.sent) == 2, fake_bot.sent  # creator confirm + alumnus notify
-    assert scheduled_deletion_count() == 0, \
-        "neither the creator confirmation nor the alumni notify may self-delete (bug fix)"
-    print("1. Creating a session: neither the creator's screen nor the alumni notify schedules self-deletion")
+    assert scheduled_deletion_count() == 1, \
+        "the creator confirmation must not self-delete, but the alumni notify now correctly schedules one (session start)"
+    print("1. Creating a session: the creator's screen never self-deletes; the alumni notify expires at session start")
 
     # Find the session id from the DB to drive join/leave.
     sessions = bot.get_open_coworking_sessions()
     session_id = sessions[0]["id"]
 
     # 2. Someone else joining (coworking_join_callback): the broadcast to
-    #    all participants (including the creator) doesn't self-delete either.
+    #    all participants (including the creator) doesn't self-delete either
+    #    -- the scheduled-deletion count must not grow past what check 1
+    #    already scheduled (the alumni invite).
+    baseline_after_1 = scheduled_deletion_count()
     joiner = 3
     make_user(joiner, "Игорь")
     fake_bot2 = FakeBot()
     ctx2 = FakeCtx(fake_bot2)
     upd2 = FakeUpdate(joiner, data=f"coworking_join_{session_id}", message=FakeMsg(joiner))
     await bot.coworking_join_callback(upd2, ctx2)
-    assert scheduled_deletion_count() == 0, "the join broadcast must not self-delete (bug fix)"
+    assert scheduled_deletion_count() == baseline_after_1, "the join broadcast must not self-delete (bug fix)"
     print("2. Joining a session: the participant-count broadcast doesn't schedule self-deletion")
 
     # 3. Someone leaving (coworking_leave_callback): the broadcast to the
@@ -147,7 +154,7 @@ async def main():
     ctx3 = FakeCtx(fake_bot3)
     upd3 = FakeUpdate(joiner, data=f"coworking_leave_{session_id}", message=FakeMsg(joiner))
     await bot.coworking_leave_callback(upd3, ctx3)
-    assert scheduled_deletion_count() == 0, "the leave broadcast must not self-delete (bug fix)"
+    assert scheduled_deletion_count() == baseline_after_1, "the leave broadcast must not self-delete (bug fix)"
     print("3. Leaving a session: the updated-count broadcast doesn't schedule self-deletion")
 
     print("\nALL COWORKING-MSG-NO-TTL TESTS PASSED")
