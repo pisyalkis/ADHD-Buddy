@@ -11695,19 +11695,35 @@ async def _process_user_notifications(app, user):
         # реактивация отправляется одна. Полное объединение трёх параллельных
         # систем "дней с X" (see IDEAS.md 2026-09-06) — отдельная, более
         # крупная задача; это точечная защита от конкретного дублирования.
+        # Реальный баг (ночной скан 2026-09-09, #47): "веха уже наступила"
+        # раньше считалась ТОЛЬКО внутри окна 9:00-10:00 -- нормально для
+        # решения ОТПРАВИТЬ реактивацию именно тогда, но недостаточно для
+        # решения ПОГАСИТЬ утреннее: у пользователя с notif_morning раньше
+        # 9:00 утреннее уже уходило (и morning_sent_date уже стоял) до
+        # открытия окна -- гасить было нечего, и в 9:00 реактивация
+        # добавлялась вторым сообщением поверх уже отправленного утреннего.
+        # reengage_milestone_pending — тот же расчёт вехи, но БЕЗ
+        # ограничения по часу, чтобы гасить утреннее весь день до того,
+        # как реактивация реально уйдёт (после чего веха считается
+        # "потраченной", и на следующем тике отложенное утреннее уходит
+        # как обычно -- тот же паттерн "не в этот же тик", что и раньше).
+        # Фактическая отправка реактивации по-прежнему ограничена узким
+        # окном 9:00-10:00 (reengage_due_now).
         reengage_due_now = False
-        if not int(user.get("reengage_opt_out") or 0) and 9 <= now_dt.hour < 10:
+        reengage_milestone_pending = False
+        if not int(user.get("reengage_opt_out") or 0):
             gap_seen = _days_since_seen(uid)
             if gap_seen is not None:
                 already_reengage_sent = int(user.get("reengage_max_milestone_sent") or 0)
-                reengage_due_now = any(
+                reengage_milestone_pending = any(
                     m > already_reengage_sent and gap_seen >= m for m in REENGAGE_MILESTONES
                 )
+                reengage_due_now = reengage_milestone_pending and 9 <= now_dt.hour < 10
 
         if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                 and user.get("morning_sent_date") != day_key
                 and user.get("notif_snooze_morning") != day_key
-                and not reengage_due_now):
+                and not reengage_milestone_pending):
             # Помечаем "отправлено" только после реального успеха — иначе
             # временный сбой (таймаут телеграма, юзер заблокировал бота)
             # навсегда съедает уведомление на весь день без единой попытки.
