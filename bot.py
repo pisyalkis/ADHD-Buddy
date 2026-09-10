@@ -12169,7 +12169,13 @@ def _send_backup_email_sync(tmp_path, ts):
     encoders.encode_base64(part)
     part.add_header("Content-Disposition", f'attachment; filename="adhd_backup_{ts}.db"')
     msg.attach(part)
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    # Реальный баг (ночной скан 2026-09-08): без timeout зависшее сетевое
+    # соединение с Gmail блокирует вызов бесконечно — функция выполняется
+    # через asyncio.to_thread, т.е. занимает воркер ОБЩЕГО ThreadPoolExecutor,
+    # которым делятся все блокирующие вызовы бота (снимок БД, синхронные
+    # вызовы Anthropic, геокодинг города). Один зависший бэкап навсегда
+    # съедал бы воркер; несколько подряд — исчерпали бы весь пул.
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
         server.login(SMTP_USER, SMTP_APP_PASSWORD)
         server.send_message(msg)
 

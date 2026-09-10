@@ -34,9 +34,10 @@ class FakeSMTPServer:
     smtplib.SMTP_SSL(...) and its own context manager."""
     instances = []
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, timeout=None):
         self.host = host
         self.port = port
+        self.timeout = timeout
         self.logins = []
         self.sent = []
         FakeSMTPServer.instances.append(self)
@@ -99,6 +100,11 @@ async def main():
     assert len(FakeSMTPServer.instances) == 1, "must attempt exactly one SMTP session"
     server = FakeSMTPServer.instances[0]
     assert server.host == "smtp.gmail.com" and server.port == 465
+    # Реальный баг (ночной скан 2026-09-08): без timeout зависшее соединение
+    # с Gmail блокирует вызов бесконечно и навсегда съедает воркер общего
+    # to_thread-пула, которым делятся все блокирующие вызовы бота.
+    assert server.timeout is not None and server.timeout > 0, \
+        f"SMTP_SSL must be called with a timeout, got: {server.timeout}"
     assert server.logins == [("pisyalkis@gmail.com", "fake-app-password")]
     assert len(server.sent) == 1
     sent_msg = server.sent[0]
