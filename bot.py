@@ -660,6 +660,17 @@ def init_db():
         )
     except Exception:
         pass
+    # Реальный баг (ночной скан 2026-09-09): unlink_buddy_pair рвёт пару без
+    # охлаждения — та же пара могла разрывать и заново образовывать связь
+    # сколько угодно раз, получая +7/+7 дней доступа на каждом цикле
+    # (finalize_buddy_pairing проверял только "у обоих сейчас нет бадди",
+    # не историю). pair_key — канонический ключ без учёта порядка (см.
+    # _buddy_pair_key) — награда за конкретную пару людей выдаётся
+    # максимум один раз НАВСЕГДА, независимо от того, сколько раз они
+    # потом разрывали и заново образовывали связь.
+    c.execute("""CREATE TABLE IF NOT EXISTS buddy_referral_rewards (
+        pair_key TEXT PRIMARY KEY, granted_at TEXT
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS scheduled_deletions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id INTEGER, message_id INTEGER, delete_at TEXT
@@ -2897,9 +2908,16 @@ async def _finalize_pending_buddy_invite(ctx, message, uid):
     inviter_uid = ctx.user_data.pop("pending_buddy_invite", None)
     if inviter_uid is None:
         return
+    # Проверяем ДО вызова — finalize_buddy_pairing сам отметит пару как
+    # награждённую внутри себя, если награда положена (см. её докстринг и
+    # buddy_referral_already_rewarded) — чтобы показать точную сумму, а не
+    # всегда одну и ту же константу, даже когда повторная награда для этой
+    # же пары была тихо пропущена антифрод-проверкой.
+    already_rewarded = buddy_referral_already_rewarded(uid, inviter_uid)
     if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await message.reply_text("🎉 Готово — теперь вы с другом бадди!", reply_markup=menu_button_kb())
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=BUDDY_REFERRAL_REWARD_DAYS)
+        referral_days = 0 if already_rewarded else BUDDY_REFERRAL_REWARD_DAYS
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days)
     # Если finalize_buddy_pairing вернула False (пригласивший уже успел
     # обзавестись бадди, пока новый пользователь проходил онбординг) —
     # молча не оформляем пару, не срывая под конец онбординг лишней
@@ -10203,6 +10221,33 @@ async def access_gate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # buddy_uid просто приоритетнее в отображении, когда есть.
 BUDDY_REFERRAL_REWARD_DAYS = 7
 
+def _buddy_pair_key(uid_a, uid_b):
+    """Канонический ключ пары без учёта порядка аргументов — один и тот же
+    для (A, B) и (B, A), чтобы разрыв и обратное образование пары не
+    считались "новой" парой для buddy_referral_rewards."""
+    lo, hi = sorted((uid_a, uid_b))
+    return f"{lo}_{hi}"
+
+def buddy_referral_already_rewarded(uid_a, uid_b):
+    """True, если ЭТА конкретная пара людей уже когда-либо получала
+    реферальную награду — независимо от того, сколько раз они с тех пор
+    расходились и мирились заново (см. finalize_buddy_pairing)."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT 1 FROM buddy_referral_rewards WHERE pair_key=? LIMIT 1",
+        (_buddy_pair_key(uid_a, uid_b),)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+def _mark_buddy_referral_rewarded(uid_a, uid_b):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR IGNORE INTO buddy_referral_rewards(pair_key, granted_at) VALUES(?, ?)",
+        (_buddy_pair_key(uid_a, uid_b), datetime.now(pytz.utc).isoformat())
+    )
+    conn.commit(); conn.close()
+
 def finalize_buddy_pairing(uid_a, uid_b, reward_referral=False):
     """True, если пара реально образовалась. Отказывает, если кто-то из
     двоих уже связан (осознанно, до появления "смены бадди" — молча
@@ -10213,7 +10258,19 @@ def finalize_buddy_pairing(uid_a, uid_b, reward_referral=False):
     приглашению (не для случайного матчинга: там никто никого не приводил
     в бота, наградить не за что) — начисляет обеим сторонам
     BUDDY_REFERRAL_REWARD_DAYS дней доступа через тот же grant_access_days,
-    которым продлевается доступ при реальной оплате (см. successful_payment_callback)."""
+    которым продлевается доступ при реальной оплате (см. successful_payment_callback).
+
+    Реальный баг (ночной скан 2026-09-09, финансовый): unlink_buddy_pair
+    рвёт пару БЕЗ охлаждения — без проверки ниже одна и та же пара людей
+    могла разрывать и заново образовывать связь сколько угодно раз,
+    получая +7/+7 дней на каждом цикле. Награда для КОНКРЕТНОЙ пары
+    выдаётся максимум один раз навсегда (buddy_referral_already_rewarded)
+    — сама пара при этом всё равно образуется нормально, просто без
+    повторной награды. Вызывающий код должен сам проверить
+    buddy_referral_already_rewarded ДО этого вызова, если ему нужно точно
+    знать, сколько дней реально начислено (см. _finalize_pending_buddy_invite,
+    buddy_invite_accept) — эта функция возвращает только True/False
+    "пара образовалась", не размер награды."""
     if uid_a == uid_b:
         return False
     user_a = get_user(uid_a)
@@ -10223,9 +10280,10 @@ def finalize_buddy_pairing(uid_a, uid_b, reward_referral=False):
     now = datetime.now(pytz.utc).isoformat()
     update_user(uid_a, buddy_uid=uid_b, buddy_paired_at=now, buddy_seeking_since="")
     update_user(uid_b, buddy_uid=uid_a, buddy_paired_at=now, buddy_seeking_since="")
-    if reward_referral:
+    if reward_referral and not buddy_referral_already_rewarded(uid_a, uid_b):
         grant_access_days(uid_a, BUDDY_REFERRAL_REWARD_DAYS)
         grant_access_days(uid_b, BUDDY_REFERRAL_REWARD_DAYS)
+        _mark_buddy_referral_rewarded(uid_a, uid_b)
     return True
 
 def unlink_buddy_pair(uid):
@@ -10538,9 +10596,13 @@ async def buddy_invite_accept(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
     inviter_uid = int(q.data.replace("buddy_invite_accept_", ""))
+    # См. _finalize_pending_buddy_invite — та же причина проверять ДО
+    # вызова, чтобы показать точную начисленную сумму.
+    already_rewarded = buddy_referral_already_rewarded(uid, inviter_uid)
     if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await _edit_or_send(q, "🎉 Готово, теперь вы бадди!", reply_markup=menu_button_kb())
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=BUDDY_REFERRAL_REWARD_DAYS)
+        referral_days = 0 if already_rewarded else BUDDY_REFERRAL_REWARD_DAYS
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days)
     else:
         await _edit_or_send(q, "Не получилось — возможно, у кого-то из вас уже есть бадди.", reply_markup=menu_button_kb())
 
