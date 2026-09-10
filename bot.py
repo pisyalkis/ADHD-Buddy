@@ -643,6 +643,23 @@ def init_db():
         user_id INTEGER, stars INTEGER, days INTEGER,
         charge_id TEXT, created TEXT
     )""")
+    # Реальный баг (ночной скан 2026-09-09): повторная доставка апдейта
+    # successful_payment (ретрай Telegram после рестарта процесса, когда
+    # in-memory _seen_update_ids из dedupe_updates уже пуст) раньше
+    # начисляла подписку и писала строку в payments ЗАНОВО — без единой
+    # проверки на charge_id, который для одной и той же оплаты у Telegram
+    # всегда один и тот же. Уникальный индекс — сеть безопасности на
+    # уровне БД (см. payment_already_processed ниже — основная защита на
+    # уровне приложения, отдельно). В try/except: если в проде уже
+    # накопились дубли charge_id от самого этого бага, индекс не должен
+    # ронять init_db — тогда полагаемся только на проверку в приложении.
+    try:
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_charge_id "
+            "ON payments(charge_id) WHERE charge_id != ''"
+        )
+    except Exception:
+        pass
     # Реальный баг (ночной скан 2026-09-09): unlink_buddy_pair рвёт пару без
     # охлаждения — та же пара могла разрывать и заново образовывать связь
     # сколько угодно раз, получая +7/+7 дней доступа на каждом цикле
@@ -1021,6 +1038,23 @@ def grant_access_days(uid, days):
     except Exception:
         base = today
     update_user(uid, subscription_until=(base + timedelta(days=days)).isoformat())
+
+def payment_already_processed(charge_id):
+    """Реальный баг (ночной скан 2026-09-09): Telegram может повторно
+    доставить апдейт successful_payment (после рестарта процесса, когда
+    in-memory _seen_update_ids из dedupe_updates уже пуст) — без этой
+    проверки successful_payment_callback продлевал subscription_until и
+    писал новую строку в payments заново, без единой реальной повторной
+    оплаты. charge_id (telegram_payment_charge_id) уникален для одной и
+    той же оплаты — проверяем ДО начисления, а не полагаемся только на
+    уникальный индекс (см. init_db), чтобы не падать с IntegrityError
+    прямо в хендлере."""
+    if not charge_id:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT 1 FROM payments WHERE charge_id=? LIMIT 1", (charge_id,)).fetchone()
+    conn.close()
+    return row is not None
 
 def save_payment(uid, stars, days, charge_id):
     """Отдельный лог реальных оплат Stars — источник для /admin ("сколько
@@ -9801,6 +9835,16 @@ async def successful_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_
     uid = update.effective_user.id
     user = get_user(uid)
     payment = update.message.successful_payment
+    # Реальный баг (ночной скан 2026-09-09): dedupe_updates ловит повторную
+    # доставку ТОЛЬКО в рамках одного процесса и короткого TTL (600с) — а
+    # не после рестарта (деплой, вотчдог), когда Telegram может повторно
+    # прислать тот же успешный платёж. Без этой проверки подписка
+    # продлевалась бы второй раз без единой реальной оплаты. charge_id
+    # уникален для одной и той же оплаты у Telegram — идемпотентность
+    # именно по нему, а не по update_id/тексту сообщения.
+    if payment_already_processed(payment.telegram_payment_charge_id):
+        print(f"Повторная доставка successful_payment (charge_id={payment.telegram_payment_charge_id}, uid={uid}) — игнорируем")
+        return
     base = datetime.now(get_user_tz(user)).date()
     current_until = (user.get("subscription_until") or "")[:10]
     try:
