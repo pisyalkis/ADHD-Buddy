@@ -684,6 +684,22 @@ def init_db():
         session_id INTEGER, user_id INTEGER, joined_at TEXT,
         UNIQUE(session_id, user_id)
     )""")
+    # Реальный баг (ночной скан 2026-09-09): рассылка _notify_coworking_alumni
+    # раньше шла синхронно внутри одного вызова coworking_set_duration, без
+    # единой персистентной записи о том, кому уже отправлено. Рестарт
+    # процесса посреди цикла (десятки алюмни) навсегда хоронил рассылку
+    # для всех, до кого очередь ещё не дошла — без единого способа
+    # доретраить. Строка здесь = "этому пользователю ещё нужно отправить
+    # приглашение для этой сессии"; вычёркивается по завершении попытки
+    # (успех, законный пропуск opted-out, или неудачная отправка — см.
+    # _flush_coworking_alumni_queue), а не только по успеху, чтобы не
+    # ретраить бесконечно чей-то перманентный сбой отправки (заблокировал
+    # бота и т.п.) — персистентность именно от РЕСТАРТА, не от каждого
+    # отдельного сбоя send.
+    c.execute("""CREATE TABLE IF NOT EXISTS coworking_alumni_notify_queue (
+        session_id INTEGER, user_id INTEGER,
+        PRIMARY KEY (session_id, user_id)
+    )""")
 
     # Migrate existing DB - add columns if missing
     for col, default in [
@@ -8051,9 +8067,100 @@ async def coworking_set_duration(update: Update, ctx: ContextTypes.DEFAULT_TYPE)
         ctx.bot, uid, f"coworking_{session_id}", text,
         ttl_seconds=0, parse_mode="Markdown", reply_markup=_coworking_session_kb(session_id)
     )
-    await _notify_coworking_alumni(ctx.bot, session_id, start_utc, minutes, exclude_uid=uid)
+    await _notify_coworking_alumni(ctx.bot, session_id, exclude_uid=uid)
 
-async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_uid):
+def _queue_coworking_alumni_notify(session_id, uids):
+    if not uids:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    conn.executemany(
+        "INSERT OR IGNORE INTO coworking_alumni_notify_queue(session_id, user_id) VALUES (?, ?)",
+        [(session_id, uid) for uid in uids]
+    )
+    conn.commit(); conn.close()
+
+def _pending_coworking_alumni_notify_session_ids():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT DISTINCT session_id FROM coworking_alumni_notify_queue").fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def _pending_coworking_alumni_notify_uids(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT user_id FROM coworking_alumni_notify_queue WHERE session_id=?", (session_id,)
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def _dequeue_coworking_alumni_notify(session_id, uid):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "DELETE FROM coworking_alumni_notify_queue WHERE session_id=? AND user_id=?", (session_id, uid)
+    )
+    conn.commit(); conn.close()
+
+def _clear_coworking_alumni_notify_queue(session_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM coworking_alumni_notify_queue WHERE session_id=?", (session_id,))
+    conn.commit(); conn.close()
+
+async def _flush_coworking_alumni_queue(bot, session_id):
+    """Отправляет (или законно пропускает) всех, кто ещё остался в
+    coworking_alumni_notify_queue для этой сессии. Безопасно вызывать
+    повторно откуда угодно (в т.ч. из периодической check_coworking_sessions,
+    см. её конец) — читает актуальное состояние очереди из БД, а не список
+    в памяти, поэтому продолжает ровно с того места, где рестарт процесса
+    прервал предыдущую попытку (см. _notify_coworking_alumni)."""
+    session = get_coworking_session(session_id)
+    if session is None:
+        # Сессии больше нет (например, вычищена cleanup_old_coworking_sessions,
+        # пока рассылка не завершилась) — слать некому, просто вычищаем очередь.
+        _clear_coworking_alumni_notify_queue(session_id)
+        return
+    start_utc = session["start_at"]
+    minutes = session["duration_minutes"]
+    now_utc = datetime.now(pytz.utc)
+    start_dt = datetime.fromisoformat(start_utc)
+    # Сессия уже началась (например, процесс был недоступен часами) —
+    # приглашение "Присоединиться" уже бессмысленно (coworking_join_callback
+    # всё равно отклонит после start_at, см. #316) — вычищаем очередь без
+    # отправки, а не шлём заведомо мёртвые приглашения с истёкшим смыслом.
+    if start_dt <= now_utc:
+        _clear_coworking_alumni_notify_queue(session_id)
+        return
+    invite_ttl_seconds = max(1, int((start_dt - now_utc).total_seconds()))
+    for pid in _pending_coworking_alumni_notify_uids(session_id):
+        p_user = get_user(pid)
+        if not p_user or not int(p_user.get("coworking_notif_on") or 1):
+            _dequeue_coworking_alumni_notify(session_id, pid)
+            continue
+        p_tz = get_user_tz(p_user)
+        p_local_start = datetime.fromisoformat(start_utc).astimezone(p_tz)
+        p_day_note = _coworking_day_note(p_local_start, p_tz)
+        text = (
+            f"🧘 *Новая коворкинг-сессия*\n\n{p_local_start.strftime('%H:%M')}{p_day_note}, {minutes} мин\n\n"
+            "Кто-то ищет компанию для тихой совместной работы."
+        )
+        try:
+            await send_tracked_notification(
+                bot, pid, f"coworking_{session_id}", text,
+                ttl_seconds=invite_ttl_seconds, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Присоединиться", callback_data=f"coworking_join_{session_id}")],
+                    [InlineKeyboardButton("🔕 Не присылать такие", callback_data="coworking_notif_off")],
+                ])
+            )
+        except Exception as e:
+            print(f"Ошибка оповещения о новой коворкинг-сессии uid={pid}: {e}")
+        # Вычёркиваем из очереди и при успехе, и при сбое отправки — очередь
+        # переживает только РЕСТАРТ ПРОЦЕССА (единственная цель этой
+        # персистентности), а не отдельные сбои send (тот же перманентно
+        # заблокировавший бота пользователь иначе ретраился бы каждую
+        # минуту навсегда).
+        _dequeue_coworking_alumni_notify(session_id, pid)
+
+async def _notify_coworking_alumni(bot, session_id, exclude_uid):
     """Реальный запрос (IDEAS.md 2026-09-07): раньше о новой сессии узнавал
     только сам создатель — остальные видели её, только если сами заглянут
     в 🧘 Коворкинг именно в нужный момент. Оповещаем тех, кто уже хоть раз
@@ -8074,32 +8181,20 @@ async def _notify_coworking_alumni(bot, session_id, start_utc, minutes, exclude_
     момент истечения — сам старт сессии: после него "Присоединиться"
     всё равно ничего не даст (coworking_join_callback отклоняет по
     start_at), так что самоудаление ровно к этому моменту ничего не
-    теряет и не оставляет мёртвых кнопок."""
-    now_utc = datetime.now(pytz.utc)
-    start_dt = datetime.fromisoformat(start_utc)
-    invite_ttl_seconds = max(1, int((start_dt - now_utc).total_seconds()))
-    for pid in get_coworking_alumni(exclude_uid=exclude_uid):
-        p_user = get_user(pid)
-        if not p_user or not int(p_user.get("coworking_notif_on") or 1):
-            continue
-        p_tz = get_user_tz(p_user)
-        p_local_start = datetime.fromisoformat(start_utc).astimezone(p_tz)
-        p_day_note = _coworking_day_note(p_local_start, p_tz)
-        text = (
-            f"🧘 *Новая коворкинг-сессия*\n\n{p_local_start.strftime('%H:%M')}{p_day_note}, {minutes} мин\n\n"
-            "Кто-то ищет компанию для тихой совместной работы."
-        )
-        try:
-            await send_tracked_notification(
-                bot, pid, f"coworking_{session_id}", text,
-                ttl_seconds=invite_ttl_seconds, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Присоединиться", callback_data=f"coworking_join_{session_id}")],
-                    [InlineKeyboardButton("🔕 Не присылать такие", callback_data="coworking_notif_off")],
-                ])
-            )
-        except Exception as e:
-            print(f"Ошибка оповещения о новой коворкинг-сессии uid={pid}: {e}")
+    теряет и не оставляет мёртвых кнопок.
+
+    Реальный баг (ночной скан 2026-09-09, follow-up на этот же баг): вся
+    рассылка шла синхронно внутри одного вызова coworking_set_duration —
+    рестарт процесса посреди цикла (десятки алюмни) навсегда хоронил
+    рассылку для всех, до кого очередь ещё не дошла, без единого способа
+    доретраить. Теперь список получателей сначала сохраняется в
+    персистентную coworking_alumni_notify_queue, а сама отправка идёт
+    через _flush_coworking_alumni_queue — её же вызывает и периодическая
+    check_coworking_sessions, подхватывая то, что осталось от прерванной
+    рестартом попытки."""
+    alumni = get_coworking_alumni(exclude_uid=exclude_uid)
+    _queue_coworking_alumni_notify(session_id, alumni)
+    await _flush_coworking_alumni_queue(bot, session_id)
 
 async def coworking_notif_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -8220,6 +8315,15 @@ async def check_coworking_sessions(app):
                 except Exception as e:
                     print(f"Ошибка завершения коворкинга uid={pid}: {e}")
             mark_coworking_finished(session["id"])
+        # Реальный баг (ночной скан 2026-09-09): рестарт процесса посреди
+        # рассылки _notify_coworking_alumni (см. её докстринг) оставлял
+        # часть алюмни ненотифицированными навсегда — здесь, в уже
+        # существующей раз-в-минутную джобе, подхватываем то, что осталось
+        # от любой прерванной попытки (обычно пусто — только что-то
+        # найдётся сразу после рестарта, если он случился именно посреди
+        # цикла отправки).
+        for pending_session_id in _pending_coworking_alumni_notify_session_ids():
+            await _flush_coworking_alumni_queue(app.bot, pending_session_id)
     except Exception as e:
         print(f"Ошибка check_coworking_sessions: {e}")
 
@@ -8243,6 +8347,7 @@ async def cleanup_old_coworking_sessions(app):
         if old_ids:
             placeholders = ",".join("?" * len(old_ids))
             conn.execute(f"DELETE FROM coworking_participants WHERE session_id IN ({placeholders})", old_ids)
+            conn.execute(f"DELETE FROM coworking_alumni_notify_queue WHERE session_id IN ({placeholders})", old_ids)
             conn.execute(f"DELETE FROM coworking_sessions WHERE id IN ({placeholders})", old_ids)
             conn.commit()
         conn.close()
