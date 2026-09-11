@@ -125,10 +125,16 @@ async def main():
     print("3. Re-pairing the SAME two people again does NOT grant a second referral reward")
 
     # 4. The re-pairing notification must not falsely claim a bonus was
-    #    granted when it wasn't (accurate messaging, not just no double-pay).
-    assert not any("бонус за приглашение друга" in t for _, t, _ in fbot2.sent), \
+    #    granted when it wasn't (accurate messaging, not just no double-pay)
+    #    -- and, per the nightly scan 2026-09-10 follow-up, it must say WHY
+    #    there's no bonus this time instead of just silently dropping the
+    #    line (that silence read as a missing feature, not a deliberate
+    #    anti-farming decision).
+    assert not any("Вам обоим начислено" in t for _, t, _ in fbot2.sent), \
         f"must not claim a bonus was granted when the reward was actually skipped: {fbot2.sent}"
-    print("4. The re-pairing notification does not falsely claim a bonus was granted")
+    assert any("уже был начислен раньше" in t for _, t, _ in fbot2.sent), \
+        f"must explain that the bonus was already granted earlier for this pair, not just say nothing: {fbot2.sent}"
+    print("4. The re-pairing notification explains that the bonus was already granted earlier, instead of silently omitting it")
 
     # 5. Repeating unlink -> re-pair a THIRD time still grants nothing extra
     #    -- confirms it's not just "blocked once", but permanently for this
