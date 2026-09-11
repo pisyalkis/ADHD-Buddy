@@ -2933,7 +2933,7 @@ async def _finalize_pending_buddy_invite(ctx, message, uid):
     if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await message.reply_text("🎉 Готово — теперь вы с другом бадди!", reply_markup=menu_button_kb())
         referral_days = 0 if already_rewarded else BUDDY_REFERRAL_REWARD_DAYS
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days)
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days, already_rewarded=already_rewarded)
     # Если finalize_buddy_pairing вернула False (пригласивший уже успел
     # обзавестись бадди, пока новый пользователь проходил онбординг) —
     # молча не оформляем пару, не срывая под конец онбординг лишней
@@ -10523,18 +10523,35 @@ async def buddy_share_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_user(q.from_user.id, buddy_share_progress=0)
     await _edit_or_send(q, "Окей, не делимся — это никак не влияет на саму пару.", reply_markup=menu_button_kb())
 
-async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0):
+async def _notify_buddy_paired(bot, uid_a, uid_b, referral_days=0, already_rewarded=False):
     """Уведомляет ОБЕИХ сторон об образовавшейся паре — с явной разницей
     часовых поясов, если она есть (product-решение: не скрывать, а
     проговорить, чтобы учитывали при планировании), и следом — гайд
     "как работать с бадди" (см. BUDDY_GUIDE_TEXT), чтобы пара не осталась
     один на один с вопросом "и что теперь делать". referral_days>0 (только
     для пар по диплинк-приглашению, см. finalize_buddy_pairing) добавляет
-    строчку про начисленный обеим сторонам бонус."""
+    строчку про начисленный обеим сторонам бонус.
+
+    Реальный баг (ночной скан 2026-09-10, follow-up на #320): анти-фарминг
+    для этой же пары корректно пропускает повторное начисление
+    (referral_days=0), но раньше это молча убирало строку про бонус —
+    пользователь, который раньше УЖЕ видел "начислено по 7 дн." за эту же
+    пару, теперь видел то же "🎉 У тебя новый бадди" без единого слова,
+    почему бонуса на этот раз нет — выглядело как пропавшая фича, а не
+    как осознанная защита. already_rewarded=True (передаётся вызывающим
+    кодом, который уже знает это ДО вызова finalize_buddy_pairing — см.
+    buddy_referral_already_rewarded) — отдельная явная строка вместо
+    молчания, только когда пара вообще имела право на бонус (диплинк), но
+    он уже был начислен раньше."""
     user_a = get_user(uid_a); user_b = get_user(uid_b)
     diff = _tz_offset_diff_hours(user_a, user_b)
     tz_note = f"\n\n🌍 Разница часовых поясов: примерно {diff:.0f} ч — учтите при планировании." if diff >= 1 else ""
-    bonus_note = f"\n\n🎁 Вам обоим начислено по {referral_days} дн. доступа — бонус за приглашение друга." if referral_days else ""
+    if referral_days:
+        bonus_note = f"\n\n🎁 Вам обоим начислено по {referral_days} дн. доступа — бонус за приглашение друга."
+    elif already_rewarded:
+        bonus_note = "\n\nℹ️ Бонус за приглашение друга для этой пары уже был начислен раньше — начисляется один раз."
+    else:
+        bonus_note = ""
     name_a = md_escape(user_a.get("name") or "Без имени")
     name_b = md_escape(user_b.get("name") or "Без имени")
     try:
@@ -10707,7 +10724,7 @@ async def buddy_invite_accept(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if finalize_buddy_pairing(uid, inviter_uid, reward_referral=True):
         await _edit_or_send(q, "🎉 Готово, теперь вы бадди!", reply_markup=menu_button_kb())
         referral_days = 0 if already_rewarded else BUDDY_REFERRAL_REWARD_DAYS
-        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days)
+        await _notify_buddy_paired(ctx.bot, uid, inviter_uid, referral_days=referral_days, already_rewarded=already_rewarded)
     else:
         await _edit_or_send(q, "Не получилось — возможно, у кого-то из вас уже есть бадди.", reply_markup=menu_button_kb())
 
