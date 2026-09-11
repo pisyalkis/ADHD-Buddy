@@ -13108,7 +13108,14 @@ def main():
     app.add_handler(CallbackQueryHandler(remind_snooze_callback, pattern="^remind_snooze_"))
     app.add_handler(CallbackQueryHandler(go_coworking,            pattern="^go_coworking$"))
     app.add_handler(CallbackQueryHandler(coworking_create_start,  pattern="^coworking_create_start$"))
-    app.add_handler(CallbackQueryHandler(coworking_set_duration,  pattern="^coworking_dur_\\d+$"))
+    # Реальный баг (ночной скан 2026-09-10): coworking_set_duration ждёт
+    # _notify_coworking_alumni целиком — та шлёт реальные сетевые запросы
+    # к Telegram последовательно на КАЖДОГО алумни (потенциально десятки).
+    # Без block=False (тот же класс, что уже чинили для warmup_go — см.
+    # комментарий у него) PTB обрабатывает апдейты строго по одному:
+    # пока рассылка идёт, бот не отвечает вообще никому, не только
+    # создателю сессии.
+    app.add_handler(CallbackQueryHandler(coworking_set_duration,  pattern="^coworking_dur_\\d+$", block=False))
     app.add_handler(CallbackQueryHandler(coworking_join_callback, pattern="^coworking_join_\\d+$"))
     app.add_handler(CallbackQueryHandler(coworking_leave_callback, pattern="^coworking_leave_\\d+$"))
     app.add_handler(CallbackQueryHandler(coworking_notif_off, pattern="^coworking_notif_off$"))
