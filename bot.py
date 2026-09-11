@@ -11931,10 +11931,25 @@ async def _process_user_notifications(app, user):
                 )
                 reengage_due_now = reengage_milestone_pending and 9 <= now_dt.hour < 10
 
+        # Реальный баг (ночной скан 2026-09-10, follow-up на #317): если
+        # send_reengagement_message падает (таймаут Telegram — тот же
+        # временный сбой, от которого явно бережётся соседний код ниже),
+        # reengage_max_milestone_sent не обновляется, и reengage_milestone_pending
+        # остаётся True до конца КАЛЕНДАРНЫХ суток — не только до конца
+        # окна 9:00-10:00, в которое реактивация вообще может уйти
+        # (reengage_due_now требует ещё и час). Для notif_morning в 10:00
+        # или позже это гасило обычное утреннее НАВСЕГДА в этот день: окно
+        # уже закрыто (реактивация больше не уйдёт), а условие "и not
+        # reengage_milestone_pending" всё ещё ложно — было "два сообщения",
+        # стало "ноль". now_dt.hour < 10 — суппрессия утреннего действует
+        # только пока у реактивации ещё есть реальный шанс уйти сегодня
+        # (до открытия окна и внутри него); как только окно закрылось без
+        # успеха, отложенное утреннее уходит как обычный fallback, а не
+        # теряется молча.
         if (notif_master_on and now >= user.get("notif_morning", "09:00") and int(user.get("notif_morning_on") or 1)
                 and user.get("morning_sent_date") != day_key
                 and user.get("notif_snooze_morning") != day_key
-                and not reengage_milestone_pending):
+                and not (reengage_milestone_pending and now_dt.hour < 10)):
             # Помечаем "отправлено" только после реального успеха — иначе
             # временный сбой (таймаут телеграма, юзер заблокировал бота)
             # навсегда съедает уведомление на весь день без единой попытки.
